@@ -446,6 +446,10 @@ fn powershell_exe() -> PathBuf {
 
 // ── Script Resolution ──
 
+pub(crate) fn bundled_backend_configured() -> bool {
+    option_env!("UNSLOTH_BUNDLED_BACKEND_WHEEL").is_some_and(|name| !name.is_empty())
+}
+
 #[cfg(not(debug_assertions))]
 fn resolve_bundled_backend_wheel(app: &AppHandle) -> Result<Option<PathBuf>, String> {
     use sha2::Digest;

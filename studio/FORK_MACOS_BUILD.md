@@ -9,7 +9,9 @@ The build also closes an important desktop packaging gap: the official Tauri wra
 normally installs the released `unsloth` package from PyPI on first launch. This fork
 instead builds a wheel from the current revision, embeds it in the app, verifies its
 SHA-256 before installation, and requires that exact backend version at preflight.
-The shipped UI and backend therefore implement the same source revision.
+Existing managed installs are repaired directly from that wheel instead of first
+running the generic network updater. The shipped UI and backend therefore implement
+the same source revision.
 
 ## Build
 
