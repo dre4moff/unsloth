@@ -1,7 +1,8 @@
 {
   "bundle": {
     "resources": {
-      "../../install.sh": "install.sh"
+      "../../install.sh": "install.sh",
+      "resources/backend/*": "backend/"
     },
     "macOS": {
       "entitlements": "./Entitlements.plist",

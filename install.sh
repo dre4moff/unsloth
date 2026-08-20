@@ -4941,7 +4941,20 @@ for _p in ('torch', 'torchvision', 'torchaudio'):
 }
 
 _unsloth_desktop_install_spec=""
-if [ -n "${UNSLOTH_DESKTOP_BACKEND_VERSION:-}" ]; then
+if [ -n "${UNSLOTH_DESKTOP_BACKEND_WHEEL:-}" ]; then
+    case "$UNSLOTH_DESKTOP_BACKEND_WHEEL" in
+        /*) ;;
+        *)
+            echo "[ERROR] bundled desktop backend wheel path is not absolute" >&2
+            exit 1
+            ;;
+    esac
+    if [ ! -f "$UNSLOTH_DESKTOP_BACKEND_WHEEL" ] || [ ! -r "$UNSLOTH_DESKTOP_BACKEND_WHEEL" ]; then
+        echo "[ERROR] bundled desktop backend wheel is missing or unreadable" >&2
+        exit 1
+    fi
+    _unsloth_desktop_install_spec="$UNSLOTH_DESKTOP_BACKEND_WHEEL"
+elif [ -n "${UNSLOTH_DESKTOP_BACKEND_VERSION:-}" ]; then
     _unsloth_desktop_install_spec="unsloth>=${UNSLOTH_DESKTOP_BACKEND_VERSION}"
 fi
 _unsloth_release_install_spec="${_unsloth_desktop_install_spec:-unsloth>=2026.8.18}"

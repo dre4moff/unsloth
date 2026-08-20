@@ -14,6 +14,10 @@ pub(crate) const DESKTOP_BACKEND_MANAGEABILITY_VERSION: u16 = 1;
 // and app releases can diverge. When bumping, verify this package exists on PyPI.
 pub(super) const MIN_DESKTOP_BACKEND_VERSION: &str = "2026.8.4";
 
+fn bundled_backend_exact_version() -> Option<&'static str> {
+    option_env!("UNSLOTH_BUNDLED_BACKEND_EXACT_VERSION")
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub(super) struct ParsedVersion {
     release: [u64; 3],
@@ -139,6 +143,9 @@ fn suffix_precedence(suffix: &VersionSuffix) -> u8 {
 }
 
 pub(super) fn backend_version_compatible(version: Option<&str>) -> bool {
+    if let Some(expected) = bundled_backend_exact_version() {
+        return version == Some(expected);
+    }
     let Some(version) = version else {
         return false;
     };
@@ -174,7 +181,9 @@ pub(crate) fn backend_version_stale_reason(version: Option<&str>) -> Option<Stri
 // from the same pypi_version as the updater manifest. Local and CI builds leave
 // it unset, so the floor above stays their only gate.
 pub(crate) fn expected_backend_version() -> &'static str {
-    option_env!("UNSLOTH_DESKTOP_BACKEND_VERSION").unwrap_or(MIN_DESKTOP_BACKEND_VERSION)
+    bundled_backend_exact_version()
+        .or(option_env!("UNSLOTH_DESKTOP_BACKEND_VERSION"))
+        .unwrap_or(MIN_DESKTOP_BACKEND_VERSION)
 }
 
 pub(super) fn backend_version_outdated_reason(

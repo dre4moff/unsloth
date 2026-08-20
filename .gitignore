@@ -204,6 +204,10 @@ firebase-debug.log
 
 # Other
 resources/
+!studio/src-tauri/resources/
+!studio/src-tauri/resources/backend/
+!studio/src-tauri/resources/backend/.gitkeep
+studio/src-tauri/resources/backend/*.whl
 tmp/
 **/node_modules/
 auth.db

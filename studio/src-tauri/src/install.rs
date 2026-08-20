@@ -3,7 +3,7 @@ use crate::install_watchdog::{self, ProgressWatch, WatchState};
 use log::{error, info, warn};
 use process_wrap::std::*;
 use std::collections::{HashMap, VecDeque};
-use std::io::BufRead;
+use std::io::{BufRead, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
@@ -442,10 +442,63 @@ fn powershell_exe() -> PathBuf {
 
 // ── Script Resolution ──
 
-/// Returns (script_path, args) depending on dev vs production mode.
+fn resolve_bundled_backend_wheel(app: &AppHandle) -> Result<Option<PathBuf>, String> {
+    use sha2::Digest;
+
+    let Some(file_name) = option_env!("UNSLOTH_BUNDLED_BACKEND_WHEEL") else {
+        return Ok(None);
+    };
+    if file_name.is_empty() || Path::new(file_name).components().count() != 1 {
+        return Err("Bundled backend wheel name is invalid".to_string());
+    }
+    let expected_sha256 = option_env!("UNSLOTH_BUNDLED_BACKEND_SHA256")
+        .ok_or("Bundled backend wheel digest was not compiled into this app")?;
+    let wheel = app
+        .path()
+        .resolve(
+            Path::new("backend").join(file_name),
+            tauri::path::BaseDirectory::Resource,
+        )
+        .map_err(|error| format!("Failed to resolve bundled backend wheel: {error}"))?;
+    if !wheel.is_file() {
+        return Err(format!(
+            "Bundled backend wheel is missing: {}",
+            wheel.display()
+        ));
+    }
+
+    let mut file = std::fs::File::open(&wheel)
+        .map_err(|error| format!("Could not read bundled backend wheel: {error}"))?;
+    let mut hasher = sha2::Sha256::new();
+    let mut buffer = [0_u8; 1024 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|error| format!("Could not hash bundled backend wheel: {error}"))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    let actual_sha256 = hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    if !actual_sha256.eq_ignore_ascii_case(expected_sha256) {
+        return Err(format!(
+            "Bundled backend wheel failed integrity verification (expected {expected_sha256}, got {actual_sha256})"
+        ));
+    }
+    Ok(Some(wheel))
+}
+
+/// Returns (script_path, args, bundled_backend_wheel) depending on dev vs production mode.
 /// Dev mode: repo root script + --tauri --local
 /// Production: bundled resource + --tauri
-fn resolve_install_script(app: &AppHandle) -> Result<(PathBuf, Vec<String>), String> {
+fn resolve_install_script(
+    app: &AppHandle,
+) -> Result<(PathBuf, Vec<String>, Option<PathBuf>), String> {
     let mut args = vec!["--tauri".to_string()];
 
     if cfg!(debug_assertions) {
@@ -466,7 +519,7 @@ fn resolve_install_script(app: &AppHandle) -> Result<(PathBuf, Vec<String>), Str
 
         args.push("--local".to_string());
         info!("Dev mode: using repo script at {}", script.display());
-        Ok((script, args))
+        Ok((script, args, None))
     } else {
         let name = if cfg!(unix) {
             "install.sh"
@@ -477,8 +530,9 @@ fn resolve_install_script(app: &AppHandle) -> Result<(PathBuf, Vec<String>), Str
             .path()
             .resolve(name, tauri::path::BaseDirectory::Resource)
             .map_err(|e| format!("Failed to resolve bundled {}: {}", name, e))?;
+        let backend_wheel = resolve_bundled_backend_wheel(app)?;
         info!("Production: using bundled script at {}", script.display());
-        Ok((script, args))
+        Ok((script, args, backend_wheel))
     }
 }
 
@@ -537,6 +591,7 @@ fn emit_complete(app: &AppHandle) {
 fn spawn_script(
     script: &Path,
     args: &[String],
+    backend_wheel: Option<&Path>,
     state: &InstallState,
 ) -> Result<
     (
@@ -582,6 +637,10 @@ fn spawn_script(
     // these under --tauri. Scrub so an inherited value can't trip the guard.
     cmd.env_remove("UNSLOTH_STUDIO_HOME");
     cmd.env_remove("STUDIO_HOME");
+    cmd.env_remove("UNSLOTH_DESKTOP_BACKEND_WHEEL");
+    if let Some(wheel) = backend_wheel {
+        cmd.env("UNSLOTH_DESKTOP_BACKEND_WHEEL", wheel);
+    }
     cmd.env(
         "UNSLOTH_DESKTOP_BACKEND_VERSION",
         crate::preflight::expected_backend_version(),
@@ -855,7 +914,7 @@ fn run_install_with_event_mode(
 
     emit_mode_progress(&app, event_mode, "Starting installation...");
 
-    let (script, args) = match resolve_install_script(&app) {
+    let (script, args, backend_wheel) = match resolve_install_script(&app) {
         Ok(resolved) => resolved,
         Err(msg) => {
             diagnostics::finish_attempt(
@@ -880,7 +939,7 @@ fn run_install_with_event_mode(
         &format!("Using script: {}", script.display()),
     );
 
-    let (stdout, stderr) = match spawn_script(&script, &args, &state) {
+    let (stdout, stderr) = match spawn_script(&script, &args, backend_wheel.as_deref(), &state) {
         Ok(handles) => handles,
         Err(msg) => {
             diagnostics::finish_attempt(

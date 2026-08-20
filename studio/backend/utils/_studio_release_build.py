@@ -3,9 +3,8 @@
 
 """Build-stamped Unsloth release metadata.
 
-Release builds may rewrite this module in the build workspace before creating
-Python artifacts. Keep the committed value neutral so source checkouts do not
-accidentally report a stale release tag.
+This fork release carries the same version in its bundled Python wheel and
+desktop app so diagnostics identify the exact source revision in use.
 """
 
-STUDIO_RELEASE_VERSION = None
+STUDIO_RELEASE_VERSION = "v0.1.800-mlx.1"
