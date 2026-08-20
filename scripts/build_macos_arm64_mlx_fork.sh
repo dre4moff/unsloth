@@ -4,8 +4,8 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
-app_version="0.1.800-mlx.2"
-backend_version="2026.8.18+mlxcompaction2"
+app_version="0.1.800-mlx.3"
+backend_version="2026.8.18+mlxcompaction3"
 rust_toolchain="1.89.0"
 wheel_name="unsloth-${backend_version}-py3-none-any.whl"
 resource_dir="$repo_root/studio/src-tauri/resources/backend"
@@ -82,7 +82,14 @@ if ! unzip -p "$built_wheel" studio/backend/utils/_studio_release_build.py \
 fi
 
 mkdir -p "$resource_dir"
-rm -f "$resource_wheel"
+# Tauri bundles the whole resource directory. Keep exactly one backend wheel or
+# successive fork builds silently carry every older backend inside the app.
+while IFS= read -r stale_wheel; do
+    if [ "$stale_wheel" != "$resource_wheel" ]; then
+        rm -f -- "$stale_wheel"
+    fi
+done < <(find "$resource_dir" -maxdepth 1 -type f -name 'unsloth-*.whl' -print)
+rm -f -- "$resource_wheel"
 install -m 0644 "$built_wheel" "$resource_wheel"
 wheel_sha256="$(shasum -a 256 "$resource_wheel" | awk '{print $1}')"
 
@@ -147,6 +154,10 @@ if [ "$(plutil -extract CFBundleDisplayName raw "$app_path/Contents/Info.plist")
 fi
 if rg -a -l -F "$HOME" "$app_path" >/dev/null; then
     echo "Release app contains a local home-directory path." >&2
+    exit 1
+fi
+if [ "$(find "$app_path/Contents/Resources/backend" -maxdepth 1 -type f -name 'unsloth-*.whl' | wc -l | tr -d ' ')" != "1" ]; then
+    echo "Release app must contain exactly one backend wheel." >&2
     exit 1
 fi
 codesign --verify --deep --strict --verbose=2 "$app_path"
