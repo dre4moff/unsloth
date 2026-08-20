@@ -15,7 +15,7 @@ if [ "$(uname -m)" != "arm64" ]; then
     exit 1
 fi
 
-for required in uv npm rustup shasum unzip; do
+for required in uv npm rustup shasum unzip rg lipo vtool plutil codesign hdiutil; do
     if ! command -v "$required" >/dev/null 2>&1; then
         echo "Missing required build tool: $required" >&2
         exit 1
@@ -76,17 +76,42 @@ rustup target add aarch64-apple-darwin
 echo "Building the fork-safe app and DMG..."
 (
     cd "$repo_root/studio"
-    MACOSX_DEPLOYMENT_TARGET=12.0 \
-    UNSLOTH_DESKTOP_BACKEND_VERSION="$backend_version" \
-    UNSLOTH_BUNDLED_BACKEND_EXACT_VERSION="$backend_version" \
-    UNSLOTH_BUNDLED_BACKEND_WHEEL="$wheel_name" \
-    UNSLOTH_BUNDLED_BACKEND_SHA256="$wheel_sha256" \
-    UNSLOTH_DISABLE_DESKTOP_UPDATES=1 \
+    export MACOSX_DEPLOYMENT_TARGET=12.0
+    export RUSTFLAGS="${RUSTFLAGS:+${RUSTFLAGS} }--remap-path-prefix=${HOME:?}=/source"
+    export UNSLOTH_DESKTOP_BACKEND_VERSION="$backend_version"
+    export UNSLOTH_BUNDLED_BACKEND_EXACT_VERSION="$backend_version"
+    export UNSLOTH_BUNDLED_BACKEND_WHEEL="$wheel_name"
+    export UNSLOTH_BUNDLED_BACKEND_SHA256="$wheel_sha256"
+    export UNSLOTH_DISABLE_DESKTOP_UPDATES=1
     npx tauri build -v \
         --target aarch64-apple-darwin \
         --bundles app,dmg
 )
 
+app_path="$repo_root/studio/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Unsloth MLX Context.app"
+app_binary="$app_path/Contents/MacOS/unsloth-studio"
+dmg_path="$repo_root/studio/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/Unsloth MLX Context_${app_version}_aarch64.dmg"
+
+echo "Verifying release metadata and integrity..."
+if [ "$(lipo -archs "$app_binary")" != "arm64" ]; then
+    echo "Release binary is not arm64-only." >&2
+    exit 1
+fi
+if ! vtool -show-build "$app_binary" | grep -Eq 'minos +12\.0'; then
+    echo "Release binary does not target macOS 12.0." >&2
+    exit 1
+fi
+if [ "$(plutil -extract LSMinimumSystemVersion raw "$app_path/Contents/Info.plist")" != "12.0" ]; then
+    echo "Release Info.plist does not require macOS 12.0." >&2
+    exit 1
+fi
+if rg -a -l -F "$HOME" "$app_path" >/dev/null; then
+    echo "Release app contains a local home-directory path." >&2
+    exit 1
+fi
+codesign --verify --deep --strict --verbose=2 "$app_path"
+hdiutil verify "$dmg_path"
+
 echo "Bundled backend SHA-256: $wheel_sha256"
-echo "App: $repo_root/studio/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Unsloth MLX Context.app"
-echo "DMG directory: $repo_root/studio/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg"
+echo "App: $app_path"
+echo "DMG: $dmg_path"

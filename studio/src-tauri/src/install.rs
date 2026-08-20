@@ -3,11 +3,15 @@ use crate::install_watchdog::{self, ProgressWatch, WatchState};
 use log::{error, info, warn};
 use process_wrap::std::*;
 use std::collections::{HashMap, VecDeque};
-use std::io::{BufRead, Read};
+use std::io::BufRead;
+#[cfg(not(debug_assertions))]
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter};
+#[cfg(not(debug_assertions))]
+use tauri::Manager;
 
 // ── Types ──
 
@@ -442,6 +446,7 @@ fn powershell_exe() -> PathBuf {
 
 // ── Script Resolution ──
 
+#[cfg(not(debug_assertions))]
 fn resolve_bundled_backend_wheel(app: &AppHandle) -> Result<Option<PathBuf>, String> {
     use sha2::Digest;
 
@@ -497,11 +502,11 @@ fn resolve_bundled_backend_wheel(app: &AppHandle) -> Result<Option<PathBuf>, Str
 /// Dev mode: repo root script + --tauri --local
 /// Production: bundled resource + --tauri
 fn resolve_install_script(
-    app: &AppHandle,
+    _app: &AppHandle,
 ) -> Result<(PathBuf, Vec<String>, Option<PathBuf>), String> {
-    let mut args = vec!["--tauri".to_string()];
-
-    if cfg!(debug_assertions) {
+    #[cfg(debug_assertions)]
+    {
+        let args = vec!["--tauri".to_string(), "--local".to_string()];
         let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent() // studio/
             .and_then(|p| p.parent()) // repo root
@@ -517,20 +522,23 @@ fn resolve_install_script(
             return Err(format!("Install script not found: {}", script.display()));
         }
 
-        args.push("--local".to_string());
         info!("Dev mode: using repo script at {}", script.display());
-        Ok((script, args, None))
-    } else {
+        return Ok((script, args, None));
+    }
+
+    #[cfg(not(debug_assertions))]
+    {
+        let args = vec!["--tauri".to_string()];
         let name = if cfg!(unix) {
             "install.sh"
         } else {
             "install.ps1"
         };
-        let script = app
+        let script = _app
             .path()
             .resolve(name, tauri::path::BaseDirectory::Resource)
             .map_err(|e| format!("Failed to resolve bundled {}: {}", name, e))?;
-        let backend_wheel = resolve_bundled_backend_wheel(app)?;
+        let backend_wheel = resolve_bundled_backend_wheel(_app)?;
         info!("Production: using bundled script at {}", script.display());
         Ok((script, args, backend_wheel))
     }
