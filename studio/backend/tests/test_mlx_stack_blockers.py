@@ -13,6 +13,7 @@ transformers. These cover the blocker list that message is built from.
 from __future__ import annotations
 
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -81,6 +82,26 @@ def test_an_import_that_raises_is_reported_with_its_error(monkeypatch):
     assert "does not import" in blockers[0]
     assert "AutoProcessor" in blockers[0]
     assert mr.mlx_stack_available() is False
+
+
+def test_a_failed_python_import_is_purged_for_the_post_warm_retry(monkeypatch):
+    """A transformers race must not poison every later MLX check in the process."""
+    _fake_versions(monkeypatch, {"mlx": "0.30.0", "mlx-lm": "0.30.0", "mlx-vlm": "0.5.0"})
+    stale = "mlx_lm.partially_loaded"
+    monkeypatch.delitem(sys.modules, "mlx_lm", raising = False)
+    monkeypatch.setitem(sys.modules, stale, types.ModuleType(stale))
+
+    def import_after_race(module: str):
+        if module == "mlx_lm" and stale in sys.modules:
+            raise TypeError("unsupported operand type(s) for |: 'NoneType' and 'NoneType'")
+        return object()
+
+    monkeypatch.setattr(mr.importlib, "import_module", import_after_race)
+    blocker = mr.mlx_stack_blockers()
+    assert len(blocker) == 1
+    assert blocker[0].startswith("mlx_lm does not import (TypeError:")
+    assert stale not in sys.modules
+    assert mr.mlx_stack_blockers() == [], "the clean post-warm retry still saw stale modules"
 
 
 def test_versions_are_checked_before_imports(monkeypatch):

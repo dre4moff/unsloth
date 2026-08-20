@@ -181,6 +181,23 @@ def _mlx_runtime_import_blocker() -> Optional[str]:
         try:
             importlib.import_module(module)
         except Exception as exc:
+            # A failed package import removes only the package itself from
+            # sys.modules; submodules executed before the failure remain cached.
+            # The next post-warm check can then fail forever against that partial
+            # state even though the transformers race that caused it is over.
+            # Reuse the warm-up's guarded cleanup: it declines while another
+            # importer owns the parent and whenever a loaded extension would make
+            # re-import unsafe.  mlx_lm / mlx_vlm are pure Python, which is the
+            # recoverable case observed during the startup race (#9120).
+            try:
+                from utils.torch_warmup import purge_partial_import
+
+                purge_partial_import(module)
+                root = module.partition(".")[0]
+                if root != module:
+                    purge_partial_import(root)
+            except Exception as purge_exc:  # pragma: no cover - defensive only
+                logger.debug("could not purge partial %s import: %s", module, purge_exc)
             return f"{module} does not import ({type(exc).__name__}: {_one_line(exc)})"
     return None
 

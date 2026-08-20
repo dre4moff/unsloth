@@ -196,6 +196,22 @@ def test_install_env_drops_secrets_and_source_redirects(monkeypatch):
     assert env.get("UV_OVERRIDE", "").endswith("overrides-darwin-arm64.txt")
 
 
+def test_mlx_override_preserves_the_pinned_studio_server_stack():
+    """mlx-vlm must not make desktop-capabilities stale after self-heal."""
+    override = (
+        _BACKEND / "requirements" / "single-env" / "overrides-darwin-arm64.txt"
+    ).read_text(encoding = "utf-8")
+    studio = (_BACKEND / "requirements" / "studio.txt").read_text(encoding = "utf-8")
+    for requirement in (
+        'fastapi==0.141.1; python_version >= "3.10"',
+        'fastapi==0.128.8; python_version < "3.10"',
+        'uvicorn==0.52.1; python_version >= "3.10"',
+        'uvicorn==0.39.0; python_version < "3.10"',
+    ):
+        assert requirement in studio
+        assert requirement in override
+
+
 def test_repair_rejects_inadequate_stack(monkeypatch):
     # A successful uv run that still leaves an old/missing mlx-vlm must NOT clear
     # chat-only: attempt_mlx_repair returns False so Train/Export stay disabled.
