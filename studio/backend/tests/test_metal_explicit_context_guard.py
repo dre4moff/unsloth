@@ -59,6 +59,7 @@ from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend  # noqa: E4
 
 _message = LlamaCppBackend._metal_context_overcommit_message
 _ENV = LlamaCppBackend.METAL_CTX_OVERCOMMIT_ENV
+_RELEASE_COMPAT_ENV = LlamaCppBackend.METAL_CTX_RELEASE_COMPAT_ENV
 _REAL_POPEN = subprocess.Popen
 
 # What the stubbed fit reports as the largest context that fits, and the GGUF's native
@@ -73,6 +74,7 @@ def _no_opt_out(monkeypatch):
     """A real environment read, so a host that has it set must not turn every refusal
     test silently green."""
     monkeypatch.delenv(_ENV, raising = False)
+    monkeypatch.delenv(_RELEASE_COMPAT_ENV, raising = False)
 
 
 def _write_gguf(path: Path) -> Path:
@@ -239,6 +241,11 @@ class TestTheRefusalItself:
         monkeypatch.setenv(_ENV, value)
         assert _message(32768, CEILING) is None
 
+    @pytest.mark.parametrize("value", ["1", "true", "yes", "TRUE", " 1 "])
+    def test_release_compatibility_abstains(self, monkeypatch, value):
+        monkeypatch.setenv(_RELEASE_COMPAT_ENV, value)
+        assert _message(32768, CEILING) is None
+
     @pytest.mark.parametrize("value", ["0", "no", "", "maybe"])
     def test_anything_else_still_refuses(self, monkeypatch, value):
         monkeypatch.setenv(_ENV, value)
@@ -280,6 +287,11 @@ class TestWhatLoadModelDoes:
 
     def test_the_opt_out_loads_it_anyway(self, tmp_path, monkeypatch):
         monkeypatch.setenv(_ENV, "1")
+        captured = _launch(tmp_path, monkeypatch, n_ctx = 32768)
+        assert _ctx_values(captured["cmd"])[-1] == "32768"
+
+    def test_release_compatibility_uses_the_released_explicit_context(self, tmp_path, monkeypatch):
+        monkeypatch.setenv(_RELEASE_COMPAT_ENV, "1")
         captured = _launch(tmp_path, monkeypatch, n_ctx = 32768)
         assert _ctx_values(captured["cmd"])[-1] == "32768"
 

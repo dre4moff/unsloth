@@ -8186,6 +8186,7 @@ class LlamaCppBackend:
         )
 
     METAL_CTX_OVERCOMMIT_ENV = "UNSLOTH_ALLOW_METAL_CTX_OVERCOMMIT"
+    METAL_CTX_RELEASE_COMPAT_ENV = "UNSLOTH_METAL_CTX_RELEASE_COMPAT"
 
     @staticmethod
     def _metal_context_overcommit_message(
@@ -8229,6 +8230,10 @@ class LlamaCppBackend:
 
         UNSLOTH_ALLOW_METAL_CTX_OVERCOMMIT=1 abstains, matching the host-offload opt-out,
         though the failure mode it re-enables is the whole machine rather than one app.
+
+        UNSLOTH_METAL_CTX_RELEASE_COMPAT=1 restores the behaviour shipped by the
+        2026.8.18 desktop backend: explicit contexts are handed to llama.cpp with
+        ``--fit on`` instead of being refused by this later guard.
         """
         if requested_ctx <= 0:
             return None
@@ -8239,6 +8244,14 @@ class LlamaCppBackend:
                 return None
             if requested_ctx <= max_available_ctx:
                 return None
+        if os.environ.get(
+            LlamaCppBackend.METAL_CTX_RELEASE_COMPAT_ENV, ""
+        ).strip().lower() in ("1", "true", "yes"):
+            logger.info(
+                "%s set: using the explicit-context behaviour from the 2026.8.18 release.",
+                LlamaCppBackend.METAL_CTX_RELEASE_COMPAT_ENV,
+            )
+            return None
         # the user's own opt-out, so read the real environment, not the curated child env
         if os.environ.get(LlamaCppBackend.METAL_CTX_OVERCOMMIT_ENV, "").strip().lower() in (
             "1",

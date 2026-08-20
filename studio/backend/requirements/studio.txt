@@ -1,6 +1,7 @@
 # Unsloth UI backend dependencies
 # typer / fastapi / uvicorn / ddgs / gguf all dropped Python 3.9 in their newest
 # release, so each pin splits on the same 3.10 marker used elsewhere in this file.
+psutil==7.2.2
 typer==0.27.1; python_version >= "3.10"
 typer==0.23.2; python_version < "3.10"
 fastapi==0.141.1; python_version >= "3.10"

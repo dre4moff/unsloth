@@ -2480,6 +2480,15 @@ pub(crate) fn apply_managed_cli_context_at(
     apply_managed_cli_context_inner(cmd, work_dir, &child_skipped_env())
 }
 
+const METAL_CTX_RELEASE_COMPAT_ENV: &str = "UNSLOTH_METAL_CTX_RELEASE_COMPAT";
+
+/// Match the explicit Metal-context behaviour shipped by the official 2026.8.18
+/// desktop backend. Later source revisions added a strict pre-launch refusal;
+/// the released app delegates fitting to llama.cpp instead.
+fn apply_desktop_backend_release_compat(cmd: &mut Command) {
+    cmd.env(METAL_CTX_RELEASE_COMPAT_ENV, "1");
+}
+
 fn apply_managed_cli_context_inner(
     cmd: &mut Command,
     work_dir: &std::path::Path,
@@ -3172,6 +3181,7 @@ pub fn start_backend(
         );
         return Err(msg);
     }
+    apply_desktop_backend_release_compat(&mut cmd);
 
     #[cfg(windows)]
     cmd.env(STUDIO_RUNTIME_GATE_HANDOFF_ENV, "1");
@@ -5523,6 +5533,18 @@ mod managed_cli_working_dir_tests {
         assert_eq!(envs(&once), envs(&twice));
         assert_eq!(twice.get_current_dir(), Some(work_dir.as_path()));
         fs::remove_dir_all(&work_dir).ok();
+    }
+
+    #[test]
+    fn desktop_backend_uses_the_released_metal_context_policy() {
+        let mut cmd = Command::new("unsloth");
+        apply_desktop_backend_release_compat(&mut cmd);
+        let value = cmd
+            .get_envs()
+            .find(|(key, _)| *key == METAL_CTX_RELEASE_COMPAT_ENV)
+            .and_then(|(_, value)| value)
+            .map(|value| value.to_string_lossy().into_owned());
+        assert_eq!(value.as_deref(), Some("1"));
     }
 
     #[test]
