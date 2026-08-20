@@ -20,6 +20,65 @@ sys.path.insert(0, str(STUDIO_DIR))
 import install_python_stack as ips
 
 
+class TestAppleSiliconMlxPhase:
+    """The desktop shell handoff must not skip the non-core MLX companions."""
+
+    @staticmethod
+    def _install_function() -> ast.FunctionDef:
+        tree = ast.parse((STUDIO_DIR / "install_python_stack.py").read_text(encoding = "utf-8"))
+        return next(
+            node
+            for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "install_python_stack"
+        )
+
+    @classmethod
+    def _mlx_branch(cls) -> ast.If:
+        return next(
+            node
+            for node in cls._install_function().body
+            if isinstance(node, ast.If)
+            and any(
+                isinstance(child, ast.Constant) and child.value == "MLX stack (Apple Silicon)"
+                for child in ast.walk(node)
+            )
+        )
+
+    @classmethod
+    def _run_branch(cls, *, is_mac_arm: bool, no_torch: bool, skip_base: bool):
+        installs = []
+        progress = []
+        module = ast.Module(body = [cls._mlx_branch()], type_ignores = [])
+        namespace = {
+            "IS_MAC_ARM": is_mac_arm,
+            "NO_TORCH": no_torch,
+            # Present deliberately: the phase must no longer consult it.
+            "skip_base": skip_base,
+            "_progress": progress.append,
+            "pip_install": lambda *args, **kwargs: installs.append((args, kwargs)),
+        }
+        exec(compile(module, "<mlx install phase>", "exec"), namespace)
+        return progress, installs
+
+    def test_shell_handoff_still_installs_mlx(self):
+        progress, installs = self._run_branch(
+            is_mac_arm = True, no_torch = False, skip_base = True
+        )
+        assert progress == ["MLX stack (Apple Silicon)"]
+        assert len(installs) == 1
+        assert {"mlx", "mlx-metal", "mlx-lm", "mlx-vlm"} <= set(installs[0][0])
+
+    def test_no_torch_and_non_apple_hosts_still_skip_mlx(self):
+        assert self._run_branch(is_mac_arm = True, no_torch = True, skip_base = True) == (
+            [],
+            [],
+        )
+        assert self._run_branch(is_mac_arm = False, no_torch = False, skip_base = True) == (
+            [],
+            [],
+        )
+
+
 class TestBuildUvCmdTorchBackend:
     """Verify _build_uv_cmd only adds --torch-backend when UV_TORCH_BACKEND is set."""
 

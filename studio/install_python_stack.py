@@ -4288,8 +4288,12 @@ def install_python_stack() -> int:
         base_total += 1  # ROCm torch check (step 2b), non-macOS
         if not IS_WINDOWS:
             base_total += 2  # flash-attn + torch final repair (step 13), Linux
-    if IS_MAC_ARM and not skip_base:
-        base_total += 1  # MLX stack, same gate as the step itself
+    if IS_MAC_ARM and not NO_TORCH:
+        # The shell installer hands core-package ownership over with
+        # SKIP_STUDIO_BASE=1, but it does not install the MLX companions.  Count
+        # this phase on that path too so a fresh desktop install is MLX-ready
+        # before the backend's first hardware detection.
+        base_total += 1
     base_requirements = _shared_base_requirements() if skip_base else None
     # Core packages and shared base requirements occupy one progress slot. A
     # shell-installer handoff skips that slot only while base.txt has no work.
@@ -4355,8 +4359,12 @@ def install_python_stack() -> int:
             )
 
     # macOS arm64: install MLX stack at latest (UV_OVERRIDE relaxes the
-    # mlx-vlm / mlx-lm transformers pin -- set at module load).
-    if IS_MAC_ARM and not skip_base:
+    # mlx-vlm / mlx-lm transformers pin -- set at module load).  This is not a
+    # core-package install, so it still belongs here when install.sh sets
+    # SKIP_STUDIO_BASE=1 after installing Unsloth itself.  Leaving it behind for
+    # the runtime self-heal makes the first desktop session start chat-only and
+    # race its own transformers warm-up.
+    if IS_MAC_ARM and not NO_TORCH:
         _progress("MLX stack (Apple Silicon)")
         pip_install(
             "Installing MLX stack (mlx + mlx-lm + mlx-vlm)",
