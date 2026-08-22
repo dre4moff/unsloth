@@ -142,9 +142,8 @@ export const ContextUsageBar: FC<
           </div>
           {percent !== null && percent > 85 ? (
             <div className="mt-1 max-w-64 text-ui-11 leading-snug text-muted-foreground/90">
-              Close to the context limit. Older turns are compacted
-              automatically before every local model pass, including later
-              tool-loop passes.
+              Close to the context limit. Long llama.cpp generations may shift
+              the active window while the processed-token total keeps growing.
             </div>
           ) : null}
         </div>

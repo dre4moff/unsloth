@@ -122,7 +122,7 @@ test("ordinary in-window usage has no separate processed-work row", () => {
   assert.equal(state.totalRowName, "Total");
 });
 
-test("the full-window help names repeated automatic compaction", () => {
+test("the full-window help distinguishes active and processed tokens", () => {
   const component = readFileSync(
     new URL(
       "../src/features/chat/components/context-usage-bar.tsx",
@@ -132,9 +132,9 @@ test("the full-window help names repeated automatic compaction", () => {
   );
   assert.match(
     component,
-    /compacted\s+automatically before every local model pass/,
+    /llama\.cpp generations may shift\s+the active window/,
   );
-  assert.match(component, /including later\s+tool-loop passes/);
+  assert.match(component, /processed-token total keeps growing/);
 });
 
 // external providers: usage is known, the window is not
