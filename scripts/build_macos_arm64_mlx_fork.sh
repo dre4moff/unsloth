@@ -4,8 +4,8 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
-app_version="0.1.800-mlx.7"
-backend_version="2026.8.18+mlxcompaction7"
+app_version="0.1.800-mlx.8"
+backend_version="2026.8.18+mlxcompaction8"
 rust_toolchain="1.89.0"
 wheel_name="unsloth-${backend_version}-py3-none-any.whl"
 resource_dir="$repo_root/studio/src-tauri/resources/backend"
