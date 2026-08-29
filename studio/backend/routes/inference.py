@@ -688,6 +688,18 @@ def _context_truncated_sse_chunk(completion_id: str, model_name: str, truncation
     return f"data: {json.dumps(data)}\n\n"
 
 
+def _turn_plan_sse_chunk(completion_id: str, model_name: str, plan: dict) -> str:
+    data = {
+        "id": completion_id,
+        "object": "chat.completion.chunk",
+        "created": int(time.time()),
+        "model": model_name,
+        "choices": [],
+        "turn_plan": plan,
+    }
+    return f"data: {json.dumps(data)}\n\n"
+
+
 def _accumulate_context_truncation(current: Optional[dict], event: dict) -> dict:
     incoming = {key: value for key, value in event.items() if key != "type"}
     if current is None:
@@ -3456,7 +3468,8 @@ def _build_tool_action_nudge(
     code_tools = [name for name in _LOCAL_CODE_TOOLS if name in tool_names]
     has_code = bool(code_tools)
     has_artifact = "render_html" in tool_names
-    if not (has_web or has_code or has_artifact):
+    has_plan = "update_plan" in tool_names
+    if not (has_web or has_code or has_artifact or has_plan):
         return ""
     if full_access_only:
         return _full_access_tip(code_tools) if (full_access and has_code) else ""
@@ -3472,6 +3485,13 @@ def _build_tool_action_nudge(
             tool_tip_parts.append(_full_access_tip(code_tools))
     if has_artifact:
         tool_tip_parts.append(_TOOL_ARTIFACT_TIP)
+    if has_plan:
+        tool_tip_parts.append(
+            "For multi-step work, call update_plan before ordinary tools, keep its visible "
+            "checklist current, and advance statuses only after real progress. If an approach "
+            "stalls, record a concrete replanned strategy and keep working; finish only when "
+            "complete or genuinely blocked with no practical alternative."
+        )
     return (
         f"The current date is {_date.today().isoformat()}. "
         + _TOOL_BASE_NUDGE
@@ -3647,6 +3667,11 @@ async def _select_request_tools(
     else:
         # Copy so the shared module-global tool list can't be mutated by callers.
         tools = list(ALL_TOOLS)
+    # update_plan is an internal Studio control tool, never part of the public
+    # "all built-ins" set. Admit it only for the explicit visible-planning mode.
+    tools = [t for t in tools if t["function"]["name"] != "update_plan"]
+    if bool(getattr(payload, "turn_planning", False)):
+        tools = tools + [t for t in ALL_TOOLS if t["function"]["name"] == "update_plan"]
     # Drop the RAG tool without a scope: nothing to search over.
     if not payload.rag_scope:
         tools = [t for t in tools if t["function"]["name"] != "search_knowledge_base"]
@@ -14808,6 +14833,7 @@ async def openai_chat_completions(
                     permission_mode = payload.permission_mode,
                     perf_callback = _gguf_perf_callback,
                     context_overflow = _rolling_context_policy(payload),
+                    turn_planning = bool(payload.turn_planning),
                 )
 
             _tool_admission_mode = "chat_tool_stream" if payload.stream else "chat_tool_nonstream"
@@ -15006,6 +15032,14 @@ async def openai_chat_completions(
 
                         if event["type"] == "context_truncated":
                             yield _context_truncated_sse_chunk(
+                                completion_id,
+                                model_name,
+                                {key: value for key, value in event.items() if key != "type"},
+                            )
+                            continue
+
+                        if event["type"] == "turn_plan":
+                            yield _turn_plan_sse_chunk(
                                 completion_id,
                                 model_name,
                                 {key: value for key, value in event.items() if key != "type"},
@@ -15596,6 +15630,16 @@ async def openai_chat_completions(
                                 yield f"data: {json.dumps(cumulative)}\n\n"
                             elif cumulative.get("type") == "context_truncated":
                                 yield _context_truncated_sse_chunk(
+                                    completion_id,
+                                    model_name,
+                                    {
+                                        key: value
+                                        for key, value in cumulative.items()
+                                        if key != "type"
+                                    },
+                                )
+                            elif cumulative.get("type") == "turn_plan":
+                                yield _turn_plan_sse_chunk(
                                     completion_id,
                                     model_name,
                                     {
@@ -16411,6 +16455,7 @@ async def openai_chat_completions(
                 reasoning_prefilled = _sf_reasoning_prefilled,
                 context_overflow = _rolling_context_policy(payload),
                 supports_tools = bool(_sf_features.get("supports_tools", False)),
+                turn_planning = bool(payload.turn_planning),
             )
 
         _sf_tool_sentinel = object()
@@ -16535,6 +16580,14 @@ async def openai_chat_completions(
 
                     if event["type"] == "context_truncated":
                         yield _context_truncated_sse_chunk(
+                            completion_id,
+                            model_name,
+                            {key: value for key, value in event.items() if key != "type"},
+                        )
+                        continue
+
+                    if event["type"] == "turn_plan":
+                        yield _turn_plan_sse_chunk(
                             completion_id,
                             model_name,
                             {key: value for key, value in event.items() if key != "type"},

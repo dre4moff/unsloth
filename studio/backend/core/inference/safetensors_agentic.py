@@ -630,6 +630,8 @@ def run_safetensors_tool_loop(
             active_tools: list[dict] = []
         else:
             active_tools = tool_controller.active_tools()
+            if turn_checkpoint is not None:
+                active_tools = turn_checkpoint.active_tools(active_tools)
             if not active_tools and not unrestricted_tools:
                 final_attempt_done = True
                 active_tools = []
@@ -1266,6 +1268,25 @@ def run_safetensors_tool_loop(
                 )
                 continue
 
+            if (
+                turn_checkpoint is not None
+                and turn_checkpoint.requires_plan_review
+                and decision.tool_name != "update_plan"
+            ):
+                deferred_noop_msgs.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "Review the visible execution plan before another ordinary tool. "
+                            "If work advanced, update its statuses. If it did not, revise the "
+                            "stalled step to a concrete different strategy and keep working. "
+                            "Finish only if complete or genuinely blocked with no practical "
+                            "alternative."
+                        ),
+                    }
+                )
+                continue
+
             if not assistant_appended:
                 assistant_msg["tool_calls"] = [decision.as_assistant_tool_call()]
                 # Merges into a resumed partial, so a continued turn that calls a tool
@@ -1278,6 +1299,15 @@ def run_safetensors_tool_loop(
                 assistant_appended = True
             else:
                 assistant_msg.setdefault("tool_calls", []).append(decision.as_assistant_tool_call())
+
+            if decision.tool_name == "update_plan" and turn_checkpoint is not None:
+                result = turn_checkpoint.update_plan(decision.arguments)
+                completion = tool_controller.record_result(decision, result)
+                conversation.append(completion.tool_message())
+                post_tool_reprompts = 0
+                last_reprompt_text = ""
+                yield {"type": "turn_plan", **turn_checkpoint.plan_snapshot()}
+                continue
 
             # Bypass wins here too, so a direct internal caller with both flags
             # never prompts. "auto" pauses only high-risk calls; "off" never
@@ -1416,6 +1446,8 @@ def run_safetensors_tool_loop(
             last_reprompt_text = ""
             if turn_checkpoint is not None:
                 turn_checkpoint.record_tool(decision.tool_name, decision.arguments, result)
+                if turn_checkpoint.planning_enabled:
+                    yield {"type": "turn_plan", **turn_checkpoint.plan_snapshot()}
             yield completion.tool_end_event()
             conversation.append(completion.tool_message())
 

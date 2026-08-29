@@ -23,6 +23,9 @@ Studio now creates a private turn checkpoint when a Studio chat run begins:
   needed.
 - Each tool that actually runs adds a bounded action row containing its name, selected arguments,
   outcome, and a short result excerpt.
+- Multi-step Studio tool turns also expose an internal `update_plan` tool. Its objective and
+  checklist are streamed into assistant-message metadata, rendered above the answer, and restored
+  when the conversation is reopened.
 - Raw model reasoning is never persisted or reinjected.
 - The checkpoint is mirrored while the response is active under
   `$UNSLOTH_STUDIO_HOME/share/active-turns/` with mode `0600`, then removed when the generator
@@ -36,10 +39,19 @@ Studio now creates a private turn checkpoint when a Studio chat run begins:
 The block labels the objective and tool excerpts as untrusted data, escapes its own delimiters,
 and tells the model to resume from completed work rather than repeat it.
 
-## Loop behavior
+## Visible plan and loop behavior
 
-- A real tool result resets the post-tool stall allowance because it starts a new productive
-  phase.
+- Before ordinary tool work begins, the model creates a short visible checklist with exactly one
+  `in_progress` step. Plan updates are internal control events, not ordinary tool cards, and do not
+  spend the user's tool-call budget.
+- Ordinary tool output is still operational evidence, but it no longer proves semantic progress.
+  After eight ordinary actions without a plan-status transition, Studio pauses ordinary tools and
+  requires a progress review.
+- If work advanced, the review marks the completed step and selects the next one. If it did not,
+  the model must replace the stalled approach with a concrete recovery strategy and continue.
+  Repeating the same plan or merely rewording it does not clear the review.
+- A final answer is appropriate only when the objective is complete or a real blocker has no
+  practical alternative; the review threshold is not an automatic stop condition.
 - A plan-without-action is nudged to call a tool or provide the complete final answer.
 - Exact repeated stalls are retried only up to the existing bounded recovery limit. Duplicate
   tool calls and consecutive no-progress guards remain in force, so this is not an unbounded
@@ -65,4 +77,8 @@ Backend tests cover:
 - recovery becoming available again after each new real tool action;
 - final answers with intent-like lead-ins not being re-prompted;
 - private checkpoint creation, delimiter neutralization, action injection, and cleanup;
+- visible-plan streaming and persistence across reloads;
+- plan creation before tools, periodic progress review, real status advancement, and concrete
+  recovery replanning after a stalled approach;
+- internal plan updates staying out of the normal tool-card and tool-budget paths;
 - preservation of RAG and approval behavior.

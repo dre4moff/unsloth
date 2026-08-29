@@ -586,6 +586,8 @@ export interface OpenAIChatCompletionsRequest {
   continue_final_message?: boolean;
   thinking?: { type: "disabled" | "enabled" } | null;
   enable_tools?: boolean | null;
+  /** Local Studio tool loop: stream and persist the visible execution checklist. */
+  turn_planning?: boolean;
   enabled_tools?: string[];
   /** Local models + enable_tools only. */
   mcp_enabled?: boolean;
@@ -684,6 +686,21 @@ export interface OpenAIChatChunkChoice {
   finish_reason?: string | null;
 }
 
+export interface TurnPlanStep {
+  step: string;
+  status: "pending" | "in_progress" | "completed";
+}
+
+export interface TurnPlan {
+  objective: string;
+  steps: TurnPlanStep[];
+  current_step: number;
+  completed_steps: number;
+  revision: number;
+  review_required: boolean;
+  status: "active" | "completed";
+}
+
 export interface OpenAIChatChunk {
   choices?: OpenAIChatChunkChoice[];
   usage?: {
@@ -692,6 +709,7 @@ export interface OpenAIChatChunk {
     total_tokens: number;
   };
   timings?: Record<string, number>;
+  turn_plan?: TurnPlan;
   context_truncated?: {
     dropped_messages: number;
     prompt_tokens_before?: number;

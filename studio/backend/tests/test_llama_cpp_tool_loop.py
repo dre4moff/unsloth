@@ -2026,6 +2026,85 @@ def test_disabled_tool_call_is_internal_noop(monkeypatch):
     assert "tool_calls" not in reasoning_turn
 
 
+def test_visible_plan_is_internal_in_the_gguf_loop(monkeypatch, tmp_path):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    plan_call = [
+        _sse(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_plan",
+                        "type": "function",
+                        "function": {
+                            "name": "update_plan",
+                            "arguments": json.dumps(
+                                {
+                                    "plan": [
+                                        {"step": "Inspect once", "status": "in_progress"},
+                                        {"step": "Answer", "status": "pending"},
+                                    ]
+                                }
+                            ),
+                        },
+                    }
+                ]
+            }
+        ),
+        _done(),
+    ]
+    search_call = [
+        _sse(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_search",
+                        "type": "function",
+                        "function": {
+                            "name": "web_search",
+                            "arguments": json.dumps({"query": "once"}),
+                        },
+                    }
+                ]
+            }
+        ),
+        _done(),
+    ]
+    final_stream = [_sse({"content": "Final answer."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [plan_call, search_call, final_stream], payloads)
+    calls = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        calls.append((name, arguments))
+        return "one result"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Inspect once and answer."}],
+            tools = [
+                {"type": "function", "function": {"name": "update_plan"}},
+                {"type": "function", "function": {"name": "web_search"}},
+            ],
+            max_tool_iterations = 2,
+            thread_id = "thread-plan",
+            session_id = "session-plan",
+            turn_planning = True,
+        )
+    )
+
+    assert calls == [("web_search", {"query": "once"})]
+    assert events[0]["type"] == "turn_plan"
+    assert any(event.get("type") == "turn_plan" and event.get("revision") == 1 for event in events)
+    assert not any(
+        event.get("type") in {"tool_start", "tool_end"}
+        and event.get("tool_name") == "update_plan"
+        for event in events
+    )
+
+
 def test_render_html_success_does_not_reprompt_render_html_intent(monkeypatch):
     """After render_html succeeds, do not force another render_html call.
 
