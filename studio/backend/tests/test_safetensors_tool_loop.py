@@ -3526,6 +3526,37 @@ class TestLoopRePrompt:
         contents = [e for e in events if e["type"] == "content"]
         assert contents and "sunny" in contents[-1]["text"].lower()
 
+    def test_post_tool_stall_recovers_and_the_budget_resets_after_each_action(self):
+        """The same planning sentence may recur after compaction in a later phase.
+
+        Each real result must reopen recovery instead of spending one global
+        post-tool nudge for the entire response.
+        """
+        stall = "Let me inspect the next part now."
+        loop, exec_fn = _make_loop(
+            turns = [
+                ['<tool_call>{"name":"web_search","arguments":{"query":"first"}}</tool_call>'],
+                [stall],
+                ['<tool_call>{"name":"web_search","arguments":{"query":"second"}}</tool_call>'],
+                [stall],
+                ['<tool_call>{"name":"web_search","arguments":{"query":"third"}}</tool_call>'],
+                ["Final answer after all three checks."],
+            ],
+            exec_results = ["one", "two", "three"],
+            max_tool_iterations = 4,
+            nudge_tool_calls = True,
+        )
+
+        events = _collect_events(loop)
+
+        assert exec_fn.calls == [
+            ("web_search", {"query": "first"}),
+            ("web_search", {"query": "second"}),
+            ("web_search", {"query": "third"}),
+        ]
+        contents = [event["text"] for event in events if event["type"] == "content"]
+        assert contents[-1] == "Final answer after all three checks."
+
 
 class TestLoopCanonicalHealKey:
     """Per-tool canonical heal key (``code``/``command``/``query``), mirroring GGUF."""
@@ -4483,7 +4514,7 @@ class TestPlanWithoutActionReprompt:
         assert any("I'll search again." in t for t in texts)
         assert not any("SHOULD NOT APPEAR" in t for t in texts)
 
-    def test_no_reprompt_after_a_tool_already_executed(self):
+    def test_post_tool_intent_gets_one_recovery_pass(self):
         loop, exec_fn = _make_loop(
             turns = [
                 ['<tool_call>{"name":"web_search","arguments":{"query":"cats"}}</tool_call>'],
@@ -4496,7 +4527,7 @@ class TestPlanWithoutActionReprompt:
         events = _collect_events(loop)
         assert [c[0] for c in exec_fn.calls] == ["web_search"]
         texts = [e["text"] for e in events if e["type"] == "content"]
-        assert not any("SHOULD NOT APPEAR" in t for t in texts)
+        assert any("SHOULD NOT APPEAR" in t for t in texts)
 
 
 # Routes-level python_tag strip (multi-line; stop on next sentinel)

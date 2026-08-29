@@ -20,6 +20,9 @@ the async server loop or the chat UI.
 Tool loops repeat the preflight before every model turn because tool results can grow
 the prompt after the first generation.
 
+Long responses also keep a bounded turn-local objective and action ledger across those
+repeated fits. See [Active turn continuity](ACTIVE_TURN_CONTINUITY.md).
+
 The context meter shows the live window occupancy. A single llama.cpp pass can report
 more processed prompt-plus-completion tokens than the configured window because its KV
 window shifts during a very long generation; the meter caps active occupancy at the

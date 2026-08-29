@@ -1965,6 +1965,9 @@ class InferenceOrchestrator:
             presence_penalty = presence_penalty,
         )
 
+    from core.inference.turn_checkpoint import turn_checkpointed as _turn_checkpointed
+
+    @_turn_checkpointed
     def generate_chat_completion_with_tools(
         self,
         messages: list,
@@ -1997,6 +2000,7 @@ class InferenceOrchestrator:
         reasoning_prefilled: bool = False,
         context_overflow: Optional[str] = None,
         supports_tools: bool = False,
+        turn_checkpoint = None,
         **_unused,
     ):
         """Run the safetensors agentic tool loop in the parent process,
@@ -2141,6 +2145,7 @@ class InferenceOrchestrator:
             context_length = _model_info.get("context_length"),
             max_tokens = max_new_tokens,
             context_fitter = _fit_iteration,
+            turn_checkpoint = turn_checkpoint,
         )
 
     def generate_with_adapter_control(

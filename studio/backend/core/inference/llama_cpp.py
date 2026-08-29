@@ -337,6 +337,7 @@ from core.inference.tool_call_parser import (
     is_short_intent_without_action as _is_short_intent_without_action,
     reprompt_to_act_message as _reprompt_to_act_message,
 )
+from core.inference.turn_checkpoint import continuation_nudge as _continuation_nudge
 from core.inference.tool_loop_controller import (
     ToolLoopController,
     append_deferred_nudges,
@@ -22512,6 +22513,9 @@ class LlamaCppBackend:
 
     # ── Tool-calling agentic loop ──────────────────────────────
 
+    from core.inference.turn_checkpoint import turn_checkpointed as _turn_checkpointed
+
+    @_turn_checkpointed
     def generate_chat_completion_with_tools(
         self,
         messages: list[dict],
@@ -22544,6 +22548,7 @@ class LlamaCppBackend:
         promote_reasoning_only: bool = True,
         perf_callback: Optional[Callable[[dict], None]] = None,
         context_overflow: Optional[str] = None,
+        turn_checkpoint = None,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -22815,26 +22820,35 @@ class LlamaCppBackend:
         _reprompt_count = 0
         # Budgeted apart from _reprompt_count so a pre-tool nudge can't spend it.
         _post_tool_reprompts = 0
-        # Text that triggered the last nudge; if the retry restates it, stop.
+        # Text that triggered the last nudge. Pre-tool exact repeats still stop;
+        # after a real action, repeated intent is treated as recoverable state loss.
         _last_reprompt_text = ""
         # Gates ``max_tool_iterations`` on real tool turns (not the enlarged range) so reserved
         # re-prompt slots don't extend the budget. Mirrors the safetensors guard.
         _tool_iters_done = 0
         _forced_tool_call_pending = False
 
-        # Reserve extra iterations for re-prompts so they don't consume the
-        # caller's tool-call budget; only when tool iterations are allowed.
-        _extra = _MAX_REPROMPTS + 1 if max_tool_iterations > 0 else 0
+        # Tool calls, not model passes, spend the user-facing budget. Reserve
+        # recovery room after every productive call; consecutive no-progress
+        # passes remain bounded by the per-phase cap below.
+        _max_model_passes = (
+            max_tool_iterations * (_MAX_REPROMPTS + 1) + _MAX_REPROMPTS + 1
+            if max_tool_iterations > 0
+            else 0
+        )
         # Owned by this request and dropped with it: the sweep below re-reads every earlier
         # turn on each iteration, and the rewrite is a function of the text alone (#7066).
         from core.inference.chat_template_helpers import sweep_cache as _sweep_cache
 
         _markup_cache = _sweep_cache()
-        for iteration in range(max_tool_iterations + _extra):
+        for iteration in range(_max_model_passes):
             if cancel_event is not None and cancel_event.is_set():
                 return
             # Whether this turn ran a tool; a no-op-only turn stays False and doesn't consume budget.
             _turn_executed_real_tool = False
+
+            if turn_checkpoint is not None:
+                conversation = turn_checkpoint.inject(conversation)
 
             active_tools = tool_controller.active_tools()
             if not active_tools:
@@ -22974,6 +22988,12 @@ class LlamaCppBackend:
                         }
                     # `fits` False too: it carries the does-not-fit diagnosis.
                     if truncation:
+                        if (
+                            turn_checkpoint is not None
+                            and truncation.get("fits")
+                            and (truncation.get("dropped_messages") or 0) > 0
+                        ):
+                            turn_checkpoint.record_compaction()
                         yield {"type": "context_truncated", **truncation}
                     _preflight_succeeded = True
                 except Exception as exc:
@@ -23738,15 +23758,19 @@ class LlamaCppBackend:
                             r"(?i)\brender[_\s-]?html\b",
                             _stripped,
                         )
-                        # A post-tool stall still deserves a nudge, but each retry
-                        # re-runs tools, so allow only one. RAG autoinject never lands
-                        # in history, so _auto keeps a doc-grounded turn from reading
-                        # as pre-tool (mirrors safetensors rag_autoinjected).
+                        # A post-tool stall still deserves a nudge. Every real tool
+                        # result opens a fresh phase and resets this bounded budget,
+                        # so a later compaction cannot strand a productive long turn.
+                        # RAG autoinject never lands in controller history, so _auto
+                        # keeps a doc-grounded turn from reading as pre-tool.
                         _already_acted = bool(_auto) or any(
                             record.executed for record in tool_controller.history
                         )
                         if _already_acted:
-                            _reprompt_used, _reprompt_cap = _post_tool_reprompts, 1
+                            _reprompt_used, _reprompt_cap = (
+                                _post_tool_reprompts,
+                                _MAX_REPROMPTS,
+                            )
                         else:
                             _reprompt_used, _reprompt_cap = _reprompt_count, _MAX_REPROMPTS
                         # None keeps the default-on re-prompt; False disables it.
@@ -23756,13 +23780,33 @@ class LlamaCppBackend:
                             and active_tools
                             and not _render_html_already_done_intent
                             and _reprompt_used < _reprompt_cap
-                            and not _is_reprompt_repeat(_stripped, _last_reprompt_text)
+                            and (
+                                (
+                                    not _already_acted
+                                    and not _is_reprompt_repeat(
+                                        _stripped,
+                                        _last_reprompt_text,
+                                    )
+                                )
+                                or (
+                                    _already_acted
+                                    and (
+                                        _post_tool_reprompts == 0
+                                        or _should_suppress_forced_no_tool_output(
+                                            _stripped,
+                                            _last_reprompt_text,
+                                        )
+                                    )
+                                )
+                            )
                             and _is_short_intent_without_action(_stripped)
                         ):
                             _reprompt_count += 1
                             if _already_acted:
                                 _post_tool_reprompts += 1
                             _last_reprompt_text = _stripped
+                            if turn_checkpoint is not None:
+                                turn_checkpoint.record_stall()
                             logger.info(
                                 f"Re-prompt {_reprompt_used + 1}/{_reprompt_cap}: "
                                 f"model responded without calling tools "
@@ -23786,7 +23830,11 @@ class LlamaCppBackend:
                             conversation.append(
                                 {
                                     "role": "user",
-                                    "content": _reprompt_to_act_message(tool_hint),
+                                    "content": (
+                                        _continuation_nudge(turn_checkpoint, tool_hint)
+                                        if _already_acted
+                                        else _reprompt_to_act_message(tool_hint)
+                                    ),
                                 }
                             )
                             # Accumulate tokens and timing from this iteration.
@@ -24247,10 +24295,16 @@ class LlamaCppBackend:
                             _kb_search_count += 1
                     completion = tool_controller.record_result(decision, result)
                     resolved_provisional_tool_call_ids.add(decision.tool_call_id)
-                    # A real execution opens the post-tool phase; carrying the pre-tool
-                    # stall text over would read the same sentence as a repeat and
-                    # swallow the one post-tool nudge.
+                    # A real execution opens a fresh post-tool phase. Its stall
+                    # recovery budget is independent of every earlier action.
+                    _post_tool_reprompts = 0
                     _last_reprompt_text = ""
+                    if turn_checkpoint is not None:
+                        turn_checkpoint.record_tool(
+                            decision.tool_name,
+                            decision.arguments,
+                            result,
+                        )
                     # A tool ran this turn, so it counts against the caller's budget.
                     _turn_executed_real_tool = True
                     yield completion.tool_end_event()
