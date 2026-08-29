@@ -3696,7 +3696,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   activeDiffusionCanvasByThreadId: {},
   autoHealToolCalls: true,
   nudgeToolCalls: true,
-  maxToolCallsPerMessage: 25,
+  // Long agent turns already have duplicate-call and consecutive-stall guards.
+  // Default to the existing "Max" sentinel so a productive turn is not cut off
+  // merely because it crossed an arbitrary number of tool calls; users can
+  // still choose a finite safety cap in Chat Settings.
+  maxToolCallsPerMessage: 9999,
   toolCallTimeout: 5,
   kvCacheDtype: null,
   mlxKvBits: null,

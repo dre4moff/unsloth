@@ -1547,6 +1547,13 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = "[x-unsloth] Enable tool calling for supported models",
     )
+    turn_planning: Optional[bool] = Field(
+        False,
+        description = (
+            "[x-unsloth] Studio local chats only: expose an internal update_plan tool, "
+            "stream its visible checklist, and require periodic plan progress during long turns."
+        ),
+    )
     enabled_tools: Optional[list[str]] = Field(
         None,
         description = (
@@ -1998,6 +2005,10 @@ class ChatCountTokensRequest(BaseModel):
     enable_tools: Optional[bool] = Field(
         None,
         description = "[x-unsloth] Enable tool calling for supported models",
+    )
+    turn_planning: Optional[bool] = Field(
+        False,
+        description = "[x-unsloth] Include Studio's visible update_plan schema in the count",
     )
     enabled_tools: Optional[list[str]] = Field(
         None,

@@ -934,6 +934,9 @@ class InferenceBackend:
             cancel_event = cancel_event, _adapter_state = use_adapter, **gen_kwargs
         )
 
+    from core.inference.turn_checkpoint import turn_checkpointed as _turn_checkpointed
+
+    @_turn_checkpointed
     def generate_chat_completion_with_tools(
         self,
         messages: list,
@@ -959,6 +962,8 @@ class InferenceBackend:
         rag_scope: Optional[dict] = None,
         presence_penalty: float = 0.0,
         reasoning_prefilled: bool = False,
+        turn_planning: bool = False,
+        turn_checkpoint = None,
     ):
         """Run an agentic tool loop on top of ``generate_chat_response``.
 
@@ -1042,6 +1047,7 @@ class InferenceBackend:
             # So a conversation search can be sized against what this model can hold.
             context_length = _model_info.get("context_length"),
             max_tokens = max_new_tokens,
+            turn_checkpoint = turn_checkpoint,
         )
 
     def generate_chat_response(

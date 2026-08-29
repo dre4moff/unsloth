@@ -63,6 +63,7 @@ from core.inference.chat_template_helpers import (
     trailing_assistant_text,
 )
 from core.inference.tool_stream_exec import stream_tool_execution
+from core.inference.turn_checkpoint import continuation_nudge
 from state.tool_approvals import (
     TOOL_REJECTED_MESSAGE,
     abort_tool_decision,
@@ -487,6 +488,7 @@ def run_safetensors_tool_loop(
     context_length: Optional[int] = None,
     max_tokens: Optional[int] = None,
     context_fitter: Optional[Callable[[list, list], dict]] = None,
+    turn_checkpoint = None,
 ) -> Generator[dict, None, None]:
     """Drive an agentic tool loop on top of a cumulative-text generator.
 
@@ -583,6 +585,9 @@ def run_safetensors_tool_loop(
     final_attempt_done = False
     next_call_id = 0
     reprompt_count = 0
+    # A productive tool result starts a new phase, so its recovery budget is
+    # independent of every earlier phase in this same response.
+    post_tool_reprompts = 0
     # Text that triggered the last nudge; if the retry restates it, stop (GGUF parity).
     last_reprompt_text = ""
     # A denied tool confirmation must not be answered with a plan-without-action
@@ -609,9 +614,13 @@ def run_safetensors_tool_loop(
     _state_streaming = 1
     _state_draining = 2
 
-    # Reserve re-prompt slots so they don't eat the caller's tool budget.
-    _extra_iters = MAX_ACT_REPROMPTS if max_tool_iterations > 0 else 0
-    for iteration in range(max_tool_iterations + _extra_iters + 1):
+    # Tool calls, not model passes, spend the user-facing tool budget. Reserve
+    # recovery room after every productive call; the per-phase stall cap below
+    # still bounds a model that makes no progress.
+    _max_model_passes = (
+        max_tool_iterations * (MAX_ACT_REPROMPTS + 1) + MAX_ACT_REPROMPTS + 1
+    )
+    for iteration in range(_max_model_passes):
         if cancel_event is not None and cancel_event.is_set():
             return
         # Whether this turn ran a tool; a no-op-only turn stays False and doesn't consume budget.
@@ -621,6 +630,8 @@ def run_safetensors_tool_loop(
             active_tools: list[dict] = []
         else:
             active_tools = tool_controller.active_tools()
+            if turn_checkpoint is not None:
+                active_tools = turn_checkpoint.active_tools(active_tools)
             if not active_tools and not unrestricted_tools:
                 final_attempt_done = True
                 active_tools = []
@@ -630,6 +641,9 @@ def run_safetensors_tool_loop(
         # Gate the markerless bare-JSON form on enabled names so an ordinary JSON answer isn't misread as a call.
         _enabled_tool_names = None if unrestricted_tools else set(_active_tool_names(active_tools))
 
+        if turn_checkpoint is not None:
+            conversation = turn_checkpoint.inject(conversation)
+
         # MLX keeps its tokenizer in the inference subprocess. The orchestrator
         # supplies a request-scoped fitter that measures this exact iteration,
         # archives any evicted turns, and returns the same metadata events as GGUF.
@@ -638,6 +652,13 @@ def run_safetensors_tool_loop(
                 fit_result = context_fitter(conversation, active_tools)
                 conversation = list(fit_result.get("messages") or conversation)
                 for fit_event in fit_result.get("events") or ():
+                    if (
+                        turn_checkpoint is not None
+                        and fit_event.get("type") == "context_truncated"
+                        and fit_event.get("fits")
+                        and (fit_event.get("dropped_messages") or 0) > 0
+                    ):
+                        turn_checkpoint.record_compaction()
                     yield fit_event
             except Exception:
                 # A policy failure must never break a chat; the model's normal
@@ -1026,31 +1047,51 @@ def run_safetensors_tool_loop(
                 enabled_tool_names = _enabled_tool_names,
             )
             if not safety_tc:
-                # Re-prompt once on plan-without-action, before any tool runs
-                # (GGUF loop parity). The retry is gated on nudge_tool_calls so
+                # Re-prompt on plan-without-action. Before any tool runs, exact
+                # repeats retain the established early-stop guard. After a tool
+                # runs, each productive phase gets its own bounded recovery
+                # budget, including repeated intent text: that is the state-loss
+                # shape seen after compaction and must not masquerade as success.
+                # The retry is gated on nudge_tool_calls so
                 # Unsloth callers (which send True) always nudge, while API callers
                 # who omit the flag keep today's no-reprompt behavior (opt-in).
                 intent_text = _reprompt_intent_text(
                     content_accum,
                     reasoning_prefilled = reasoning_prefilled,
                 )
+                # RAG autoinject is a hidden preflight retrieval, not a model-
+                # chosen action phase. Preserve its established no-reprompt
+                # behavior so a doc-grounded answer is not pushed into a
+                # redundant search. Real controller executions recover below.
+                already_acted = any(record.executed for record in tool_controller.history)
+                reprompts_used = post_tool_reprompts if already_acted else reprompt_count
+                repeat_allowed = (
+                    post_tool_reprompts == 0
+                    or is_reprompt_repeat(intent_text, last_reprompt_text)
+                    if already_acted
+                    else not is_reprompt_repeat(intent_text, last_reprompt_text)
+                )
                 if (
                     auto_heal_tool_calls
                     and nudge_tool_calls
                     and active_tools
-                    and reprompt_count < MAX_ACT_REPROMPTS
+                    and reprompts_used < MAX_ACT_REPROMPTS
                     and not rag_autoinjected
                     and not tool_denied
-                    and not any(record.executed for record in tool_controller.history)
-                    and not is_reprompt_repeat(intent_text, last_reprompt_text)
+                    and repeat_allowed
                     and is_short_intent_without_action(intent_text)
                 ):
-                    reprompt_count += 1
+                    if already_acted:
+                        post_tool_reprompts += 1
+                    else:
+                        reprompt_count += 1
                     last_reprompt_text = intent_text
+                    if turn_checkpoint is not None:
+                        turn_checkpoint.record_stall()
                     logger.info(
                         "Safetensors re-prompt %d/%d: model responded without "
                         "calling tools (%d chars)",
-                        reprompt_count,
+                        reprompts_used + 1,
                         MAX_ACT_REPROMPTS,
                         len(intent_text),
                     )
@@ -1065,7 +1106,11 @@ def run_safetensors_tool_loop(
                     conversation.append(
                         {
                             "role": "user",
-                            "content": reprompt_to_act_message(tool_hint),
+                            "content": (
+                                continuation_nudge(turn_checkpoint, tool_hint)
+                                if already_acted
+                                else reprompt_to_act_message(tool_hint)
+                            ),
                         }
                     )
                     # Blank first: it clears the badge and resets the route's per-turn
@@ -1223,6 +1268,25 @@ def run_safetensors_tool_loop(
                 )
                 continue
 
+            if (
+                turn_checkpoint is not None
+                and turn_checkpoint.requires_plan_review
+                and decision.tool_name != "update_plan"
+            ):
+                deferred_noop_msgs.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "Review the visible execution plan before another ordinary tool. "
+                            "If work advanced, update its statuses. If it did not, revise the "
+                            "stalled step to a concrete different strategy and keep working. "
+                            "Finish only if complete or genuinely blocked with no practical "
+                            "alternative."
+                        ),
+                    }
+                )
+                continue
+
             if not assistant_appended:
                 assistant_msg["tool_calls"] = [decision.as_assistant_tool_call()]
                 # Merges into a resumed partial, so a continued turn that calls a tool
@@ -1235,6 +1299,15 @@ def run_safetensors_tool_loop(
                 assistant_appended = True
             else:
                 assistant_msg.setdefault("tool_calls", []).append(decision.as_assistant_tool_call())
+
+            if decision.tool_name == "update_plan" and turn_checkpoint is not None:
+                result = turn_checkpoint.update_plan(decision.arguments)
+                completion = tool_controller.record_result(decision, result)
+                conversation.append(completion.tool_message())
+                post_tool_reprompts = 0
+                last_reprompt_text = ""
+                yield {"type": "turn_plan", **turn_checkpoint.plan_snapshot()}
+                continue
 
             # Bypass wins here too, so a direct internal caller with both flags
             # never prompts. "auto" pauses only high-risk calls; "off" never
@@ -1369,6 +1442,12 @@ def run_safetensors_tool_loop(
                 provisional_resolved = True
             # A tool ran this turn, so it counts against the caller's budget.
             _turn_executed_real_tool = True
+            post_tool_reprompts = 0
+            last_reprompt_text = ""
+            if turn_checkpoint is not None:
+                turn_checkpoint.record_tool(decision.tool_name, decision.arguments, result)
+                if turn_checkpoint.planning_enabled:
+                    yield {"type": "turn_plan", **turn_checkpoint.plan_snapshot()}
             yield completion.tool_end_event()
             conversation.append(completion.tool_message())
 

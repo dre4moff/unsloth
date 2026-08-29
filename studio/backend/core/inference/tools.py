@@ -9801,6 +9801,65 @@ SEARCH_CONVERSATION_TOOL = {
     },
 }
 
+UPDATE_PLAN_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "update_plan",
+        "description": (
+            "Create or update the visible execution checklist for this response. "
+            "For a multi-step task, call this before ordinary tools, keep exactly one "
+            "step in_progress, and update statuses only when work really advances. "
+            "At a progress review, use review=progressed if a status advanced; otherwise "
+            "use review=replanned, briefly explain a concrete different strategy, revise "
+            "the stalled step, and keep working. Use review=blocked only after considering "
+            "practical alternatives. Do not include private reasoning. Repeating the same "
+            "plan is not progress."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "explanation": {
+                    "type": "string",
+                    "description": (
+                        "Short user-visible reason for a review or strategy change. Required "
+                        "when review is replanned."
+                    ),
+                },
+                "review": {
+                    "type": "string",
+                    "enum": ["progressed", "replanned", "blocked"],
+                    "description": (
+                        "Optional review outcome: progressed for real status progress, replanned "
+                        "for a concrete new route after a stall, blocked only when no practical "
+                        "route remains."
+                    ),
+                },
+                "plan": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 10,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "step": {
+                                "type": "string",
+                                "description": "Concise user-visible action or milestone.",
+                            },
+                            "status": {
+                                "type": "string",
+                                "enum": ["pending", "in_progress", "completed"],
+                            },
+                        },
+                        "required": ["step", "status"],
+                    },
+                    "description": "The complete current checklist, not only changed rows.",
+                },
+            },
+            "required": ["plan"],
+        },
+    },
+}
+
 ALL_TOOLS = [
     WEB_SEARCH_TOOL,
     PYTHON_TOOL,
@@ -9809,6 +9868,7 @@ ALL_TOOLS = [
     RENDER_HTML_TOOL,
     SEARCH_KNOWLEDGE_BASE_TOOL,
     SEARCH_CONVERSATION_TOOL,
+    UPDATE_PLAN_TOOL,
 ]
 
 

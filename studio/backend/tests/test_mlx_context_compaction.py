@@ -269,3 +269,169 @@ def test_safetensors_loop_refits_after_each_tool_result_in_the_same_response():
     assert fits[1][-1]["role"] == "tool"
     assert fits[1][-1]["content"] == "a large tool result"
     assert any(event.get("type") == "content" for event in events)
+
+
+def test_safetensors_loop_can_compact_twice_in_one_response_and_continue():
+    """A second overflow is another checkpoint event, not the end of the turn."""
+    from core.inference.safetensors_agentic import run_safetensors_tool_loop
+
+    fit_count = 0
+    turns = iter(
+        [
+            '<tool_call>{"name":"search","arguments":{"query":"first"}}</tool_call>',
+            '<tool_call>{"name":"search","arguments":{"query":"second"}}</tool_call>',
+            "finished after two compactions",
+        ]
+    )
+
+    def fitter(conversation, _active_tools):
+        nonlocal fit_count
+        fit_count += 1
+        events = []
+        if fit_count <= 2:
+            events.append(
+                {
+                    "type": "context_truncated",
+                    "fits": True,
+                    "checkpoint": True,
+                    "checkpoint_started": True,
+                    "dropped_messages": fit_count,
+                }
+            )
+        return {"messages": conversation, "events": events}
+
+    def single_turn(_conversation, *, active_tools = None):
+        yield next(turns)
+
+    calls = []
+
+    def execute(name, arguments, **_kwargs):
+        calls.append((name, arguments))
+        return f"result {len(calls)}"
+
+    events = list(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [{"role": "user", "content": "keep working until done"}],
+            tools = [{"type": "function", "function": {"name": "search"}}],
+            execute_tool = execute,
+            max_tool_iterations = 3,
+            nudge_tool_calls = True,
+            context_fitter = fitter,
+        )
+    )
+
+    truncations = [event for event in events if event.get("type") == "context_truncated"]
+    assert len(truncations) == 2
+    assert len(calls) == 2
+    assert fit_count == 3
+    assert any(
+        event.get("type") == "content"
+        and "finished after two compactions" in event.get("text", "")
+        for event in events
+    )
+
+
+def test_safetensors_loop_injects_the_action_ledger_on_the_next_model_pass(
+    monkeypatch, tmp_path
+):
+    from core.inference.safetensors_agentic import run_safetensors_tool_loop
+    from core.inference.turn_checkpoint import ActiveTurnCheckpoint
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    state = ActiveTurnCheckpoint.start(
+        [{"role": "user", "content": "Inspect once, then answer."}],
+        thread_id = "thread",
+        session_id = "session",
+    )
+    assert state is not None
+
+    seen = []
+    turns = iter(
+        [
+            '<tool_call>{"name":"search","arguments":{"query":"only once"}}</tool_call>',
+            "final answer",
+        ]
+    )
+
+    def single_turn(conversation, *, active_tools = None):
+        seen.append([dict(message) for message in conversation])
+        yield next(turns)
+
+    list(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [{"role": "user", "content": "Inspect once, then answer."}],
+            tools = [{"type": "function", "function": {"name": "search"}}],
+            execute_tool = lambda *_args, **_kwargs: "one result",
+            max_tool_iterations = 2,
+            nudge_tool_calls = True,
+            turn_checkpoint = state,
+        )
+    )
+
+    assert seen[0][0]["role"] == "user"
+    assert seen[1][0]["role"] == "system"
+    assert "CURRENT OBJECTIVE" in seen[1][0]["content"]
+    assert 'search {"query": "only once"}' in seen[1][0]["content"]
+    state.finish("completed")
+
+
+def test_safetensors_plan_tool_is_internal_and_does_not_spend_an_action(monkeypatch, tmp_path):
+    from core.inference.safetensors_agentic import run_safetensors_tool_loop
+    from core.inference.turn_checkpoint import ActiveTurnCheckpoint
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    state = ActiveTurnCheckpoint.start(
+        [{"role": "user", "content": "Inspect once and answer."}],
+        thread_id = "thread-plan",
+        session_id = "session-plan",
+        planning_enabled = True,
+    )
+    assert state is not None
+
+    turns = iter(
+        [
+            '<tool_call>{"name":"update_plan","arguments":{"plan":['
+            '{"step":"Inspect once","status":"in_progress"},'
+            '{"step":"Answer","status":"pending"}]}}</tool_call>',
+            '<tool_call>{"name":"search","arguments":{"query":"once"}}</tool_call>',
+            "final answer",
+        ]
+    )
+    calls = []
+
+    def single_turn(_conversation, *, active_tools = None):
+        yield next(turns)
+
+    def execute(name, arguments, **_kwargs):
+        calls.append((name, arguments))
+        return "one result"
+
+    events = list(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [{"role": "user", "content": "Inspect once and answer."}],
+            tools = [
+                {"type": "function", "function": {"name": "update_plan"}},
+                {"type": "function", "function": {"name": "search"}},
+            ],
+            execute_tool = execute,
+            max_tool_iterations = 2,
+            nudge_tool_calls = True,
+            turn_checkpoint = state,
+        )
+    )
+
+    assert calls == [("search", {"query": "once"})]
+    assert any(event.get("type") == "turn_plan" for event in events)
+    assert not any(
+        event.get("type") in ("tool_start", "tool_end")
+        and event.get("tool_name") == "update_plan"
+        for event in events
+    )
+    assert any(
+        event.get("type") == "tool_start" and event.get("tool_name") == "search"
+        for event in events
+    )
+    state.finish("completed")

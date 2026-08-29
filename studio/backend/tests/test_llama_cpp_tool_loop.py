@@ -2026,6 +2026,85 @@ def test_disabled_tool_call_is_internal_noop(monkeypatch):
     assert "tool_calls" not in reasoning_turn
 
 
+def test_visible_plan_is_internal_in_the_gguf_loop(monkeypatch, tmp_path):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    plan_call = [
+        _sse(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_plan",
+                        "type": "function",
+                        "function": {
+                            "name": "update_plan",
+                            "arguments": json.dumps(
+                                {
+                                    "plan": [
+                                        {"step": "Inspect once", "status": "in_progress"},
+                                        {"step": "Answer", "status": "pending"},
+                                    ]
+                                }
+                            ),
+                        },
+                    }
+                ]
+            }
+        ),
+        _done(),
+    ]
+    search_call = [
+        _sse(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_search",
+                        "type": "function",
+                        "function": {
+                            "name": "web_search",
+                            "arguments": json.dumps({"query": "once"}),
+                        },
+                    }
+                ]
+            }
+        ),
+        _done(),
+    ]
+    final_stream = [_sse({"content": "Final answer."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [plan_call, search_call, final_stream], payloads)
+    calls = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        calls.append((name, arguments))
+        return "one result"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Inspect once and answer."}],
+            tools = [
+                {"type": "function", "function": {"name": "update_plan"}},
+                {"type": "function", "function": {"name": "web_search"}},
+            ],
+            max_tool_iterations = 2,
+            thread_id = "thread-plan",
+            session_id = "session-plan",
+            turn_planning = True,
+        )
+    )
+
+    assert calls == [("web_search", {"query": "once"})]
+    assert events[0]["type"] == "turn_plan"
+    assert any(event.get("type") == "turn_plan" and event.get("revision") == 1 for event in events)
+    assert not any(
+        event.get("type") in {"tool_start", "tool_end"}
+        and event.get("tool_name") == "update_plan"
+        for event in events
+    )
+
+
 def test_render_html_success_does_not_reprompt_render_html_intent(monkeypatch):
     """After render_html succeeds, do not force another render_html call.
 
@@ -2222,8 +2301,8 @@ def test_post_tool_stall_still_nudged_after_a_pre_tool_reprompt(monkeypatch):
     assert content_texts[-1] == "Final answer: the square is red."
 
 
-def test_post_tool_reprompt_budget_is_one(monkeypatch):
-    """The post-tool nudge fires once; a second stall is surrendered as the answer."""
+def test_post_tool_reprompt_recovers_through_repeated_stalls(monkeypatch):
+    """Repeated post-tool plans get bounded recovery instead of silent completion."""
 
     streams = [
         [
@@ -2245,7 +2324,9 @@ def test_post_tool_reprompt_budget_is_one(monkeypatch):
             _done(),
         ],
         [_sse({"content": "Let me summarize the results."}), _done()],
-        [_sse({"content": "Now I will check the sources."}), _done()],
+        [_sse({"content": "Let me summarize the results."}), _done()],
+        [_sse({"content": "Let me summarize the results."}), _done()],
+        [_sse({"content": "Final answer: the square is red."}), _done()],
     ]
     payloads: list[dict] = []
     backend = _make_backend(monkeypatch, streams, payloads)
@@ -2270,7 +2351,7 @@ def test_post_tool_reprompt_budget_is_one(monkeypatch):
         }
     ]
 
-    list(
+    events = list(
         backend.generate_chat_completion_with_tools(
             messages = [{"role": "user", "content": "Make a red square."}],
             tools = tools,
@@ -2278,7 +2359,84 @@ def test_post_tool_reprompt_budget_is_one(monkeypatch):
         )
     )
 
-    assert len(payloads) == 3
+    assert len(payloads) == 5
+    assert any(
+        event.get("type") == "content" and "Final answer" in event.get("text", "")
+        for event in events
+    )
+
+
+def test_post_tool_reprompt_budget_resets_after_each_real_action(monkeypatch):
+    """A later phase can recover even if an earlier phase already used its nudge."""
+
+    def tool_call(call_id, query):
+        return [
+            _sse(
+                {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": call_id,
+                            "type": "function",
+                            "function": {
+                                "name": "web_search",
+                                "arguments": json.dumps({"query": query}),
+                            },
+                        }
+                    ]
+                }
+            ),
+            _done(),
+        ]
+
+    stall = [_sse({"content": "Let me inspect the next part now."}), _done()]
+    streams = [
+        tool_call("call_first", "first"),
+        stall,
+        tool_call("call_second", "second"),
+        stall,
+        tool_call("call_third", "third"),
+        [_sse({"content": "Final answer after all three checks."}), _done()],
+    ]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, streams, payloads)
+
+    calls: list[tuple[str, dict]] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        calls.append((name, arguments))
+        return f"result {len(calls)}"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "web_search",
+                "description": "Search the web.",
+                "parameters": {"type": "object"},
+            },
+        }
+    ]
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Keep working until done."}],
+            tools = tools,
+            max_tool_iterations = 4,
+        )
+    )
+
+    assert calls == [
+        ("web_search", {"query": "first"}),
+        ("web_search", {"query": "second"}),
+        ("web_search", {"query": "third"}),
+    ]
+    assert len(payloads) == 6
+    assert any(
+        event.get("type") == "content" and "Final answer" in event.get("text", "")
+        for event in events
+    )
 
 
 def test_repeat_guard_resets_after_a_tool_runs(monkeypatch):
