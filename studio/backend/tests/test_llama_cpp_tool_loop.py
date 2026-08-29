@@ -2222,8 +2222,8 @@ def test_post_tool_stall_still_nudged_after_a_pre_tool_reprompt(monkeypatch):
     assert content_texts[-1] == "Final answer: the square is red."
 
 
-def test_post_tool_reprompt_budget_is_one(monkeypatch):
-    """The post-tool nudge fires once; a second stall is surrendered as the answer."""
+def test_post_tool_reprompt_recovers_through_repeated_stalls(monkeypatch):
+    """Repeated post-tool plans get bounded recovery instead of silent completion."""
 
     streams = [
         [
@@ -2245,7 +2245,9 @@ def test_post_tool_reprompt_budget_is_one(monkeypatch):
             _done(),
         ],
         [_sse({"content": "Let me summarize the results."}), _done()],
-        [_sse({"content": "Now I will check the sources."}), _done()],
+        [_sse({"content": "Let me summarize the results."}), _done()],
+        [_sse({"content": "Let me summarize the results."}), _done()],
+        [_sse({"content": "Final answer: the square is red."}), _done()],
     ]
     payloads: list[dict] = []
     backend = _make_backend(monkeypatch, streams, payloads)
@@ -2270,7 +2272,7 @@ def test_post_tool_reprompt_budget_is_one(monkeypatch):
         }
     ]
 
-    list(
+    events = list(
         backend.generate_chat_completion_with_tools(
             messages = [{"role": "user", "content": "Make a red square."}],
             tools = tools,
@@ -2278,7 +2280,84 @@ def test_post_tool_reprompt_budget_is_one(monkeypatch):
         )
     )
 
-    assert len(payloads) == 3
+    assert len(payloads) == 5
+    assert any(
+        event.get("type") == "content" and "Final answer" in event.get("text", "")
+        for event in events
+    )
+
+
+def test_post_tool_reprompt_budget_resets_after_each_real_action(monkeypatch):
+    """A later phase can recover even if an earlier phase already used its nudge."""
+
+    def tool_call(call_id, query):
+        return [
+            _sse(
+                {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": call_id,
+                            "type": "function",
+                            "function": {
+                                "name": "web_search",
+                                "arguments": json.dumps({"query": query}),
+                            },
+                        }
+                    ]
+                }
+            ),
+            _done(),
+        ]
+
+    stall = [_sse({"content": "Let me inspect the next part now."}), _done()]
+    streams = [
+        tool_call("call_first", "first"),
+        stall,
+        tool_call("call_second", "second"),
+        stall,
+        tool_call("call_third", "third"),
+        [_sse({"content": "Final answer after all three checks."}), _done()],
+    ]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, streams, payloads)
+
+    calls: list[tuple[str, dict]] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        calls.append((name, arguments))
+        return f"result {len(calls)}"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "web_search",
+                "description": "Search the web.",
+                "parameters": {"type": "object"},
+            },
+        }
+    ]
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Keep working until done."}],
+            tools = tools,
+            max_tool_iterations = 4,
+        )
+    )
+
+    assert calls == [
+        ("web_search", {"query": "first"}),
+        ("web_search", {"query": "second"}),
+        ("web_search", {"query": "third"}),
+    ]
+    assert len(payloads) == 6
+    assert any(
+        event.get("type") == "content" and "Final answer" in event.get("text", "")
+        for event in events
+    )
 
 
 def test_repeat_guard_resets_after_a_tool_runs(monkeypatch):

@@ -20,6 +20,9 @@ the async server loop or the chat UI.
 Tool loops repeat the preflight before every model turn because tool results can grow
 the prompt after the first generation.
 
+Long responses also keep a bounded turn-local objective and action ledger across those
+repeated fits. See [Active turn continuity](ACTIVE_TURN_CONTINUITY.md).
+
 ## Compaction behavior
 
 Studio reuses one policy for GGUF and MLX:
