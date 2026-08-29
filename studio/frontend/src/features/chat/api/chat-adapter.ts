@@ -1709,6 +1709,7 @@ export async function buildLocalTokenCountExtras(
 
   return {
     enable_tools: true,
+    turn_planning: true,
     // Auto-Heal off leaves leaked tool markup in the real prompt, so the count keeps it.
     auto_heal_tool_calls: autoHealToolCalls,
     // Full access swaps the python/terminal descriptions and adds a nudge
@@ -4821,6 +4822,7 @@ export function createOpenAIStreamAdapter(
       let codexReasoningLedger: CodexReasoningLedger = { byToolCall: {} };
       let codexRoundToolCallIds: string[] = [];
       let contextTruncation: OpenAIChatChunk["context_truncated"];
+      let turnPlan: OpenAIChatChunk["turn_plan"];
 
       const liveAssistantContent = () =>
         buildAssistantContent(mergeContinuation(cumulativeText));
@@ -4831,6 +4833,7 @@ export function createOpenAIStreamAdapter(
         ...reasoningDurationTracker.metadata(),
         openaiCodexReasoning: codexReasoningLedger,
         contextTruncation,
+        turnPlan,
         incomplete: { reason: "cancelled" as const },
       });
       // Why this turn stopped early. Drives the Continue affordance.
@@ -5561,6 +5564,7 @@ export function createOpenAIStreamAdapter(
               projectRagEnabled)
               ? {
                   enable_tools: true,
+                  turn_planning: true,
                   enabled_tools: [
                     // First so retrieval is the primary tool when Docs is on.
                     ...(ragEnabled || projectRagEnabled
@@ -5692,6 +5696,15 @@ export function createOpenAIStreamAdapter(
                     duration: 8000,
                   });
                 }
+                continue;
+              }
+
+              if (chunk.turn_plan) {
+                turnPlan = chunk.turn_plan;
+                yield {
+                  content: liveAssistantContent(),
+                  metadata: { custom: liveCustom() },
+                };
                 continue;
               }
 
@@ -6737,6 +6750,7 @@ export function createOpenAIStreamAdapter(
 
               openaiCodexReasoning: codexReasoningLedger,
               contextTruncation,
+              turnPlan,
               incomplete: incompleteReason ? { reason: incompleteReason } : undefined,
               // Persisted refusal flag driving the two-pass prune.
               anthropicRefusal: anthropicRefusalSeen || undefined,
@@ -6847,6 +6861,7 @@ export function createOpenAIStreamAdapter(
                 custom: {
                   ...reasoningDurationTracker.metadata(),
                   contextTruncation,
+                  turnPlan,
                   // This partial is unfinished too, so it also offers Continue.
                   incomplete: {
                     reason:

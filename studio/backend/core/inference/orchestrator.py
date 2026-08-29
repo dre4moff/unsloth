@@ -2000,6 +2000,7 @@ class InferenceOrchestrator:
         reasoning_prefilled: bool = False,
         context_overflow: Optional[str] = None,
         supports_tools: bool = False,
+        turn_planning: bool = False,
         turn_checkpoint = None,
         **_unused,
     ):

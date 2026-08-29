@@ -45,6 +45,9 @@ _BLOCK = re.compile(
 _DELIMITERS = re.compile(r"</?active_turn_checkpoint>", re.IGNORECASE)
 _MAX_OBJECTIVE_CHARS = 4000
 _MAX_ACTIONS = 8
+_MAX_PLAN_STEPS = 10
+_MAX_PLAN_STEP_CHARS = 240
+_MAX_ACTIONS_WITHOUT_PLAN_PROGRESS = 8
 _MAX_ARGUMENT_CHARS = 280
 _MAX_RESULT_CHARS = 320
 _STALE_SECONDS = 24 * 60 * 60
@@ -152,6 +155,12 @@ class TurnAction:
 
 
 @dataclass
+class TurnPlanStep:
+    step: str
+    status: str
+
+
+@dataclass
 class ActiveTurnCheckpoint:
     objective: str
     thread_id: Optional[str] = None
@@ -161,6 +170,12 @@ class ActiveTurnCheckpoint:
     compactions: int = 0
     stalls: int = 0
     actions: list[TurnAction] = field(default_factory=list)
+    planning_enabled: bool = False
+    plan_initialized: bool = False
+    plan_revision: int = 0
+    plan_steps: list[TurnPlanStep] = field(default_factory=list)
+    actions_since_plan_progress: int = 0
+    progress_review_required: bool = False
     _path: Optional[Path] = field(default=None, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
@@ -171,13 +186,23 @@ class ActiveTurnCheckpoint:
         *,
         thread_id: Optional[str] = None,
         session_id: Optional[str] = None,
+        planning_enabled: bool = False,
     ) -> Optional["ActiveTurnCheckpoint"]:
         objective = _latest_user_objective(messages)
         # Public API calls without a Studio identity keep their existing prompt
         # byte-for-byte. Studio chat sends at least one of these identifiers.
         if not objective or not (thread_id or session_id):
             return None
-        state = cls(objective = objective, thread_id = thread_id, session_id = session_id)
+        state = cls(
+            objective = objective,
+            thread_id = thread_id,
+            session_id = session_id,
+            planning_enabled = planning_enabled,
+        )
+        if planning_enabled:
+            state.plan_steps = [
+                TurnPlanStep(step = "Create an execution plan for this request", status = "in_progress")
+            ]
         state._path = state._new_path()
         state._remove_stale_files()
         state._persist("active")
@@ -211,7 +236,7 @@ class ActiveTurnCheckpoint:
 
     def _payload(self, status: str) -> dict[str, Any]:
         return {
-            "version": 1,
+            "version": 2,
             "status": status,
             "run_id": self.run_id,
             "thread_id": self.thread_id,
@@ -222,6 +247,12 @@ class ActiveTurnCheckpoint:
             "compactions": self.compactions,
             "stalls": self.stalls,
             "actions": [asdict(action) for action in self.actions],
+            "planning_enabled": self.planning_enabled,
+            "plan_initialized": self.plan_initialized,
+            "plan_revision": self.plan_revision,
+            "plan_steps": [asdict(step) for step in self.plan_steps],
+            "actions_since_plan_progress": self.actions_since_plan_progress,
+            "progress_review_required": self.progress_review_required,
         }
 
     def _persist(self, status: str = "active") -> None:
@@ -258,16 +289,38 @@ class ActiveTurnCheckpoint:
             )
         else:
             rows = "- No tool action has completed yet."
+        plan = ""
+        if self.planning_enabled:
+            plan_rows = "\n".join(
+                f"- [{step.status}] {step.step}" for step in self.plan_steps
+            )
+            review = (
+                "\n- Progress review is REQUIRED now. Before another ordinary tool, use "
+                "update_plan either to record a real status transition or to replace the stalled "
+                "approach with a concrete recovery strategy. Give a final answer only if the "
+                "objective is complete or a real blocker leaves no practical way forward."
+                if self.requires_plan_review
+                else ""
+            )
+            plan = (
+                "\n\nVISIBLE EXECUTION PLAN (keep this checklist current with update_plan):\n"
+                f"{plan_rows}{review}"
+            )
         return (
             f"{_OPEN}\n{_HEADER}\n\n"
             f"CURRENT OBJECTIVE (keep it intact until this response is complete):\n{objective}\n\n"
-            f"RECENT COMPLETED ACTIONS (do not repeat without a concrete reason):\n{rows}\n\n"
+            f"RECENT COMPLETED ACTIONS (do not repeat without a concrete reason):\n{rows}"
+            f"{plan}\n\n"
             "CONTINUATION CONTRACT:\n"
             "- Continue until the objective is satisfied and verified, the user cancels, or a real "
             "blocker requires user input.\n"
             "- A sentence saying what you will do is not completion. Call an available tool now, or "
             "give the complete final answer if no tool is needed.\n"
             "- After context compaction, resume from this checkpoint rather than restarting the task.\n"
+            "- For a multi-step tool task, create the visible checklist before acting, update it "
+            "when a step changes state, and never claim progress merely because another tool ran. "
+            "If a step stalls, revise the approach and keep working; stop only for completion or "
+            "a genuine blocker with no practical alternative.\n"
             f"{_CLOSE}"
         )
 
@@ -277,11 +330,138 @@ class ActiveTurnCheckpoint:
         # execution state exists; the private file is nevertheless active from
         # the moment the response starts. Once work or a compaction occurs, the
         # ledger becomes information the transcript alone cannot safely retain.
-        if not (self.actions or self.compactions or self.stalls):
+        if not (self.planning_enabled or self.actions or self.compactions or self.stalls):
             return list(messages)
         return _replace_block(messages, self.render())
 
-    def record_tool(self, tool: str, arguments: Any, result: Any) -> None:
+    @property
+    def requires_plan_review(self) -> bool:
+        return self.planning_enabled and (
+            not self.plan_initialized or self.progress_review_required
+        )
+
+    def active_tools(self, tools: list[dict]) -> list[dict]:
+        """Expose only the plan tool while a plan/progress review is required."""
+        if not self.requires_plan_review:
+            return tools
+        return [
+            tool
+            for tool in tools
+            if isinstance(tool, dict)
+            and isinstance(tool.get("function"), dict)
+            and tool["function"].get("name") == "update_plan"
+        ]
+
+    def plan_snapshot(self) -> dict[str, Any]:
+        steps = [asdict(step) for step in self.plan_steps]
+        current = next(
+            (index for index, step in enumerate(self.plan_steps) if step.status == "in_progress"),
+            next(
+                (index for index, step in enumerate(self.plan_steps) if step.status == "pending"),
+                max(0, len(self.plan_steps) - 1),
+            ),
+        )
+        completed = sum(step.status == "completed" for step in self.plan_steps)
+        return {
+            "objective": _one_line(self.objective, 500),
+            "steps": steps,
+            "current_step": current,
+            "completed_steps": completed,
+            "revision": self.plan_revision,
+            "review_required": self.requires_plan_review,
+            "status": "completed" if steps and completed == len(steps) else "active",
+        }
+
+    @staticmethod
+    def _normalize_plan_steps(arguments: Any) -> tuple[list[TurnPlanStep], Optional[str]]:
+        if not isinstance(arguments, dict):
+            return [], "Error: update_plan arguments must be an object."
+        raw_steps = arguments.get("plan", arguments.get("steps"))
+        if not isinstance(raw_steps, list) or not raw_steps:
+            return [], "Error: update_plan requires a non-empty plan array."
+        if len(raw_steps) > _MAX_PLAN_STEPS:
+            return [], f"Error: update_plan accepts at most {_MAX_PLAN_STEPS} steps."
+        out: list[TurnPlanStep] = []
+        active = 0
+        for raw in raw_steps:
+            if not isinstance(raw, dict):
+                return [], "Error: every plan item must be an object."
+            text = _one_line(raw.get("step"), _MAX_PLAN_STEP_CHARS)
+            status = str(raw.get("status") or "").strip()
+            if not text:
+                return [], "Error: every plan item needs non-empty step text."
+            if status not in ("pending", "in_progress", "completed"):
+                return [], "Error: plan status must be pending, in_progress, or completed."
+            active += status == "in_progress"
+            out.append(TurnPlanStep(step = text, status = status))
+        if active > 1:
+            return [], "Error: at most one plan item may be in_progress."
+        if active == 0 and any(step.status != "completed" for step in out):
+            return [], "Error: an unfinished plan needs exactly one in_progress item."
+        return out, None
+
+    def update_plan(self, arguments: Any) -> str:
+        """Apply a model-authored visible plan without persisting private reasoning."""
+        steps, error = self._normalize_plan_steps(arguments)
+        if error:
+            return error
+        review = str(arguments.get("review") or "").strip()
+        explanation = _one_line(arguments.get("explanation"), 500)
+        if review and review not in ("progressed", "replanned", "blocked"):
+            return "Error: review must be progressed, replanned, or blocked."
+        with self._lock:
+            previous_by_step = {step.step.casefold(): step.status for step in self.plan_steps}
+            meaningful_progress = not self.plan_initialized
+            if self.plan_initialized:
+                meaningful_progress = any(
+                    step.status == "completed"
+                    and previous_by_step.get(step.step.casefold()) != "completed"
+                    for step in steps
+                )
+            changed = steps != self.plan_steps
+            recovery_replan = bool(
+                self.plan_initialized
+                and review == "replanned"
+                and changed
+                and len(explanation) >= 20
+            )
+            self.plan_steps = steps
+            self.plan_initialized = True
+            if changed:
+                self.plan_revision += 1
+            if meaningful_progress or recovery_replan:
+                self.actions_since_plan_progress = 0
+                self.progress_review_required = False
+            self._persist()
+        if meaningful_progress:
+            return "Plan updated. Continue from the current in-progress step."
+        if recovery_replan:
+            return (
+                "Recovery strategy accepted. Test the new in-progress approach and keep the "
+                "checklist current; do not repeat the stalled path."
+            )
+        if review == "replanned":
+            return (
+                "The recovery review did not define a concrete new strategy. Change the stalled "
+                "step or plan structure and briefly explain the new approach before more tools."
+            )
+        if review == "blocked":
+            return (
+                "The blocker review did not advance the plan. Try a concrete alternative if one "
+                "exists; only otherwise provide a final answer that names the real blocker."
+            )
+        if changed:
+            return (
+                "Plan text updated, but no step advanced and no recovery strategy was recorded. "
+                "Use review=replanned with a concrete new approach before more ordinary tools."
+            )
+        return (
+            "Plan unchanged. Do not repeat the same plan: advance a status if work progressed, "
+            "or replan a concrete alternative if it did not. Finish only for completion or a "
+            "genuine blocker with no practical path forward."
+        )
+
+    def record_tool(self, tool: str, arguments: Any, result: Any) -> bool:
         action = TurnAction(
             tool = _one_line(tool, 120),
             arguments = _argument_summary(arguments),
@@ -294,7 +474,14 @@ class ActiveTurnCheckpoint:
                 self.actions = self.actions[-_MAX_ACTIONS:]
             # New evidence opens a fresh phase; old stalls no longer describe it.
             self.stalls = 0
+            review_started = False
+            if self.planning_enabled and self.plan_initialized:
+                self.actions_since_plan_progress += 1
+                if self.actions_since_plan_progress >= _MAX_ACTIONS_WITHOUT_PLAN_PROGRESS:
+                    review_started = not self.progress_review_required
+                    self.progress_review_required = True
             self._persist()
+            return review_started
 
     def record_compaction(self) -> None:
         with self._lock:
@@ -330,6 +517,7 @@ def turn_checkpointed(func):
                 list(bound.arguments.get("messages") or []),
                 thread_id = bound.arguments.get("thread_id"),
                 session_id = bound.arguments.get("session_id"),
+                planning_enabled = bool(bound.arguments.get("turn_planning")),
             )
             if state is not None:
                 kwargs["turn_checkpoint"] = state
@@ -337,6 +525,8 @@ def turn_checkpointed(func):
         completed = False
         failed = False
         try:
+            if state is not None and state.planning_enabled:
+                yield {"type": "turn_plan", **state.plan_snapshot()}
             yield from func(*args, **kwargs)
             completed = True
         except BaseException:
@@ -371,6 +561,7 @@ def continuation_nudge(checkpoint: Optional[ActiveTurnCheckpoint], tool_hint: st
 
 __all__ = [
     "ActiveTurnCheckpoint",
+    "TurnPlanStep",
     "continuation_nudge",
     "turn_checkpointed",
 ]

@@ -22535,6 +22535,7 @@ class LlamaCppBackend:
         promote_reasoning_only: bool = True,
         perf_callback: Optional[Callable[[dict], None]] = None,
         context_overflow: Optional[str] = None,
+        turn_planning: bool = False,
         turn_checkpoint = None,
     ) -> Generator[dict, None, None]:
         """
@@ -22838,6 +22839,8 @@ class LlamaCppBackend:
                 conversation = turn_checkpoint.inject(conversation)
 
             active_tools = tool_controller.active_tools()
+            if turn_checkpoint is not None:
+                active_tools = turn_checkpoint.active_tools(active_tools)
             if not active_tools:
                 _append_budget_exhausted_nudge = False
                 break
@@ -24055,6 +24058,27 @@ class LlamaCppBackend:
                         )
                         continue
 
+                    if (
+                        turn_checkpoint is not None
+                        and turn_checkpoint.requires_plan_review
+                        and decision.tool_name != "update_plan"
+                    ):
+                        deferred_noop_msgs.append(
+                            {
+                                "role": "user",
+                                "content": (
+                                    "Review the visible execution plan before another ordinary tool. "
+                                    "If work advanced, update its statuses. If it did not, revise the "
+                                    "stalled step to a concrete different strategy and keep working. "
+                                    "Finish only if complete or genuinely blocked with no practical "
+                                    "alternative."
+                                ),
+                            }
+                        )
+                        if _forced_tool_call_pending:
+                            _forced_tool_call_pending = False
+                        continue
+
                     if not assistant_appended:
                         assistant_msg["tool_calls"] = [decision.as_assistant_tool_call()]
                         # Merges into a resumed partial, so a continued turn that calls
@@ -24069,6 +24093,18 @@ class LlamaCppBackend:
                         assistant_msg.setdefault("tool_calls", []).append(
                             decision.as_assistant_tool_call()
                         )
+
+                    if decision.tool_name == "update_plan" and turn_checkpoint is not None:
+                        result = turn_checkpoint.update_plan(decision.arguments)
+                        completion = tool_controller.record_result(decision, result)
+                        resolved_provisional_tool_call_ids.add(decision.tool_call_id)
+                        conversation.append(completion.tool_message())
+                        _post_tool_reprompts = 0
+                        _last_reprompt_text = ""
+                        if _forced_tool_call_pending:
+                            _forced_tool_call_pending = False
+                        yield {"type": "turn_plan", **turn_checkpoint.plan_snapshot()}
+                        continue
 
                     # Bypass wins here too, so a direct internal caller with both
                     # flags never prompts. "auto" pauses only high-risk calls;
@@ -24292,6 +24328,8 @@ class LlamaCppBackend:
                             decision.arguments,
                             result,
                         )
+                        if turn_checkpoint.planning_enabled:
+                            yield {"type": "turn_plan", **turn_checkpoint.plan_snapshot()}
                     # A tool ran this turn, so it counts against the caller's budget.
                     _turn_executed_real_tool = True
                     yield completion.tool_end_event()

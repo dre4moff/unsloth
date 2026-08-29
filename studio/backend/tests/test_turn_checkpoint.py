@@ -95,3 +95,115 @@ def test_generator_wrapper_keeps_file_for_active_turn_and_removes_it_on_finish(
         raise AssertionError("wrapped generator did not finish")
 
     assert not path.exists()
+
+
+def test_visible_plan_requires_real_status_progress_and_survives_compaction(
+    monkeypatch, tmp_path
+):
+    from core.inference.turn_checkpoint import ActiveTurnCheckpoint
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    state = ActiveTurnCheckpoint.start(
+        [{"role": "user", "content": "Inspect, repair, and test the project."}],
+        thread_id = "thread-plan",
+        session_id = "session-plan",
+        planning_enabled = True,
+    )
+    assert state is not None
+    assert state.requires_plan_review is True
+
+    result = state.update_plan(
+        {
+            "plan": [
+                {"step": "Inspect the failure", "status": "in_progress"},
+                {"step": "Implement the repair", "status": "pending"},
+                {"step": "Run verification", "status": "pending"},
+            ]
+        }
+    )
+    assert result.startswith("Plan updated")
+    assert state.requires_plan_review is False
+
+    for index in range(8):
+        state.record_tool("terminal", {"command": f"inspect-{index}"}, "ok")
+    assert state.requires_plan_review is True
+
+    unchanged = state.update_plan(
+        {
+            "plan": [
+                {"step": "Inspect the failure", "status": "in_progress"},
+                {"step": "Implement the repair", "status": "pending"},
+                {"step": "Run verification", "status": "pending"},
+            ]
+        }
+    )
+    assert unchanged.startswith("Plan unchanged")
+    assert state.requires_plan_review is True
+
+    replanned = state.update_plan(
+        {
+            "review": "replanned",
+            "explanation": "The first inspection route repeated the same evidence, so use a new signal.",
+            "plan": [
+                {"step": "Inspect a different failure signal", "status": "in_progress"},
+                {"step": "Implement the repair", "status": "pending"},
+                {"step": "Run verification", "status": "pending"},
+            ],
+        }
+    )
+    assert replanned.startswith("Recovery strategy accepted")
+    assert state.requires_plan_review is False
+
+    advanced = state.update_plan(
+        {
+            "review": "progressed",
+            "plan": [
+                {"step": "Inspect a different failure signal", "status": "completed"},
+                {"step": "Implement the repair", "status": "in_progress"},
+                {"step": "Run verification", "status": "pending"},
+            ]
+        }
+    )
+    assert advanced.startswith("Plan updated")
+    assert state.requires_plan_review is False
+    state.record_compaction()
+    injected = state.inject([{"role": "user", "content": "continue"}])
+    assert "[completed] Inspect a different failure signal" in injected[0]["content"]
+    assert "[in_progress] Implement the repair" in injected[0]["content"]
+
+    payload = json.loads(state.path.read_text(encoding = "utf-8"))
+    assert payload["plan_steps"][0]["status"] == "completed"
+    assert payload["plan_revision"] == 3
+    state.finish("completed")
+
+
+def test_generator_wrapper_emits_initial_visible_plan(monkeypatch, tmp_path):
+    from core.inference.turn_checkpoint import turn_checkpointed
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+
+    class Runner:
+        @turn_checkpointed
+        def run(
+            self,
+            messages,
+            *,
+            session_id = None,
+            thread_id = None,
+            turn_planning = False,
+            turn_checkpoint = None,
+        ):
+            assert turn_checkpoint is not None
+            yield {"type": "content", "text": "done"}
+
+    events = list(
+        Runner().run(
+            [{"role": "user", "content": "perform a long task"}],
+            session_id = "session",
+            thread_id = "thread",
+            turn_planning = True,
+        )
+    )
+    assert events[0]["type"] == "turn_plan"
+    assert events[0]["steps"][0]["status"] == "in_progress"
+    assert events[1] == {"type": "content", "text": "done"}

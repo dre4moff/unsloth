@@ -29,6 +29,7 @@ from routes.inference import (
     _clip_long_contents,
     _CLIP_MARKER,
     _context_truncated_sse_chunk,
+    _turn_plan_sse_chunk,
     _estimate_message_tokens,
     _openai_model_objects,
     _overflow_truncation_requested,
@@ -637,6 +638,20 @@ def test_context_truncation_notice_is_an_openai_compatible_empty_chunk():
     assert payload["object"] == "chat.completion.chunk"
     assert payload["choices"] == []
     assert payload["context_truncated"] == {"dropped_messages": 4, "fits": True}
+
+
+def test_turn_plan_is_an_openai_compatible_empty_chunk():
+    plan = {
+        "objective": "Fix and verify",
+        "steps": [{"step": "Inspect", "status": "in_progress"}],
+        "current_step": 0,
+    }
+    line = _turn_plan_sse_chunk("chatcmpl-plan", "model", plan)
+    payload = json.loads(line.removeprefix("data: ").strip())
+
+    assert payload["object"] == "chat.completion.chunk"
+    assert payload["choices"] == []
+    assert payload["turn_plan"] == plan
 
 
 def test_nonstream_completion_serializes_context_truncation():

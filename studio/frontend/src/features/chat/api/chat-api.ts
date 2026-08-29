@@ -273,6 +273,7 @@ export async function countChatInputTokens(payload: {
   reasoning_effort?: OpenAIChatCompletionsRequest["reasoning_effort"];
   preserve_thinking?: boolean;
   enable_tools?: boolean;
+  turn_planning?: boolean;
   enabled_tools?: string[];
   mcp_enabled?: boolean;
   rag_scope?: Record<string, unknown>;

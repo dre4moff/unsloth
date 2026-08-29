@@ -375,3 +375,63 @@ def test_safetensors_loop_injects_the_action_ledger_on_the_next_model_pass(
     assert "CURRENT OBJECTIVE" in seen[1][0]["content"]
     assert 'search {"query": "only once"}' in seen[1][0]["content"]
     state.finish("completed")
+
+
+def test_safetensors_plan_tool_is_internal_and_does_not_spend_an_action(monkeypatch, tmp_path):
+    from core.inference.safetensors_agentic import run_safetensors_tool_loop
+    from core.inference.turn_checkpoint import ActiveTurnCheckpoint
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    state = ActiveTurnCheckpoint.start(
+        [{"role": "user", "content": "Inspect once and answer."}],
+        thread_id = "thread-plan",
+        session_id = "session-plan",
+        planning_enabled = True,
+    )
+    assert state is not None
+
+    turns = iter(
+        [
+            '<tool_call>{"name":"update_plan","arguments":{"plan":['
+            '{"step":"Inspect once","status":"in_progress"},'
+            '{"step":"Answer","status":"pending"}]}}</tool_call>',
+            '<tool_call>{"name":"search","arguments":{"query":"once"}}</tool_call>',
+            "final answer",
+        ]
+    )
+    calls = []
+
+    def single_turn(_conversation, *, active_tools = None):
+        yield next(turns)
+
+    def execute(name, arguments, **_kwargs):
+        calls.append((name, arguments))
+        return "one result"
+
+    events = list(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [{"role": "user", "content": "Inspect once and answer."}],
+            tools = [
+                {"type": "function", "function": {"name": "update_plan"}},
+                {"type": "function", "function": {"name": "search"}},
+            ],
+            execute_tool = execute,
+            max_tool_iterations = 2,
+            nudge_tool_calls = True,
+            turn_checkpoint = state,
+        )
+    )
+
+    assert calls == [("search", {"query": "once"})]
+    assert any(event.get("type") == "turn_plan" for event in events)
+    assert not any(
+        event.get("type") in ("tool_start", "tool_end")
+        and event.get("tool_name") == "update_plan"
+        for event in events
+    )
+    assert any(
+        event.get("type") == "tool_start" and event.get("tool_name") == "search"
+        for event in events
+    )
+    state.finish("completed")

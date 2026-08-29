@@ -10,6 +10,8 @@ import {
   useGeneratedImageOverlay,
 } from "@/components/assistant-ui/generated-image-overlay-context";
 import { CompactionNotice } from "@/components/assistant-ui/compaction-notice";
+import { TurnPlanCard } from "@/components/assistant-ui/turn-plan";
+import type { TurnPlan } from "@/features/chat/types/api";
 import {
   compactionBoundary,
   type ContextTruncation,
@@ -6809,6 +6811,15 @@ const AssistantMessage: FC = () => {
       ? (value as ContextTruncation)
       : null;
   });
+  const turnPlan = useAuiState(({ message }) => {
+    const custom = (
+      message.metadata as
+        | { custom?: { turnPlan?: unknown } }
+        | undefined
+    )?.custom;
+    const value = custom?.turnPlan;
+    return value && typeof value === "object" ? (value as TurnPlan) : null;
+  });
   // Once a thread outgrows the window every request runs the fit, so "this turn
   // compacted" is true of every later reply and would put a notice on all of them. What
   // matters is when MORE of the conversation fell out of view: the eviction boundary
@@ -6910,6 +6921,7 @@ const AssistantMessage: FC = () => {
         {contextTruncation && showsNotice && !isEditing && (
           <CompactionNotice truncation={contextTruncation} />
         )}
+        {turnPlan && !isEditing && <TurnPlanCard plan={turnPlan} />}
         {isEditing ? (
           <div className="flex flex-col gap-2 w-full">
             <textarea
