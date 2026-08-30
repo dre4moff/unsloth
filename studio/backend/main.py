@@ -313,6 +313,7 @@ from routes import (
     training_router,
     video_router,
     youtube_router,
+    companion_router,
 )
 from routes.llama import router as llama_router
 from routes.whisper import router as whisper_router
@@ -746,6 +747,8 @@ async def lifespan(app: FastAPI):
         "lifespan startup completed in %.1fms",
         (_time.perf_counter() - _lifespan_started) * 1000,
     )
+    from core.companion import companion_manager
+    await companion_manager.start()
     yield
 
     # Before any shutdown await: a warm finishing during one would still read the lifespan as current.
@@ -782,6 +785,9 @@ async def lifespan(app: FastAPI):
     from core.inference.llama_http import aclose as _close_llama_http
 
     await _close_llama_http()
+
+    from core.companion import companion_manager
+    await companion_manager.stop()
 
     await run_lifespan_shutdown(
         terminate_hub_downloads,
@@ -1388,6 +1394,7 @@ app.include_router(hub_datasets_router, prefix = "/api/hub/datasets", tags = ["h
 app.include_router(picker_templates_router, prefix = "/api/picker", tags = ["picker"])
 app.include_router(hub_token_router, prefix = "/api/hub", tags = ["hub"])
 app.include_router(youtube_router, prefix = "/api/youtube", tags = ["youtube"])
+app.include_router(companion_router, prefix = "/api/companion", tags = ["companion"])
 
 # Re-wrap /v1/* client errors into OpenAI/Anthropic envelopes; non-/v1 keeps {"detail": ...}.
 install_api_error_handlers(app)

@@ -126,6 +126,7 @@ import {
   awaitThreadScopedPairing,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
+import { useCompanionChatStore } from "../stores/companion-chat-store";
 import { resolveFitMaxSeqLength, resolveManualAutoCtxPin } from "../presets/preset-policy";
 import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
@@ -1670,6 +1671,7 @@ export function buildLocalTokenCountReasoning(): Record<string, unknown> {
 export async function buildLocalTokenCountExtras(
   threadId: string | undefined,
 ): Promise<Record<string, unknown>> {
+  const companionEnabled = useCompanionChatStore.getState().enabled;
   const {
     supportsTools,
     toolsEnabled,
@@ -1695,6 +1697,7 @@ export async function buildLocalTokenCountExtras(
     !codeToolsEnabled &&
     !artifactsEnabled &&
     !mcpEnabledForChat &&
+    !companionEnabled &&
     !ragOn
   ) {
     // Explicit false, not an omitted field: the server defaults tools on for a
@@ -1720,6 +1723,7 @@ export async function buildLocalTokenCountExtras(
       ...(toolsEnabled ? ["web_search"] : []),
       ...(codeToolsEnabled ? ["python", "terminal", "edit_file"] : []),
       ...(artifactsEnabled ? ["render_html"] : []),
+      ...(companionEnabled ? ["iphone_companion"] : []),
     ],
     mcp_enabled: mcpEnabledForChat,
     // Only truthiness is read server-side, to keep search_knowledge_base and its grounding nudge
@@ -4207,6 +4211,7 @@ export function createOpenAIStreamAdapter(
         ragAutoInject,
         ragAutoInjectMinScore,
       } = runtime;
+      const companionEnabled = useCompanionChatStore.getState().enabled;
       // Project sources auto-scope: a chat inside a project retrieves from the
       // project's indexed sources even when the Docs pill is off. The probe is
       // cached, so this is one round trip per project every ~30s at most.
@@ -5330,6 +5335,7 @@ export function createOpenAIStreamAdapter(
               (toolsEnabled ||
                 studioLocalCodeTools.length > 0 ||
                 mcpEnabledForChat ||
+                companionEnabled ||
                 ragEnabled ||
                 projectRagEnabled)
                 ? {
@@ -5339,6 +5345,7 @@ export function createOpenAIStreamAdapter(
                         ? ["search_knowledge_base"]
                         : []),
                       ...(toolsEnabled ? ["web_search"] : []),
+                      ...(companionEnabled ? ["iphone_companion"] : []),
                       ...studioLocalCodeTools,
                       // Hosted tools Studio has no local stand-in for. Their
                       // pills stay lit whether or not a Studio tool is on, so
@@ -5560,6 +5567,7 @@ export function createOpenAIStreamAdapter(
               codeToolsEnabled ||
               renderHtmlToolEnabledForThisTurn ||
               mcpEnabledForChat ||
+              companionEnabled ||
               ragEnabled ||
               projectRagEnabled)
               ? {
@@ -5577,6 +5585,7 @@ export function createOpenAIStreamAdapter(
                     ...(renderHtmlToolEnabledForThisTurn
                       ? ["render_html"]
                       : []),
+                    ...(companionEnabled ? ["iphone_companion"] : []),
                   ],
                   mcp_enabled: mcpEnabledForChat,
                   // Scope: thread_id = this thread's docs, kb_id = a KB,

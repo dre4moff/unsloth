@@ -53,13 +53,13 @@ export const ContextUsageBar: FC<
           type="button"
           aria-label={state.label}
           className={cn(
-            "flex items-center gap-2 rounded-[10px] px-2.5 py-1 font-mono text-chat-icon-fg text-ui-13 tabular-nums transition-colors hover:bg-chat-icon-bg-hover hover:text-chat-icon-fg-hover",
+            "flex shrink-0 items-center gap-2 whitespace-nowrap rounded-[10px] px-2.5 py-1 font-mono text-chat-icon-fg text-ui-13 tabular-nums transition-colors hover:bg-chat-icon-bg-hover hover:text-chat-icon-fg-hover",
             className,
           )}
         >
-          <span>{state.face}</span>
+          <span className="shrink-0 whitespace-nowrap">{state.face}</span>
           {percent !== null ? (
-            <div className="h-1.5 w-16 rounded-full bg-black/10 dark:bg-white/15 overflow-hidden">
+            <div className="hidden h-1.5 w-16 shrink-0 overflow-hidden rounded-full bg-black/10 min-[560px]:block dark:bg-white/15">
               <div
                 className={cn(
                   "h-full rounded-full transition-all",

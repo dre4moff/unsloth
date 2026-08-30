@@ -160,7 +160,7 @@ export const it = {
       resources: "Sistema",
       chat: "Chat",
       voice: "Voce",
-      connections: "Connessioni",
+      connections: "iPhone e connessioni",
       data: "Dati",
       apiKeys: "API",
       remoteLan: "Remoto e LAN",

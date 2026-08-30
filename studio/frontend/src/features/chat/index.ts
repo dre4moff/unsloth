@@ -174,6 +174,7 @@ export {
 } from "./external-providers";
 export { ApiProviderLogo } from "./api-provider-logo";
 export { useExternalProvidersStore } from "./stores/external-providers-store";
+export { ChatProvidersSettings } from "./chat-providers-dialog";
 export { DeleteChatFilesSwitch } from "./components/delete-chat-files-switch";
 export { ChatSearchDialog } from "./components/chat-search-dialog";
 export { StopRunningChatsDialog } from "./components/stop-running-chats-dialog";

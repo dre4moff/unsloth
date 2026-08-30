@@ -4,8 +4,8 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
-app_version="0.1.800-mlx.8"
-backend_version="2026.8.18+mlxcompaction8"
+app_version="0.1.800-mlx.9"
+backend_version="2026.8.18+mlxcompaction8.companion9"
 rust_toolchain="1.89.0"
 wheel_name="unsloth-${backend_version}-py3-none-any.whl"
 resource_dir="$repo_root/studio/src-tauri/resources/backend"
@@ -16,12 +16,18 @@ if [ "$(uname -m)" != "arm64" ]; then
     exit 1
 fi
 
-for required in uv npm rustup shasum unzip rg lipo vtool plutil codesign hdiutil; do
+for required in python3 uv npm rustup shasum unzip rg lipo vtool plutil codesign hdiutil; do
     if ! command -v "$required" >/dev/null 2>&1; then
         echo "Missing required build tool: $required" >&2
         exit 1
     fi
 done
+
+python3 -m py_compile \
+    "$repo_root/studio/backend/core/companion/manager.py" \
+    "$repo_root/studio/backend/core/inference/orchestrator.py" \
+    "$repo_root/studio/backend/core/inference/tools.py" \
+    "$repo_root/studio/backend/routes/inference.py"
 
 if ! grep -Fq "version = \"$app_version\"" "$repo_root/studio/src-tauri/Cargo.toml"; then
     echo "Cargo app version does not match $app_version" >&2
@@ -53,6 +59,11 @@ cleanup() {
 trap cleanup EXIT
 
 echo "Building the fork backend wheel..."
+# setuptools otherwise reuses repo_root/build by mtime; a restored source tree
+# can be older than that generated cache and silently package stale Python.
+if [ -d "$repo_root/build" ]; then
+    rm -rf -- "$repo_root/build"
+fi
 if ! uv build --wheel --out-dir "$wheel_workspace" "$repo_root" \
     >"$wheel_workspace/build.log" 2>&1; then
     tail -n 100 "$wheel_workspace/build.log" >&2
@@ -78,6 +89,27 @@ fi
 if ! unzip -p "$built_wheel" studio/backend/utils/_studio_release_build.py \
     | grep -Fq "STUDIO_RELEASE_VERSION = \"v$app_version\""; then
     echo "Backend wheel release stamp does not match v$app_version." >&2
+    exit 1
+fi
+if ! unzip -p "$built_wheel" studio/backend/routes/companion.py \
+    | grep -Fq 'async def status'; then
+    echo "Backend wheel does not contain the iPhone Companion API." >&2
+    exit 1
+fi
+if ! unzip -p "$built_wheel" studio/backend/main.py \
+    | grep -Fq 'app.include_router(companion_router, prefix = "/api/companion"'; then
+    echo "Backend wheel does not register the iPhone Companion API." >&2
+    exit 1
+fi
+if ! unzip -Z1 "$built_wheel" \
+    | grep -Fx 'studio/backend/core/companion/manager.py' >/dev/null; then
+    echo "Backend wheel does not contain the iPhone Companion manager." >&2
+    exit 1
+fi
+unzip -p "$built_wheel" studio/backend/core/inference/tools.py \
+    >"$wheel_workspace/tools.py"
+if ! grep -Fq '"name": "iphone_companion"' "$wheel_workspace/tools.py"; then
+    echo "Backend wheel does not expose the iPhone Companion chat tool." >&2
     exit 1
 fi
 
@@ -150,6 +182,16 @@ if [ "$(plutil -extract CFBundleIdentifier raw "$app_path/Contents/Info.plist")"
 fi
 if [ "$(plutil -extract CFBundleDisplayName raw "$app_path/Contents/Info.plist")" != "Unsloth" ]; then
     echo "Release display name does not match the official app." >&2
+    exit 1
+fi
+if ! plutil -extract NSLocalNetworkUsageDescription raw "$app_path/Contents/Info.plist" \
+    | grep -Fq "iPhone Companion"; then
+    echo "Release is missing the iPhone Companion local-network privacy description." >&2
+    exit 1
+fi
+if ! plutil -extract NSBonjourServices xml1 -o - "$app_path/Contents/Info.plist" \
+    | grep -Fq '<string>_unsloth-cp._tcp</string>'; then
+    echo "Release is missing the iPhone Companion Bonjour service declaration." >&2
     exit 1
 fi
 if rg -a -l -F "$HOME" "$app_path" >/dev/null; then

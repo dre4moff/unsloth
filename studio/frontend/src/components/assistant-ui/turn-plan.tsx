@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { TurnPlan } from "@/features/chat/types/api";
+import { cn } from "@/lib/utils";
 
 function StepMarker({
   status,
@@ -28,7 +29,13 @@ function StepMarker({
   );
 }
 
-export function TurnPlanCard({ plan }: { plan: TurnPlan }) {
+export function TurnPlanCard({
+  plan,
+  className,
+}: {
+  plan: TurnPlan;
+  className?: string;
+}) {
   if (!Array.isArray(plan.steps) || plan.steps.length === 0) {
     return null;
   }
@@ -43,7 +50,10 @@ export function TurnPlanCard({ plan }: { plan: TurnPlan }) {
     <section
       aria-label="Execution plan"
       aria-live="polite"
-      className="mb-4 w-full max-w-2xl rounded-2xl border border-border/70 bg-muted/25 px-4 py-3.5"
+      className={cn(
+        "mb-4 w-full max-w-2xl rounded-2xl border border-border/70 bg-muted/25 px-4 py-3.5",
+        className,
+      )}
     >
       <div className="mb-3 min-w-0">
         <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">

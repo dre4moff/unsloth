@@ -3448,6 +3448,18 @@ _TOOL_ARTIFACT_TIP = (
     "canvases may call render_html once."
 )
 
+_TOOL_COMPANION_TIP = (
+    "A paired iPhone Companion is available as a separate private local LLM subagent, "
+    "not merely for context compression. Proactively delegate independent bounded "
+    "reasoning, analysis, drafting, review, planning, transformation, or media work with "
+    "iphone_companion; use kind=subagent for a general assignment and pass the complete "
+    "objective, constraints, and context because it does not share this conversation. "
+    "For exact or free-form output, omit result_schema and read result.text; request a "
+    "result_schema only when structured JSON is useful. For Multi-iPhone, send independent "
+    "items that can finish separately. Critically evaluate its result and synthesize the final answer on the Mac, which remains the "
+    "orchestrator and fallback. Never split one autoregressive generation or KV cache."
+)
+
 
 def _build_tool_action_nudge(
     *,
@@ -3469,7 +3481,8 @@ def _build_tool_action_nudge(
     has_code = bool(code_tools)
     has_artifact = "render_html" in tool_names
     has_plan = "update_plan" in tool_names
-    if not (has_web or has_code or has_artifact or has_plan):
+    has_companion = "iphone_companion" in tool_names
+    if not (has_web or has_code or has_artifact or has_plan or has_companion):
         return ""
     if full_access_only:
         return _full_access_tip(code_tools) if (full_access and has_code) else ""
@@ -3485,6 +3498,8 @@ def _build_tool_action_nudge(
             tool_tip_parts.append(_full_access_tip(code_tools))
     if has_artifact:
         tool_tip_parts.append(_TOOL_ARTIFACT_TIP)
+    if has_companion:
+        tool_tip_parts.append(_TOOL_COMPANION_TIP)
     if has_plan:
         tool_tip_parts.append(
             "For multi-step work, call update_plan before ordinary tools, keep its visible "
@@ -3695,6 +3710,50 @@ async def _select_request_tools(
             # meeting a large catalogue at a compaction boundary have been seen calling a
             # guessed tool name. Read-only and always-safe, so it prompts for nothing.
             tools = [t for t in tools if t["function"]["name"] == "search_conversation"]
+    # The chat preference may stay on while an iPhone locks, disconnects, enters
+    # draining, or has no compatible model loaded. In those states omit the tool
+    # entirely so the main model continues on the Mac instead of selecting a call
+    # that cannot start. Restrict the enum to live capabilities for the same reason.
+    if any(t["function"]["name"] == "iphone_companion" for t in tools):
+        try:
+            from core.companion import companion_manager
+
+            companion_kinds = companion_manager.available_task_kinds()
+        except Exception:
+            companion_kinds = set()
+        if not companion_kinds:
+            tools = [t for t in tools if t["function"]["name"] != "iphone_companion"]
+        else:
+            restricted: list[dict] = []
+            for tool in tools:
+                function = tool.get("function") or {}
+                if function.get("name") != "iphone_companion":
+                    restricted.append(tool)
+                    continue
+                parameters = function.get("parameters") or {}
+                properties = parameters.get("properties") or {}
+                kind_property = properties.get("kind") or {}
+                allowed = [
+                    value
+                    for value in kind_property.get("enum", [])
+                    if value in companion_kinds
+                ]
+                restricted.append(
+                    {
+                        **tool,
+                        "function": {
+                            **function,
+                            "parameters": {
+                                **parameters,
+                                "properties": {
+                                    **properties,
+                                    "kind": {**kind_property, "enum": allowed},
+                                },
+                            },
+                        },
+                    }
+                )
+            tools = restricted
     # Built-ins only, so this runs before the MCP append: an MCP tool's
     # description is the server's to write, and Full access says nothing about
     # how that server runs.
@@ -3703,6 +3762,29 @@ async def _select_request_tools(
     if mcp_allowed:
         tools = tools + await get_enabled_mcp_tools()
     return tools
+
+
+def _companion_execution_scope(payload) -> dict | None:
+    """Add current media to the tool-only scope without exposing base64 to the model."""
+    original = getattr(payload, "rag_scope", None)
+    scope = dict(original or {})
+    media = {
+        key: value
+        for key, value in (
+            ("image_base64", getattr(payload, "image_base64", None)),
+            ("audio_base64", getattr(payload, "audio_base64", None)),
+            ("video_base64", getattr(payload, "video_base64", None)),
+        )
+        if isinstance(value, str) and value
+    }
+    if media:
+        scope["_companion_media"] = media
+        if not original:
+            # This dict exists only to carry media; never turn it into an
+            # unscoped RAG auto-injection merely because it is truthy.
+            scope["autoinject"] = False
+            scope["whole_doc"] = False
+    return scope or None
 
 
 _COMPACTED_SESSION_NUDGE = (
@@ -13156,7 +13238,7 @@ async def _proxy_to_external_provider(
                     permission_mode = payload.permission_mode or "auto",
                     confirm_calls = _permission_mode_confirm(payload),
                     bypass_permissions = bool(payload.bypass_permissions),
-                    rag_scope = payload.rag_scope,
+                    rag_scope = _companion_execution_scope(payload),
                 )
                 if studio_tool_payloads
                 else None
@@ -13478,7 +13560,7 @@ async def _proxy_to_external_provider(
                     permission_mode = payload.permission_mode or "auto",
                     confirm_calls = _permission_mode_confirm(payload),
                     bypass_permissions = bool(payload.bypass_permissions),
-                    rag_scope = payload.rag_scope,
+                    rag_scope = _companion_execution_scope(payload),
                     auto_heal = payload.auto_heal_tool_calls,
                 ),
                 cancel_event = cancel_event,
@@ -14824,7 +14906,7 @@ async def openai_chat_completions(
                     else 300,
                     session_id = payload.session_id,
                     thread_id = payload.thread_id,
-                    rag_scope = payload.rag_scope,
+                    rag_scope = _companion_execution_scope(payload),
                     disable_parallel_tool_use = payload.parallel_tool_calls is False,
                     # Bypass Permissions takes precedence over the confirm gate:
                     # never prompt while bypassing.
@@ -16444,7 +16526,7 @@ async def openai_chat_completions(
                 else 300,
                 session_id = payload.session_id,
                 thread_id = payload.thread_id,
-                rag_scope = payload.rag_scope,
+                rag_scope = _companion_execution_scope(payload),
                 # Bypass Permissions takes precedence over the confirm gate:
                 # never prompt while bypassing.
                 confirm_tool_calls = _sf_effective_confirm and not bool(payload.bypass_permissions),
@@ -20328,7 +20410,7 @@ _STUDIO_ANTHROPIC_TOOL_ALIASES = {
 # asks then. render_html is excluded because a networked canvas prompts in auto,
 # and this channel invokes the loop without confirm; auto/ask reject, off/full run.
 _ANTHROPIC_UNPROMPTED_SAFE_TOOLS = frozenset(
-    {"web_search", "search_knowledge_base", "search_conversation"}
+    {"web_search", "search_knowledge_base", "search_conversation", "iphone_companion"}
 )
 
 
@@ -21421,7 +21503,7 @@ async def anthropic_messages(
                 session_id = payload.session_id,
                 thread_id = payload.thread_id,
                 # Anthropic passthrough has no rag_scope field (RAG is local-only).
-                rag_scope = getattr(payload, "rag_scope", None),
+                rag_scope = _companion_execution_scope(payload),
                 disable_parallel_tool_use = _disable_parallel,
                 bypass_permissions = bool(payload.bypass_permissions),
                 permission_mode = getattr(payload, "permission_mode", None),

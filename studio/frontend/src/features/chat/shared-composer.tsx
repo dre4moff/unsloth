@@ -85,6 +85,7 @@ import { listPromptEntries, type PromptEntry } from "./api/prompts-api";
 import { McpComposerButton } from "./mcp-composer-button";
 import { BypassPermissionsMenuItem } from "./bypass-permissions-menu-item";
 import { PermissionModeComposerPill } from "./permission-mode-select";
+import { IPhoneCompanionComposerButton } from "./components/iphone-companion-composer-button";
 import { reasoningCapsFromLoad } from "./lib/apply-inference-status-to-store";
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
 import { NewProjectDialog } from "./components/new-project-dialog";
@@ -2314,6 +2315,7 @@ export function SharedComposer({
               of every other tool pill (Search, Code, ...) so the Full access
               danger state reads first; only Compare outranks it. */}
           <PermissionModeComposerPill side="top" />
+          <IPhoneCompanionComposerButton side="top" />
           <button
             type="button"
             disabled={searchDisabled}

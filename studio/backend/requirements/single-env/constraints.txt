@@ -14,6 +14,7 @@ pyarrow==23.0.1
 fastmcp>=3.0.2
 mcp>=1.24,<2
 websockets>=15.0.1
+zeroconf>=0.146.0
 
 # Cap anyio <4.14: 4.14's new asyncio per-task cancel scope (TaskHandle/_run_coro)
 # gets exited in the wrong task on Python 3.13 under starlette's collapsing task

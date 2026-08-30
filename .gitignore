@@ -1,4 +1,5 @@
 # Byte-compiled / optimized / DLL files
+.DS_Store
 __pycache__/
 *.py[cod]
 *.class
@@ -21,6 +22,7 @@ unsloth_training_checkpoints/
 *.so
 
 # Distribution / packaging
+/release/
 .Python
 build/
 develop-eggs/

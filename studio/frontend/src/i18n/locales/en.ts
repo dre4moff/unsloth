@@ -192,7 +192,7 @@ export const en = {
       resources: "System",
       chat: "Chat",
       voice: "Voice",
-      connections: "Connections",
+      connections: "iPhone & Connections",
       data: "Data",
       apiKeys: "API",
       remoteLan: "Remote & LAN",

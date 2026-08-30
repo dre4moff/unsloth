@@ -2176,6 +2176,75 @@ class TestResolveInstallReleasePlans:
         assert plans[0].release_tag == "r1"
         assert plans[0].llama_tag == "b9001"
 
+    def _macos_bundle(self, release_tag, upstream_tag):
+        asset_name = f"llama-{upstream_tag}-bin-macos-arm64.tar.gz"
+        artifact = make_artifact(
+            asset_name,
+            install_kind = "macos-arm64",
+            runtime_line = None,
+            coverage_class = None,
+            supported_sms = [],
+            min_sm = None,
+            max_sm = None,
+            bundle_profile = "macos-metal-arm64",
+        )
+        return INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
+            bundle = make_release(
+                [artifact], release_tag = release_tag, upstream_tag = upstream_tag
+            ),
+            checksums = make_checksums_with_source(
+                [asset_name], release_tag = release_tag, upstream_tag = upstream_tag
+            ),
+        )
+
+    def test_tahoe_uses_normal_bounded_fallback_depth(self, monkeypatch):
+        releases = [
+            self._macos_bundle("r3", "b9003"),
+            self._macos_bundle("r2", "b9002"),
+            self._macos_bundle("r1", "b9001"),
+        ]
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "iter_resolved_published_releases",
+            lambda requested_tag, published_repo, published_release_tag = "", **_kwargs: iter(
+                releases
+            ),
+        )
+
+        _requested_tag, plans = _fork_manifest_release_plans(
+            "latest",
+            _macos_host("arm64", (26, 0)),
+            "unslothai/llama.cpp",
+            "",
+            max_release_fallbacks = 2,
+        )
+
+        assert [plan.release_tag for plan in plans] == ["r3", "r2"]
+
+    def test_pre_tahoe_retains_deep_compatibility_walkback(self, monkeypatch):
+        releases = [
+            self._macos_bundle("r3", "b9003"),
+            self._macos_bundle("r2", "b9002"),
+            self._macos_bundle("r1", "b9001"),
+        ]
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "iter_resolved_published_releases",
+            lambda requested_tag, published_repo, published_release_tag = "", **_kwargs: iter(
+                releases
+            ),
+        )
+
+        _requested_tag, plans = _fork_manifest_release_plans(
+            "latest",
+            _macos_host("arm64", (15, 5)),
+            "unslothai/llama.cpp",
+            "",
+            max_release_fallbacks = 2,
+        )
+
+        assert [plan.release_tag for plan in plans] == ["r3", "r2", "r1"]
+
     def test_malformed_release_fallback_env_uses_default(self, monkeypatch):
         monkeypatch.setenv("UNSLOTH_LLAMA_MAX_PREBUILT_RELEASE_FALLBACKS", "not-an-int")
         assert env_int("UNSLOTH_LLAMA_MAX_PREBUILT_RELEASE_FALLBACKS", 3, minimum = 1) == 3

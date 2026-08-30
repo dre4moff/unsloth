@@ -1,0 +1,24 @@
+{
+  "protocolVersion": 1,
+  "messageID": "6d1748ee-0831-4dd4-92af-349ef5c46118",
+  "sentAt": "2026-08-29T16:00:00Z",
+  "type": "task_submit",
+  "payload": {
+    "taskID": "42f8a43c-b251-4f90-98e3-ce6ae8c6a4fd",
+    "parentTaskID": null,
+    "shardIndex": null,
+    "shardCount": null,
+    "idempotencyKey": "summary-fixture-00000001",
+    "kind": "summary",
+    "priority": 50,
+    "timeoutSeconds": 120,
+    "leaseSeconds": 30,
+    "mediaPolicy": "semantic_only",
+    "input": { "text": "Unsloth Companion processes this text locally." },
+    "resultSchema": {
+      "type": "object",
+      "required": ["summary"],
+      "properties": { "summary": { "type": "string" } }
+    }
+  }
+}

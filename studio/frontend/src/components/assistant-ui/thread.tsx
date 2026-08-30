@@ -42,6 +42,7 @@ import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
 import { ToolGroup } from "@/components/assistant-ui/tool-group";
 import { CodeExecutionToolUI } from "@/components/assistant-ui/tool-ui-code-execution";
 import { ImageGenerationToolUI } from "@/components/assistant-ui/tool-ui-image-generation";
+import { IPhoneCompanionToolUI } from "@/components/assistant-ui/tool-ui-iphone-companion";
 import { KnowledgeBaseToolUI } from "@/components/assistant-ui/tool-ui-knowledge-base";
 import { RenderHtmlToolUI } from "@/components/assistant-ui/tool-ui-render-html";
 import { PythonToolUI } from "@/components/assistant-ui/tool-ui-python";
@@ -107,6 +108,7 @@ import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences
 import { useChatProjects } from "@/features/chat/hooks/use-chat-projects";
 import { NewProjectDialog } from "@/features/chat/components/new-project-dialog";
 import { ResearchMessage } from "@/features/chat/components/research-message";
+import { IPhoneCompanionComposerButton } from "@/features/chat/components/iphone-companion-composer-button";
 import {
   DeepResearchComposerButton,
   DeepResearchWebsiteAccessDialog,
@@ -1949,6 +1951,31 @@ const ThreadComposerDock: FC<{
   const showModelDisclaimer = useChatPreferencesStore(
     (s) => s.showModelDisclaimer,
   );
+  const turnPlan = useAuiState(({ thread }) => {
+    for (let index = thread.messages.length - 1; index >= 0; index -= 1) {
+      const message = thread.messages[index];
+      if (message?.role === "user") return null;
+      if (message?.role !== "assistant") continue;
+      const value = (
+        message.metadata as
+          | { custom?: { turnPlan?: unknown } }
+          | undefined
+      )?.custom?.turnPlan;
+      if (!value || typeof value !== "object") return null;
+      const plan = value as TurnPlan;
+      const cancelled =
+        message.status?.type === "incomplete" &&
+        message.status.reason === "cancelled";
+      // Stop can abort before a terminal plan event arrives. In that case the
+      // last streamed metadata still says "active", so never leave a stale
+      // objective or animated step above the now-idle composer.
+      if (cancelled || (!thread.isRunning && plan.status !== "completed")) {
+        return null;
+      }
+      return plan;
+    }
+    return null;
+  });
 
   // Report dock height so the viewport reserves matching scroll space when
   // attachments or multiline input grow the composer.
@@ -1986,6 +2013,12 @@ const ThreadComposerDock: FC<{
       />
       <div className="relative px-5 pb-2">
         <div className="pointer-events-auto mx-auto w-full max-w-(--thread-max-width)">
+          {turnPlan ? (
+            <TurnPlanCard
+              plan={turnPlan}
+              className="mb-2 max-h-[min(38dvh,24rem)] max-w-none overflow-y-auto bg-background/95 shadow-sm backdrop-blur"
+            />
+          ) : null}
           <ComposerAnimated
             disabled={disabled}
             threadId={threadId}
@@ -4357,6 +4390,7 @@ const Composer: FC<{
             <>
               {/* Permission-level pill: always visible, opens the level dropdown. */}
               <PermissionModeComposerPill side={effectiveMenuSide} />
+              <IPhoneCompanionComposerButton side={effectiveMenuSide} />
               {effectiveDeepResearchEnabled ? (
                 <DeepResearchComposerButton
                   onConfigure={() => setResearchWebsiteAccessOpen(true)}
@@ -6561,6 +6595,9 @@ const CodeExecutionToolUIConfirmable =
 const ImageGenerationToolUIConfirmable = withToolConfirmation(
   ImageGenerationToolUI,
 );
+const IPhoneCompanionToolUIConfirmable = withToolConfirmation(
+  IPhoneCompanionToolUI,
+);
 const RenderHtmlToolUIConfirmable = withToolConfirmation(RenderHtmlToolUI);
 const ToolFallbackConfirmable = withToolConfirmation(ToolFallback);
 
@@ -6587,6 +6624,7 @@ const ASSISTANT_PART_COMPONENTS = {
       terminal: TerminalToolUIConfirmable,
       code_execution: CodeExecutionToolUIConfirmable,
       image_generation: ImageGenerationToolUIConfirmable,
+      iphone_companion: IPhoneCompanionToolUIConfirmable,
       render_html: RenderHtmlToolUIConfirmable,
     },
     Fallback: ToolFallbackConfirmable,
@@ -6811,15 +6849,6 @@ const AssistantMessage: FC = () => {
       ? (value as ContextTruncation)
       : null;
   });
-  const turnPlan = useAuiState(({ message }) => {
-    const custom = (
-      message.metadata as
-        | { custom?: { turnPlan?: unknown } }
-        | undefined
-    )?.custom;
-    const value = custom?.turnPlan;
-    return value && typeof value === "object" ? (value as TurnPlan) : null;
-  });
   // Once a thread outgrows the window every request runs the fit, so "this turn
   // compacted" is true of every later reply and would put a notice on all of them. What
   // matters is when MORE of the conversation fell out of view: the eviction boundary
@@ -6921,7 +6950,6 @@ const AssistantMessage: FC = () => {
         {contextTruncation && showsNotice && !isEditing && (
           <CompactionNotice truncation={contextTruncation} />
         )}
-        {turnPlan && !isEditing && <TurnPlanCard plan={turnPlan} />}
         {isEditing ? (
           <div className="flex flex-col gap-2 w-full">
             <textarea

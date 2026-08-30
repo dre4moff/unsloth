@@ -3517,7 +3517,7 @@ export function ChatPage({
               "right-[10px] left-auto w-auto bg-transparent pl-0 pr-[calc(0.5rem+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
           )}
         >
-          <div className="pointer-events-auto flex items-center gap-1">
+          <div className="pointer-events-auto flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
             {isTauri && !isMobile && !pinned && view.mode !== "compare" && (
               <Button
                 type="button"
@@ -3636,7 +3636,7 @@ export function ChatPage({
               </div>
             ) : null}
           </div>
-          <div className="pointer-events-auto ml-auto flex items-center gap-1">
+          <div className="pointer-events-auto ml-auto flex shrink-0 items-center gap-1">
             {view.mode === "single" && (contextUsage || contextWindowKnown) ? (
               <ContextUsageBar
                 used={contextUsage?.totalTokens ?? null}
@@ -3646,7 +3646,7 @@ export function ChatPage({
                 cacheWrites={contextUsage?.cacheWriteTokens}
                 promptTokens={contextUsage?.promptTokens}
                 completionTokens={contextUsage?.completionTokens}
-                className="h-[var(--studio-chat-control-height,34px)]"
+                className="h-[var(--studio-chat-control-height,34px)] shrink-0"
               />
             ) : null}
             {view.mode === "single" && (

@@ -1861,6 +1861,10 @@ class InferenceOrchestrator:
                     else max(0, int(sticky_dropped))
                 ),
             )
+            companion_evicted = []
+            if truncation and truncation.get("fits") and not truncation.get("checkpoint"):
+                retained_ids = {id(message) for message in fitted}
+                companion_evicted = [message for message in before if id(message) not in retained_ids]
 
             events = []
             recalled = False
@@ -1892,6 +1896,42 @@ class InferenceOrchestrator:
                 events.extend(recalled_result["events"])
                 recalled = bool(recalled_result["recalled"])
                 anchored = list(recalled_result["anchored"])
+
+            companion_tool_enabled = any(
+                isinstance(tool, dict)
+                and (tool.get("function") or {}).get("name") == "iphone_companion"
+                for tool in tools or []
+            )
+            if companion_evicted and companion_tool_enabled:
+                try:
+                    from core.companion import companion_manager
+
+                    summary = companion_manager.compress_context_sync(
+                        companion_evicted,
+                        thread_id,
+                        cancel_event=cancel_event,
+                    )
+                    marker = "[Earlier conversation compressed by the paired iPhone Companion]"
+                    block = f"\n\n{marker}\n{summary}"
+                    candidate = list(fitted)
+                    merged = False
+                    for index, message in enumerate(candidate):
+                        if message.get("role") in {"system", "developer"} and isinstance(message.get("content"), str):
+                            candidate[index] = {**message, "content": message["content"].rstrip() + block}
+                            merged = True
+                            break
+                    if not merged:
+                        candidate.insert(0, {"role": "system", "content": marker + "\n" + summary})
+                    candidate_tokens = _count(candidate)
+                    if candidate_tokens <= prompt_budget(context_length, max_tokens):
+                        fitted = candidate
+                        truncation = {
+                            **truncation,
+                            "prompt_tokens_after": candidate_tokens,
+                            "companion_compressed": True,
+                        }
+                except Exception as exc:
+                    logger.info("iPhone Companion context compression unavailable; keeping Mac compaction: %s", exc)
 
             if truncation and truncation.get("fits"):
                 truncation = {

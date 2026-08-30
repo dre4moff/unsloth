@@ -4,5 +4,11 @@
 <dict>
     <key>NSMicrophoneUsageDescription</key>
     <string>Unsloth uses the microphone you select for local voice dictation.</string>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Unsloth uses the local network to discover and securely connect to your iPhone Companion.</string>
+    <key>NSBonjourServices</key>
+    <array>
+        <string>_unsloth-cp._tcp</string>
+    </array>
 </dict>
 </plist>

@@ -5,10 +5,13 @@
 (DuckDuckGo), Python code execution, and terminal commands."""
 
 import ast
+import base64
+import binascii
 import codecs
 import fnmatch
 import functools
 import hashlib
+import io
 import json
 import http.client
 import os
@@ -4532,7 +4535,9 @@ def _render_html_reaches_network(arguments: dict) -> bool:
 # separately above because a networked canvas does need approval.
 # search_conversation only reads this chat's own past turns, so auto mode would otherwise
 # prompt for approval on every call.
-_ALWAYS_SAFE_TOOLS = frozenset({"web_search", "search_knowledge_base", "search_conversation"})
+_ALWAYS_SAFE_TOOLS = frozenset(
+    {"web_search", "search_knowledge_base", "search_conversation", "iphone_companion"}
+)
 
 
 def is_always_safe_tool(name: str) -> bool:
@@ -9860,6 +9865,109 @@ UPDATE_PLAN_TOOL = {
     },
 }
 
+IPHONE_COMPANION_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "iphone_companion",
+        "description": (
+            "Launch an independent local LLM subagent on the user's paired iPhone Companion. "
+            "This is not limited to context compression: use kind=subagent for a self-contained "
+            "reasoning, analysis, drafting, review, planning, or transformation subtask, passing "
+            "all context it needs. The Mac remains the orchestrator and fallback: choose an explicit "
+            "maximum_tokens budget for every delegation based on the expected deliverable, critically "
+            "evaluate the returned result and retain responsibility for the final response. "
+            "A free-form subagent response is returned in result.text and preserves the requested "
+            "output format; pass result_schema only when a structured JSON object is actually needed. Never "
+            "split one autoregressive generation or KV cache. Specialized kinds also support "
+            "classification, summary, extraction, verification, reranking, OCR, vision, video, "
+            "audio, and DSP. "
+            "For media kinds, set use_latest_attachment=true; Studio securely transfers only the "
+            "newest user attachment. Original video/audio and raw image transfer require "
+            "media_policy=raw_media and the user's explicit Allow raw media switch on the iPhone."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "kind": {
+                    "type": "string",
+                    "enum": [
+                        "subagent", "classification", "summary", "context_compression", "extraction",
+                        "verification", "reranking", "lightweight_planning", "vision", "ocr",
+                        "video_summary", "audio_transcription", "audio_analysis", "dsp",
+                    ],
+                    "description": "Use subagent for a general independent LLM assignment, or a specialized kind when it fits exactly.",
+                },
+                "text": {
+                    "type": "string",
+                    "description": (
+                        "Complete context and source material the isolated subagent needs. For a context-dependent "
+                        "subagent task, pass the relevant visible conversation state instead of asking the iPhone "
+                        "about its own internal context. If omitted for subagent, Desktop supplies a bounded recent "
+                        "visible conversation fallback. Omit normally only for a media-only task."
+                    ),
+                },
+                "items": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 16,
+                    "description": (
+                        "Independent text items for parallel Multi-iPhone work. Use only when "
+                        "each item can complete separately; never split one generation or KV cache."
+                    ),
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": {"type": "string"},
+                            "text": {"type": "string"},
+                            "instruction": {"type": "string"},
+                        },
+                        "required": ["id", "text"],
+                    },
+                },
+                "instruction": {
+                    "type": "string",
+                    "description": "The delegated objective, acceptance criteria, and constraints. Required when kind=subagent has no text.",
+                },
+                "maximum_tokens": {
+                    "type": "integer",
+                    "minimum": 256,
+                    "maximum": 16384,
+                    "description": (
+                        "Output budget chosen by the main Mac model. Use roughly 512-2048 for short answers, "
+                        "4096 for normal substantial work, 8192 for long deliverables, and up to 16384 only when "
+                        "the result genuinely needs it. Desktop automatically clamps this request to the selected "
+                        "iPhone's advertised context capacity; a generation that hits the cap is rejected so the "
+                        "Mac can fall back instead of using truncated text."
+                    ),
+                },
+                "use_latest_attachment": {
+                    "type": "boolean",
+                    "description": "Use media attached to the newest user message. Required for media tasks.",
+                },
+                "media_policy": {
+                    "type": "string",
+                    "enum": ["semantic_only", "derived_media", "raw_media"],
+                    "description": (
+                        "semantic_only for text; derived_media for resized images; raw_media for "
+                        "original image, video, or audio after explicit authorization on iPhone."
+                    ),
+                },
+                "result_schema": {
+                    "type": "object",
+                    "description": "Optional JSON Schema for a structured result. Omit it for exact/free-form subagent text so result.text preserves the requested output.",
+                },
+                "timeout_seconds": {
+                    "type": "number",
+                    "minimum": 10,
+                    "maximum": 3600,
+                    "description": "Deadline for this delegated task; default 180 seconds.",
+                },
+            },
+            "required": ["kind", "maximum_tokens"],
+        },
+    },
+}
+
 ALL_TOOLS = [
     WEB_SEARCH_TOOL,
     PYTHON_TOOL,
@@ -9868,6 +9976,7 @@ ALL_TOOLS = [
     RENDER_HTML_TOOL,
     SEARCH_KNOWLEDGE_BASE_TOOL,
     SEARCH_CONVERSATION_TOOL,
+    IPHONE_COMPANION_TOOL,
     UPDATE_PLAN_TOOL,
 ]
 
@@ -10053,6 +10162,363 @@ def _render_html_result(arguments: dict) -> str:
     )
 
 
+_COMPANION_MEDIA_KINDS = frozenset(
+    {"vision", "ocr", "video_summary", "audio_transcription", "audio_analysis", "dsp"}
+)
+_COMPANION_IMAGE_KINDS = frozenset({"vision", "ocr"})
+_COMPANION_AUDIO_KINDS = frozenset({"audio_transcription", "audio_analysis", "dsp"})
+_COMPANION_MIME_EXTENSIONS = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/heic": ".heic",
+    "image/heif": ".heif",
+    "video/mp4": ".mp4",
+    "video/quicktime": ".mov",
+    "video/x-m4v": ".m4v",
+    "video/webm": ".webm",
+    "video/x-msvideo": ".avi",
+    "audio/wav": ".wav",
+    "audio/x-wav": ".wav",
+    "audio/mpeg": ".mp3",
+    "audio/mp4": ".m4a",
+    "audio/x-m4a": ".m4a",
+    "audio/aac": ".aac",
+    "audio/flac": ".flac",
+    "audio/ogg": ".ogg",
+}
+
+
+def _decode_companion_media_value(value: object, mime_hint: str = "") -> tuple[str, bytes] | None:
+    if not isinstance(value, str) or not value:
+        return None
+    encoded = value
+    mime = mime_hint.strip().lower()
+    if value.startswith("data:"):
+        header, separator, encoded = value.partition(",")
+        if not separator or ";base64" not in header.lower():
+            return None
+        mime = header[5:].split(";", 1)[0].strip().lower() or mime
+    elif not mime:
+        return None
+    try:
+        compact = re.sub(r"\s+", "", encoded)
+        data = base64.b64decode(compact, validate=True)
+    except (binascii.Error, ValueError):
+        return None
+    if not data or not (mime.startswith("image/") or mime.startswith("video/") or mime.startswith("audio/")):
+        return None
+    return mime, data
+
+
+def _sniff_companion_media_mime(data: bytes, expected: str) -> str:
+    head = data[:32]
+    if expected == "audio":
+        if head.startswith(b"RIFF") and head[8:12] == b"WAVE": return "audio/wav"
+        if head.startswith(b"fLaC"): return "audio/flac"
+        if head.startswith(b"ID3") or head[:2] in {b"\xff\xfb", b"\xff\xf3", b"\xff\xf2"}: return "audio/mpeg"
+        if head.startswith(b"OggS"): return "audio/ogg"
+        if b"ftyp" in head: return "audio/mp4"
+    if expected == "video":
+        if b"ftyp" in head: return "video/mp4"
+        if head.startswith(b"\x1aE\xdf\xa3"): return "video/webm"
+        if head.startswith(b"RIFF") and head[8:12] == b"AVI ": return "video/x-msvideo"
+    if expected == "image":
+        if head.startswith(b"\xff\xd8\xff"): return "image/jpeg"
+        if head.startswith(b"\x89PNG\r\n\x1a\n"): return "image/png"
+        if head.startswith(b"RIFF") and head[8:12] == b"WEBP": return "image/webp"
+        if b"ftypheic" in head or b"ftypheif" in head: return "image/heic"
+    return f"{expected}/octet-stream"
+
+
+def _decode_hidden_companion_media(value: object, expected: str) -> tuple[str, bytes] | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        data = base64.b64decode(re.sub(r"\s+", "", value), validate=True)
+    except (binascii.Error, ValueError):
+        return None
+    if not data:
+        return None
+    return _sniff_companion_media_mime(data, expected), data
+
+
+def _latest_companion_media(
+    conversation_branch: list[dict] | None,
+    hidden_media: dict | None = None,
+) -> list[tuple[str, bytes]]:
+    media: list[tuple[str, bytes]] = []
+    for expected, key in (("image", "image_base64"), ("audio", "audio_base64"), ("video", "video_base64")):
+        candidate = _decode_hidden_companion_media((hidden_media or {}).get(key), expected)
+        if candidate is not None:
+            media.append(candidate)
+    if not conversation_branch:
+        return media
+    latest_user = next(
+        (message for message in reversed(conversation_branch) if message.get("role") == "user"),
+        None,
+    )
+    if not isinstance(latest_user, dict):
+        return media
+    content = latest_user.get("content")
+    parts = content if isinstance(content, list) else []
+    for part in parts:
+        if not isinstance(part, dict):
+            continue
+        type_ = str(part.get("type") or "").lower()
+        candidate: tuple[str, bytes] | None = None
+        if type_ in {"image_url", "input_image"}:
+            value = part.get("image_url")
+            if isinstance(value, dict):
+                value = value.get("url")
+            candidate = _decode_companion_media_value(value, "image/png")
+        elif type_ == "image":
+            candidate = _decode_companion_media_value(part.get("image"), "image/png")
+        elif type_ in {"input_audio", "audio"}:
+            value = part.get("input_audio") if type_ == "input_audio" else part.get("audio")
+            format_ = "wav"
+            if isinstance(value, dict):
+                format_ = str(value.get("format") or format_).lower()
+                value = value.get("data")
+            mime = {"wav": "audio/wav", "mp3": "audio/mpeg", "m4a": "audio/mp4", "flac": "audio/flac"}.get(format_, "audio/wav")
+            candidate = _decode_companion_media_value(value, mime)
+        elif type_ in {"file", "video_url"}:
+            value = part.get("data") or part.get("file_data") or part.get("video_url")
+            if isinstance(value, dict):
+                value = value.get("url") or value.get("data")
+            mime = str(part.get("mimeType") or part.get("mime_type") or "")
+            candidate = _decode_companion_media_value(value, mime)
+        if candidate is not None:
+            media.append(candidate)
+    return media
+
+
+def _derived_companion_image(data: bytes) -> bytes:
+    from PIL import Image, ImageOps
+
+    with Image.open(io.BytesIO(data)) as image:
+        rendered = ImageOps.exif_transpose(image).convert("RGB")
+        rendered.thumbnail((1536, 1536), Image.Resampling.LANCZOS)
+        output = io.BytesIO()
+        rendered.save(output, format="JPEG", quality=82, optimize=True)
+        return output.getvalue()
+
+
+def _visible_companion_context(conversation_branch: list[dict] | None) -> str:
+    """Bounded user/assistant context for an isolated subagent when the Mac model omits text."""
+    if not conversation_branch:
+        return ""
+
+    rendered: list[str] = []
+    for message in reversed(conversation_branch):
+        if not isinstance(message, dict):
+            continue
+        role = str(message.get("role") or "").lower()
+        if role not in {"user", "assistant"}:
+            continue
+        content = message.get("content")
+        text = ""
+        if isinstance(content, str):
+            text = content.strip()
+        elif isinstance(content, list):
+            parts: list[str] = []
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                value = part.get("text") or part.get("content")
+                if isinstance(value, str) and value.strip():
+                    parts.append(value.strip())
+            text = "\n".join(parts)
+        if not text:
+            continue
+        rendered.append(f"{role.upper()}: {text}")
+        if sum(len(value) for value in rendered) >= 24_000:
+            break
+    return "\n\n".join(reversed(rendered))[-24_000:]
+
+
+def _execute_iphone_companion(
+    arguments: dict,
+    *,
+    cancel_event: object = None,
+    thread_id: str | None = None,
+    conversation_branch: list[dict] | None = None,
+    rag_scope: dict | None = None,
+) -> str:
+    from core.companion import companion_manager
+    from core.companion.models import CompanionTask
+
+    kind = str((arguments or {}).get("kind") or "").strip()
+    media_task = kind in _COMPANION_MEDIA_KINDS
+    text = str((arguments or {}).get("text") or "").strip()
+    instruction = str((arguments or {}).get("instruction") or "").strip()
+    if kind == "subagent" and not text:
+        text = _visible_companion_context(conversation_branch)
+    raw_items = (arguments or {}).get("items")
+    items: list[dict[str, str]] = []
+    if isinstance(raw_items, list):
+        for index, value in enumerate(raw_items[:16]):
+            if not isinstance(value, dict):
+                continue
+            item_text = str(value.get("text") or "").strip()
+            if not item_text:
+                continue
+            items.append(
+                {
+                    "id": str(value.get("id") or index),
+                    "text": item_text,
+                    "instruction": str(value.get("instruction") or "").strip(),
+                }
+            )
+    if not kind:
+        return "iPhone Companion error: task kind is required. Continue on the Mac."
+    if media_task and items:
+        return "iPhone Companion error: parallel items are for independent text tasks only. Continue on the Mac."
+    if not media_task and not text and not items:
+        return "iPhone Companion error: this text task has no source material. Continue on the Mac."
+
+    try:
+        maximum_tokens = max(256, min(16_384, int((arguments or {}).get("maximum_tokens") or 4_096)))
+    except (TypeError, ValueError):
+        maximum_tokens = 4_096
+    try:
+        timeout_seconds = max(10.0, min(3600.0, float((arguments or {}).get("timeout_seconds") or 180)))
+    except (TypeError, ValueError):
+        timeout_seconds = 180.0
+
+    requested_policy = str((arguments or {}).get("media_policy") or "").strip()
+    if media_task:
+        if (arguments or {}).get("use_latest_attachment") is not True:
+            return "iPhone Companion error: set use_latest_attachment=true for a media task. Continue on the Mac."
+        media = _latest_companion_media(
+            conversation_branch,
+            (rag_scope or {}).get("_companion_media"),
+        )
+        expected_prefix = "image/" if kind in _COMPANION_IMAGE_KINDS else "video/" if kind == "video_summary" else "audio/"
+        media = [(mime, data) for mime, data in media if mime.startswith(expected_prefix)]
+        if not media:
+            return "iPhone Companion error: no compatible media exists on the newest user message. Continue on the Mac."
+        policy = requested_policy or ("derived_media" if kind in _COMPANION_IMAGE_KINDS else "raw_media")
+        if policy == "semantic_only":
+            return "iPhone Companion error: semantic_only cannot transfer media. Continue on the Mac."
+        if policy == "derived_media" and kind not in _COMPANION_IMAGE_KINDS:
+            return "iPhone Companion error: audio and video require raw_media plus explicit authorization on the iPhone. Continue on the Mac."
+    else:
+        media = []
+        policy = "semantic_only"
+
+    result_schema = (arguments or {}).get("result_schema")
+    if not isinstance(result_schema, dict):
+        result_schema = {}
+    canonical = json.dumps(arguments or {}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    media_digest = hashlib.sha256()
+    for mime, data in media:
+        media_digest.update(mime.encode("utf-8"))
+        media_digest.update(hashlib.sha256(data).digest())
+    digest = hashlib.sha256(
+        ((thread_id or "") + "\n" + canonical + "\n" + media_digest.hexdigest()).encode("utf-8")
+    ).hexdigest()
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="unsloth-companion-task-") as temp_root:
+            media_paths: list[str] = []
+            for index, (mime, data) in enumerate(media):
+                if policy == "derived_media":
+                    data = _derived_companion_image(data)
+                    mime = "image/jpeg"
+                extension = _COMPANION_MIME_EXTENSIONS.get(mime, ".bin")
+                path = os.path.join(temp_root, f"attachment-{index:04d}{extension}")
+                with open(path, "wb") as handle:
+                    handle.write(data)
+                media_paths.append(path)
+            task_input: dict[str, object] = {
+                "text": text,
+                "instruction": instruction,
+                "maximumTokens": maximum_tokens,
+            }
+            if media_paths:
+                task_input["mediaPaths"] = media_paths
+            if items:
+                parent_id = uuid.uuid4()
+                tasks = [
+                    CompanionTask(
+                        taskID=uuid.uuid4(),
+                        parentTaskID=parent_id,
+                        idempotencyKey=(
+                            "companion-"
+                            + hashlib.sha256(
+                                f"{digest}:{index}:{item['id']}:{item['text']}".encode("utf-8")
+                            ).hexdigest()
+                        ),
+                        kind=kind,
+                        priority=70,
+                        timeoutSeconds=timeout_seconds,
+                        mediaPolicy="semantic_only",
+                        input={
+                            "text": item["text"],
+                            "instruction": item["instruction"]
+                            or str((arguments or {}).get("instruction") or "").strip(),
+                            "maximumTokens": maximum_tokens,
+                        },
+                        resultSchema=result_schema,
+                    )
+                    for index, item in enumerate(items)
+                ]
+                if companion_manager.settings.mode.value == "multiple":
+                    results = companion_manager.dispatch_many_sync(
+                        tasks, cancel_event=cancel_event
+                    )
+                else:
+                    results = [
+                        companion_manager.dispatch_sync(task, cancel_event=cancel_event)
+                        for task in tasks
+                    ]
+                batch_output = [
+                    {
+                        "id": item["id"],
+                        "taskID": str(result.taskID),
+                        "durationMS": result.durationMS,
+                        "tokensGenerated": result.tokensGenerated,
+                        "result": result.result,
+                    }
+                    for item, result in zip(items, results, strict=True)
+                ]
+                result = None
+            else:
+                task = CompanionTask(
+                    taskID=uuid.uuid4(),
+                    idempotencyKey=f"companion-{digest}",
+                    kind=kind,
+                    priority=70,
+                    timeoutSeconds=timeout_seconds,
+                    mediaPolicy=policy,
+                    input=task_input,
+                    resultSchema=result_schema,
+                )
+                result = companion_manager.dispatch_sync(task, cancel_event=cancel_event)
+                batch_output = None
+    except Exception as exc:  # noqa: BLE001 - disconnects and policy refusals must fall back cleanly
+        logger.info("iPhone Companion task unavailable: %s", type(exc).__name__)
+        return f"iPhone Companion unavailable: {exc}. Continue this request on the Mac without retrying the same iPhone task."
+
+    payload = (
+        {"source": "iPhone Companion", "parallelResults": batch_output}
+        if batch_output is not None
+        else {
+            "source": "iPhone Companion",
+            "taskID": str(result.taskID),
+            "durationMS": result.durationMS,
+            "tokensGenerated": result.tokensGenerated,
+            "result": result.result,
+        }
+    )
+    return json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
 def execute_tool(
     name: str,
     arguments: dict,
@@ -10111,6 +10577,14 @@ def execute_tool(
         )
     if name == "render_html":
         return _render_html_result(arguments)
+    if name == "iphone_companion":
+        return _execute_iphone_companion(
+            arguments,
+            cancel_event=cancel_event,
+            thread_id=thread_id,
+            conversation_branch=conversation_branch,
+            rag_scope=rag_scope,
+        )
     if name.startswith(MCP_TOOL_PREFIX):
         try:
             _, server_id, tool_name = name.split("__", 2)

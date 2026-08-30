@@ -1,0 +1,3 @@
+"NSLocalNetworkUsageDescription" = "Unsloth Companion usa la rete locale per ricevere attività private dal Mac associato.";
+"NSCameraUsageDescription" = "La fotocamera viene usata solo dopo una conferma locale per elaborare immagini su questo iPhone.";
+"NSMicrophoneUsageDescription" = "Il microfono viene usato solo dopo una conferma locale per elaborare audio su questo iPhone.";

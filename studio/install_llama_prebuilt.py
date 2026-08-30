@@ -5891,9 +5891,16 @@ def _fork_manifest_release_plans(
     requested_tag = normalized_requested_llama_tag(llama_tag)
     allow_older_release_fallback = requested_tag == "latest" and not published_release_tag
     release_limit = max(1, max_release_fallbacks)
-    # macOS may need to walk past a run of too-new prebuilts. Only when the host
-    # version is known; otherwise keep the default (cannot tell up front).
-    if host.is_macos and allow_older_release_fallback and host.macos_version is not None:
+    # Pre-Tahoe macOS may need to walk past a run of prebuilts built for a newer
+    # deployment target. Tahoe and later can use the normal bounded fallback:
+    # eagerly resolving 16 releases delays startup and can exhaust the GitHub API
+    # even when the first release already matches the installed runtime.
+    if (
+        host.is_macos
+        and allow_older_release_fallback
+        and host.macos_version is not None
+        and host.macos_version < _PINNED_MACOS_LATEST_FLOOR
+    ):
         release_limit = max(release_limit, DEFAULT_MAX_MACOS_RELEASE_FALLBACKS)
     plans: list[InstallReleasePlan] = []
     last_error: PrebuiltFallback | None = None

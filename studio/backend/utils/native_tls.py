@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import logging
 import os
+import ssl
 import sys
 from pathlib import Path
 
@@ -53,6 +54,12 @@ _VENDOR_DIR = str(Path(__file__).resolve().parent.parent / "vendor")
 
 _logger = logging.getLogger(__name__)
 _activated = False
+_ORIGINAL_SSL_CONTEXT = ssl.SSLContext
+
+
+def create_server_ssl_context() -> ssl.SSLContext:
+    """Create an inbound TLS context unaffected by truststore's client-only patch."""
+    return _ORIGINAL_SSL_CONTEXT(ssl.PROTOCOL_TLS_SERVER)
 
 
 def native_tls_enabled() -> bool:

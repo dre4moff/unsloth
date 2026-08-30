@@ -1,0 +1,261 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://unsloth.ai/schemas/companion/v1.json",
+  "title": "Unsloth Companion Protocol v1",
+  "type": "object",
+  "required": ["protocolVersion", "messageID", "sentAt", "type", "payload"],
+  "properties": {
+    "protocolVersion": { "const": 1 },
+    "messageID": { "type": "string", "format": "uuid" },
+    "sentAt": { "type": "string", "format": "date-time" },
+    "type": {
+      "enum": [
+        "hello", "challenge", "challenge_response", "pairing_offer",
+        "pairing_confirm", "pairing_result", "capabilities", "heartbeat",
+        "client_draining", "task_submit", "task_accepted", "task_progress",
+        "task_token", "lease_renew", "task_cancel", "task_cancelled",
+        "task_completed", "task_failed", "blob_begin", "blob_end"
+      ]
+    },
+    "payload": { "type": "object" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "type": { "const": "hello" } } },
+      "then": { "properties": { "payload": { "$ref": "#/$defs/hello" } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "challenge" } } },
+      "then": { "properties": { "payload": { "$ref": "#/$defs/challenge" } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "challenge_response" } } },
+      "then": { "properties": { "payload": { "$ref": "#/$defs/challengeResponse" } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "pairing_offer" } } },
+      "then": { "properties": { "payload": { "$ref": "#/$defs/pairingOffer" } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "pairing_confirm" } } },
+      "then": { "properties": { "payload": { "$ref": "#/$defs/pairingConfirm" } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "pairing_result" } } },
+      "then": { "properties": { "payload": { "$ref": "#/$defs/pairingResult" } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "capabilities" } } },
+      "then": { "properties": { "payload": { "$ref": "#/$defs/capabilities" } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "heartbeat" } } },
+      "then": { "properties": { "payload": { "$ref": "#/$defs/heartbeat" } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "client_draining" } } },
+      "then": { "properties": { "payload": { "$ref": "#/$defs/draining" } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "task_submit" } } },
+      "then": { "properties": { "payload": { "$ref": "#/$defs/task" } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "task_completed" } } },
+      "then": { "properties": { "payload": { "$ref": "#/$defs/result" } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "task_accepted" } } },
+      "then": { "properties": { "payload": { "$ref": "#/$defs/taskAccepted" } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "task_progress" } } },
+      "then": { "properties": { "payload": { "$ref": "#/$defs/taskProgress" } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "task_token" } } },
+      "then": { "properties": { "payload": { "$ref": "#/$defs/taskToken" } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "lease_renew" } } },
+      "then": { "properties": { "payload": { "$ref": "#/$defs/taskReference" } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "task_cancel" } } },
+      "then": { "properties": { "payload": { "$ref": "#/$defs/taskCancel" } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "task_cancelled" } } },
+      "then": { "properties": { "payload": { "$ref": "#/$defs/taskCancelled" } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "task_failed" } } },
+      "then": { "properties": { "payload": { "$ref": "#/$defs/failure" } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "blob_begin" } } },
+      "then": { "properties": { "payload": { "$ref": "#/$defs/blob" } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "blob_end" } } },
+      "then": { "properties": { "payload": { "$ref": "#/$defs/blobReference" } } }
+    }
+  ],
+  "$defs": {
+    "uuid": { "type": "string", "format": "uuid" },
+    "base64": { "type": "string", "contentEncoding": "base64" },
+    "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "hello": {
+      "type": "object", "additionalProperties": false,
+      "required": ["deviceID", "deviceName", "devicePublicKey"],
+      "properties": {
+        "deviceID": { "$ref": "#/$defs/uuid" }, "deviceName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "devicePublicKey": { "$ref": "#/$defs/base64" }, "pairedDesktopID": { "$ref": "#/$defs/uuid" }
+      }
+    },
+    "challenge": {
+      "type": "object", "additionalProperties": false,
+      "required": ["desktopID", "nonce", "signature"],
+      "properties": { "desktopID": { "$ref": "#/$defs/uuid" }, "nonce": { "$ref": "#/$defs/base64" }, "signature": { "$ref": "#/$defs/base64" } }
+    },
+    "challengeResponse": {
+      "type": "object", "additionalProperties": false, "required": ["deviceID", "signature"],
+      "properties": { "deviceID": { "$ref": "#/$defs/uuid" }, "signature": { "$ref": "#/$defs/base64" } }
+    },
+    "pairingOffer": {
+      "type": "object", "additionalProperties": false,
+      "required": ["desktopID", "desktopName", "signingPublicKey", "nonce", "certificateSHA256"],
+      "properties": {
+        "desktopID": { "$ref": "#/$defs/uuid" }, "desktopName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "signingPublicKey": { "$ref": "#/$defs/base64" }, "nonce": { "$ref": "#/$defs/base64" },
+        "certificateSHA256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "pairingConfirm": {
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["preview", "confirmed", "deviceID", "deviceName", "devicePublicKey", "nonce", "signature"],
+          "properties": {
+            "preview": { "const": true }, "confirmed": { "const": false }, "deviceID": { "$ref": "#/$defs/uuid" },
+            "deviceName": { "type": "string", "minLength": 1, "maxLength": 80 }, "devicePublicKey": { "$ref": "#/$defs/base64" },
+            "nonce": { "$ref": "#/$defs/base64" }, "signature": { "$ref": "#/$defs/base64" }
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["desktopID", "deviceID", "deviceName", "devicePublicKey", "signature", "confirmed"],
+          "properties": {
+            "desktopID": { "$ref": "#/$defs/uuid" }, "deviceID": { "$ref": "#/$defs/uuid" },
+            "deviceName": { "type": "string", "minLength": 1, "maxLength": 80 }, "devicePublicKey": { "$ref": "#/$defs/base64" },
+            "signature": { "$ref": "#/$defs/base64" }, "confirmed": { "const": true }
+          }
+        },
+        { "type": "object", "additionalProperties": false, "required": ["confirmed"], "properties": { "confirmed": { "const": false } } }
+      ]
+    },
+    "pairingResult": {
+      "type": "object", "additionalProperties": false, "required": ["accepted"],
+      "properties": { "accepted": { "type": "boolean" } }
+    },
+    "capabilities": {
+      "type": "object", "additionalProperties": false,
+      "required": ["protocolVersion", "deviceID", "deviceName", "runtimeVersion", "taskKinds", "selectedModelID", "supportsVision", "supportsAudio", "contextSize", "maxRawMediaBytes"],
+      "properties": {
+        "protocolVersion": { "const": 1 }, "deviceID": { "$ref": "#/$defs/uuid" }, "deviceName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "runtimeVersion": { "type": "string", "minLength": 1 }, "taskKinds": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/taskKind" } },
+        "selectedModelID": { "type": ["string", "null"] }, "supportsVision": { "type": "boolean" }, "supportsAudio": { "type": "boolean" },
+        "contextSize": { "type": "integer", "minimum": 0 }, "maxRawMediaBytes": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "heartbeat": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["echoMonotonic"], "properties": { "echoMonotonic": { "type": "number", "minimum": 0 } } },
+        { "type": "object", "additionalProperties": false, "required": ["echoMonotonic", "battery", "lowPowerMode", "thermalState", "state", "storageFreeBytes"], "properties": {
+          "echoMonotonic": { "type": "number", "minimum": 0 }, "battery": { "type": "number", "minimum": 0, "maximum": 1 },
+          "lowPowerMode": { "type": "boolean" }, "thermalState": { "type": "integer", "minimum": 0, "maximum": 3 },
+          "state": { "enum": ["offline", "discovering", "pairing", "ready", "leased", "running", "draining", "suspended"] },
+          "storageFreeBytes": { "type": "integer", "minimum": 0 }
+        } }
+      ]
+    },
+    "draining": { "type": "object", "additionalProperties": false, "required": ["reason"], "properties": { "reason": { "$ref": "#/$defs/cancellationReason" } } },
+    "taskKind": {
+      "enum": [
+        "subagent", "classification", "summary", "context_compression", "extraction",
+        "verification", "reranking", "lightweight_planning", "vision",
+        "ocr", "video_summary", "audio_transcription", "audio_analysis",
+        "dsp"
+      ]
+    },
+    "mediaPolicy": { "enum": ["semantic_only", "derived_media", "raw_media"] },
+    "task": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "taskID", "idempotencyKey", "kind", "priority", "timeoutSeconds",
+        "leaseSeconds", "mediaPolicy", "input", "resultSchema"
+      ],
+      "properties": {
+        "taskID": { "type": "string", "format": "uuid" },
+        "parentTaskID": { "type": ["string", "null"], "format": "uuid" },
+        "shardIndex": { "type": ["integer", "null"], "minimum": 0 },
+        "shardCount": { "type": ["integer", "null"], "minimum": 1 },
+        "idempotencyKey": { "type": "string", "minLength": 16, "maxLength": 128 },
+        "kind": { "$ref": "#/$defs/taskKind" },
+        "priority": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "timeoutSeconds": { "type": "number", "exclusiveMinimum": 0, "maximum": 3600 },
+        "leaseSeconds": { "type": "number", "minimum": 10, "maximum": 120 },
+        "mediaPolicy": { "$ref": "#/$defs/mediaPolicy" },
+        "input": { "type": "object" },
+        "resultSchema": { "type": "object" }
+      },
+      "allOf": [
+        { "if": { "required": ["shardIndex"] }, "then": { "required": ["parentTaskID", "shardCount"] } }
+      ]
+    },
+    "taskReference": { "type": "object", "additionalProperties": false, "required": ["taskID"], "properties": { "taskID": { "$ref": "#/$defs/uuid" } } },
+    "taskAccepted": { "type": "object", "additionalProperties": false, "required": ["taskID", "leaseSeconds"], "properties": { "taskID": { "$ref": "#/$defs/uuid" }, "leaseSeconds": { "type": "number", "minimum": 10, "maximum": 120 } } },
+    "taskProgress": { "type": "object", "additionalProperties": false, "required": ["taskID", "progress"], "properties": { "taskID": { "$ref": "#/$defs/uuid" }, "progress": { "type": "number", "minimum": 0, "maximum": 1 }, "detail": { "type": "string", "maxLength": 256 } } },
+    "taskToken": { "type": "object", "additionalProperties": false, "required": ["taskID", "token"], "properties": { "taskID": { "$ref": "#/$defs/uuid" }, "token": { "type": "string" } } },
+    "taskCancel": { "type": "object", "additionalProperties": false, "required": ["taskID"], "properties": { "taskID": { "$ref": "#/$defs/uuid" }, "explicitUser": { "type": "boolean" }, "reason": { "$ref": "#/$defs/cancellationReason" } } },
+    "taskCancelled": { "type": "object", "additionalProperties": false, "required": ["taskID", "reason"], "properties": { "taskID": { "$ref": "#/$defs/uuid" }, "reason": { "$ref": "#/$defs/cancellationReason" } } },
+    "cancellationReason": { "enum": ["user", "companion_disabled", "desktop_request", "backgrounded", "lease_expired", "thermal_pressure", "memory_pressure", "low_battery", "connection_lost"] },
+    "blob": {
+      "type": "object", "additionalProperties": false, "required": ["blobID", "taskID", "name", "mimeType", "size", "sha256"],
+      "properties": { "blobID": { "$ref": "#/$defs/uuid" }, "taskID": { "$ref": "#/$defs/uuid" }, "name": { "type": "string", "minLength": 1, "maxLength": 255 }, "mimeType": { "type": "string", "minLength": 1, "maxLength": 127 }, "size": { "type": "integer", "minimum": 0, "maximum": 2147483648 }, "sha256": { "$ref": "#/$defs/sha256" } }
+    },
+    "blobReference": { "type": "object", "additionalProperties": false, "required": ["blobID"], "properties": { "blobID": { "$ref": "#/$defs/uuid" } } },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["taskID", "result", "sha256", "durationMS", "tokensGenerated"],
+      "properties": {
+        "taskID": { "type": "string", "format": "uuid" },
+        "result": { "type": "object" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "durationMS": { "type": "integer", "minimum": 0 },
+        "tokensGenerated": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "failure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["taskID", "code", "message", "retryable"],
+      "properties": {
+        "taskID": { "type": "string", "format": "uuid" },
+        "code": {
+          "enum": [
+            "protocol_incompatible", "not_paired", "authentication_failed",
+            "capability_unavailable", "model_missing", "checksum_failed",
+            "storage_insufficient", "memory_pressure", "thermal_pressure",
+            "permission_denied", "payload_corrupt", "lease_expired", "timeout",
+            "cancelled", "connection_lost", "runtime_error"
+          ]
+        },
+        "message": { "type": "string", "maxLength": 512 },
+        "retryable": { "type": "boolean" }
+      }
+    }
+  }
+}
