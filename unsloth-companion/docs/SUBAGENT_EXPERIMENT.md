@@ -1,6 +1,6 @@
 # Report — Test tool `iphone_companion` come subagente
 
-> Aggiornamento 2026-08-30, release `companion9`: il comportamento descritto sotto appartiene alle corse precedenti al fix. Il prompt del subagente ora vieta esplicitamente di ripetere/riformulare l'obiettivo e usa il contesto visibile fornito dal Mac per riferimenti come "ora" o "contesto corrente". Il modello principale Mac sceglie inoltre `maximum_tokens` (256-16384), il Desktop lo limita alla capacita annunciata dall'iPhone e l'iPhone scarta una generazione che raggiunge il cap senza EOS, forzando il fallback Mac invece di restituire testo troncato. Nessun nuovo test del subagente e stato eseguito durante questo intervento, come richiesto.
+> Aggiornamento 2026-08-31, release `companion10`: il comportamento descritto sotto appartiene alle corse precedenti ai fix. Oltre alle correzioni di prompt/output di `companion9`, il tool ora usa un contratto asincrono: `submit` restituisce subito un job ID, il Mac continua il proprio lavoro e recupera in seguito il risultato con `collect`, senza polling bloccante. Nessun nuovo test fisico del subagente e stato eseguito durante questo intervento, come richiesto.
 
 **Data:** 2026-08-30
 **Ambiente:** macOS, host locale redatto prima della pubblicazione

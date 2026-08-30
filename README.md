@@ -26,7 +26,9 @@ Unsloth is the first desktop app to run and train models.
 > This fork contains the **Unsloth Companion open prototype**: model-aware context
 > compaction, a persistent objective/checklist, and a local iPhone subagent network.
 > The Mac remains the orchestrator and fallback while one or more paired phones can
-> execute independent offline tasks in parallel. Start with the
+> execute independent offline tasks in parallel. Companion submissions are asynchronous:
+> the Mac continues working, then collects completed phone results from its per-chat mailbox.
+> Start with the
 > [prototype overview](unsloth-companion/README.md), the
 > [vision](unsloth-companion/docs/VISION.md), and the
 > [integration guide](unsloth-companion/docs/INTEGRATION_GUIDE.md).

@@ -32,12 +32,20 @@ Il Mac è sempre l'orchestratore. Un task non divisibile viene eseguito da un so
 
 ## Desktop
 
-- `core.companion.manager`: listener WSS, Bonjour, pairing, heartbeat, selezione device e task.
+- `core.companion.manager`: listener WSS, Bonjour, pairing, heartbeat, selezione device,
+  esecuzione in background e mailbox dei risultati isolata per chat.
 - `core.companion.models`: contratto Pydantic del protocollo e tipi di stato pubblici.
 - `core.companion.security`: identità P-256 e certificato TLS locale.
 - `routes.companion`: status, settings, pairing, rename, enable, revoke e cancel.
 - orchestratore esistente: delega della compressione contesto quando un iPhone idoneo è pronto; altrimenti conserva il percorso Mac.
 - frontend Connections: switch globale, auto-best, Multi-iPhone, stato device e cancellazione dell'attività corrente.
+
+Il tool Desktop usa tre azioni. `submit` registra il job e restituisce subito il suo
+ID, senza attendere l'inferenza dell'iPhone; `status` legge uno snapshot senza attesa;
+`collect` preleva i risultati terminali quando servono al modello principale. Il job
+non dipende dal ciclo di vita del turno Mac che lo ha avviato. I job pronti vengono
+segnalati nel catalogo tool dei passaggi successivi, ma non interrompono una generazione
+Mac in corso e non causano polling attivo.
 
 ## Routing
 

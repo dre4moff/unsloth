@@ -48,6 +48,12 @@ The iPhone may send `task_accepted`, `task_progress`, and provisional `task_toke
 
 `task_cancel` distinguishes explicit user cancellation from service disablement. Explicit user cancellation does not cause automatic fallback; disabling Companion transfers eligible work to the Mac.
 
+The wire protocol remains completion-based, but the Desktop caller is asynchronous:
+after `task_submit` is admitted, the Mac-side tool returns a job handle instead of
+waiting for `task_completed`. Terminal envelopes are retained in a per-chat Desktop
+mailbox and collected later. This mailbox is an orchestrator concern and does not change
+protocol version 1 or require a new iPhone message type.
+
 ## Binary media
 
 `blob_begin` declares blob UUID, task UUID, collision-safe remote name, MIME type, byte count, and SHA-256. Binary frames then carry chunks of at most 1 MiB under the transport send lock, providing backpressure. `blob_end` closes the blob. The iPhone verifies declared size and digest before exposing a completed file to a task.

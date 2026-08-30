@@ -4,8 +4,8 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
-app_version="0.1.800-mlx.9"
-backend_version="2026.8.18+mlxcompaction8.companion9"
+app_version="0.1.800-mlx.10"
+backend_version="2026.8.18+mlxcompaction8.companion10"
 rust_toolchain="1.89.0"
 wheel_name="unsloth-${backend_version}-py3-none-any.whl"
 resource_dir="$repo_root/studio/src-tauri/resources/backend"
@@ -106,10 +106,20 @@ if ! unzip -Z1 "$built_wheel" \
     echo "Backend wheel does not contain the iPhone Companion manager." >&2
     exit 1
 fi
+unzip -p "$built_wheel" studio/backend/core/companion/manager.py \
+    >"$wheel_workspace/companion-manager.py"
+if ! grep -Fq 'def submit_background_sync' "$wheel_workspace/companion-manager.py"; then
+    echo "Backend wheel does not contain the asynchronous Companion mailbox." >&2
+    exit 1
+fi
 unzip -p "$built_wheel" studio/backend/core/inference/tools.py \
     >"$wheel_workspace/tools.py"
 if ! grep -Fq '"name": "iphone_companion"' "$wheel_workspace/tools.py"; then
     echo "Backend wheel does not expose the iPhone Companion chat tool." >&2
+    exit 1
+fi
+if ! grep -Fq '"enum": ["submit", "status", "collect"]' "$wheel_workspace/tools.py"; then
+    echo "Backend wheel does not expose asynchronous Companion tool actions." >&2
     exit 1
 fi
 

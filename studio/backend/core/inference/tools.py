@@ -16,6 +16,7 @@ import json
 import http.client
 import os
 import signal
+from pathlib import Path
 
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
@@ -9870,7 +9871,11 @@ IPHONE_COMPANION_TOOL = {
     "function": {
         "name": "iphone_companion",
         "description": (
-            "Launch an independent local LLM subagent on the user's paired iPhone Companion. "
+            "Manage independent local LLM subagents on the user's paired iPhone Companion. "
+            "action=submit dispatches work and returns a job ID immediately: the Mac must continue "
+            "its own work instead of waiting for the iPhone. On a later reasoning pass, use "
+            "action=status for a non-blocking snapshot or action=collect to take completed work. "
+            "Never busy-poll and never treat a running status as a reason to stop Mac-side progress. "
             "This is not limited to context compression: use kind=subagent for a self-contained "
             "reasoning, analysis, drafting, review, planning, or transformation subtask, passing "
             "all context it needs. The Mac remains the orchestrator and fallback: choose an explicit "
@@ -9888,6 +9893,19 @@ IPHONE_COMPANION_TOOL = {
         "parameters": {
             "type": "object",
             "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["submit", "status", "collect"],
+                    "description": (
+                        "submit starts work asynchronously; status checks without waiting; collect returns "
+                        "completed results without waiting. Use collect with no job_id to take every ready "
+                        "result for this chat."
+                    ),
+                },
+                "job_id": {
+                    "type": "string",
+                    "description": "Job ID returned by submit. Optional for status and collect; omit to inspect this chat's mailbox.",
+                },
                 "kind": {
                     "type": "string",
                     "enum": [
@@ -9963,7 +9981,7 @@ IPHONE_COMPANION_TOOL = {
                     "description": "Deadline for this delegated task; default 180 seconds.",
                 },
             },
-            "required": ["kind", "maximum_tokens"],
+            "required": ["action"],
         },
     },
 }
@@ -10348,6 +10366,31 @@ def _execute_iphone_companion(
     from core.companion import companion_manager
     from core.companion.models import CompanionTask
 
+    action = str((arguments or {}).get("action") or "submit").strip().lower()
+    if action in {"status", "collect"}:
+        raw_job_id = str((arguments or {}).get("job_id") or "").strip()
+        try:
+            job_id = uuid.UUID(raw_job_id) if raw_job_id else None
+        except ValueError:
+            return "iPhone Companion error: job_id must be a UUID."
+        try:
+            payload = (
+                companion_manager.background_status_sync(
+                    thread_id=thread_id,
+                    job_id=job_id,
+                )
+                if action == "status"
+                else companion_manager.collect_background_sync(
+                    thread_id=thread_id,
+                    job_id=job_id,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - mailbox errors are model-visible
+            return f"iPhone Companion mailbox unavailable: {exc}. Continue on the Mac."
+        return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    if action != "submit":
+        return "iPhone Companion error: action must be submit, status, or collect."
+
     kind = str((arguments or {}).get("kind") or "").strip()
     media_task = kind in _COMPANION_MEDIA_KINDS
     text = str((arguments or {}).get("text") or "").strip()
@@ -10376,6 +10419,8 @@ def _execute_iphone_companion(
         return "iPhone Companion error: parallel items are for independent text tasks only. Continue on the Mac."
     if not media_task and not text and not items:
         return "iPhone Companion error: this text task has no source material. Continue on the Mac."
+    if (arguments or {}).get("maximum_tokens") is None:
+        return "iPhone Companion error: maximum_tokens is required when action=submit. Continue on the Mac."
 
     try:
         maximum_tokens = max(256, min(16_384, int((arguments or {}).get("maximum_tokens") or 4_096)))
@@ -10419,73 +10464,56 @@ def _execute_iphone_companion(
         ((thread_id or "") + "\n" + canonical + "\n" + media_digest.hexdigest()).encode("utf-8")
     ).hexdigest()
 
+    temp_root: str | None = None
     try:
-        with tempfile.TemporaryDirectory(prefix="unsloth-companion-task-") as temp_root:
-            media_paths: list[str] = []
-            for index, (mime, data) in enumerate(media):
-                if policy == "derived_media":
-                    data = _derived_companion_image(data)
-                    mime = "image/jpeg"
-                extension = _COMPANION_MIME_EXTENSIONS.get(mime, ".bin")
-                path = os.path.join(temp_root, f"attachment-{index:04d}{extension}")
-                with open(path, "wb") as handle:
-                    handle.write(data)
-                media_paths.append(path)
-            task_input: dict[str, object] = {
-                "text": text,
-                "instruction": instruction,
-                "maximumTokens": maximum_tokens,
-            }
-            if media_paths:
-                task_input["mediaPaths"] = media_paths
-            if items:
-                parent_id = uuid.uuid4()
-                tasks = [
-                    CompanionTask(
-                        taskID=uuid.uuid4(),
-                        parentTaskID=parent_id,
-                        idempotencyKey=(
-                            "companion-"
-                            + hashlib.sha256(
-                                f"{digest}:{index}:{item['id']}:{item['text']}".encode("utf-8")
-                            ).hexdigest()
-                        ),
-                        kind=kind,
-                        priority=70,
-                        timeoutSeconds=timeout_seconds,
-                        mediaPolicy="semantic_only",
-                        input={
-                            "text": item["text"],
-                            "instruction": item["instruction"]
-                            or str((arguments or {}).get("instruction") or "").strip(),
-                            "maximumTokens": maximum_tokens,
-                        },
-                        resultSchema=result_schema,
-                    )
-                    for index, item in enumerate(items)
-                ]
-                if companion_manager.settings.mode.value == "multiple":
-                    results = companion_manager.dispatch_many_sync(
-                        tasks, cancel_event=cancel_event
-                    )
-                else:
-                    results = [
-                        companion_manager.dispatch_sync(task, cancel_event=cancel_event)
-                        for task in tasks
-                    ]
-                batch_output = [
-                    {
-                        "id": item["id"],
-                        "taskID": str(result.taskID),
-                        "durationMS": result.durationMS,
-                        "tokensGenerated": result.tokensGenerated,
-                        "result": result.result,
-                    }
-                    for item, result in zip(items, results, strict=True)
-                ]
-                result = None
-            else:
-                task = CompanionTask(
+        media_paths: list[str] = []
+        if media:
+            temp_root = tempfile.mkdtemp(prefix="unsloth-companion-task-")
+        for index, (mime, data) in enumerate(media):
+            if policy == "derived_media":
+                data = _derived_companion_image(data)
+                mime = "image/jpeg"
+            extension = _COMPANION_MIME_EXTENSIONS.get(mime, ".bin")
+            path = os.path.join(temp_root or "", f"attachment-{index:04d}{extension}")
+            with open(path, "wb") as handle:
+                handle.write(data)
+            media_paths.append(path)
+        task_input: dict[str, object] = {
+            "text": text,
+            "instruction": instruction,
+            "maximumTokens": maximum_tokens,
+        }
+        if media_paths:
+            task_input["mediaPaths"] = media_paths
+        if items:
+            parent_id = uuid.uuid4()
+            tasks = [
+                CompanionTask(
+                    taskID=uuid.uuid4(),
+                    parentTaskID=parent_id,
+                    idempotencyKey=(
+                        "companion-"
+                        + hashlib.sha256(
+                            f"{digest}:{index}:{item['id']}:{item['text']}".encode("utf-8")
+                        ).hexdigest()
+                    ),
+                    kind=kind,
+                    priority=70,
+                    timeoutSeconds=timeout_seconds,
+                    mediaPolicy="semantic_only",
+                    input={
+                        "text": item["text"],
+                        "instruction": item["instruction"] or instruction,
+                        "maximumTokens": maximum_tokens,
+                    },
+                    resultSchema=result_schema,
+                )
+                for index, item in enumerate(items)
+            ]
+            item_ids = [item["id"] for item in items]
+        else:
+            tasks = [
+                CompanionTask(
                     taskID=uuid.uuid4(),
                     idempotencyKey=f"companion-{digest}",
                     kind=kind,
@@ -10495,23 +10523,38 @@ def _execute_iphone_companion(
                     input=task_input,
                     resultSchema=result_schema,
                 )
-                result = companion_manager.dispatch_sync(task, cancel_event=cancel_event)
-                batch_output = None
+            ]
+            item_ids = ["result"]
+        payload = companion_manager.submit_background_sync(
+            tasks,
+            item_ids=item_ids,
+            thread_id=thread_id,
+            cleanup_paths=[Path(temp_root)] if temp_root else [],
+            cancel_event=cancel_event,
+        )
+        # Ownership moved to the background job. It removes transferred media
+        # after completion even if this Mac turn is stopped in the meantime.
+        temp_root = None
     except Exception as exc:  # noqa: BLE001 - disconnects and policy refusals must fall back cleanly
+        if temp_root:
+            shutil.rmtree(temp_root, ignore_errors=True)
         logger.info("iPhone Companion task unavailable: %s", type(exc).__name__)
         return f"iPhone Companion unavailable: {exc}. Continue this request on the Mac without retrying the same iPhone task."
 
-    payload = (
-        {"source": "iPhone Companion", "parallelResults": batch_output}
-        if batch_output is not None
-        else {
-            "source": "iPhone Companion",
-            "taskID": str(result.taskID),
-            "durationMS": result.durationMS,
-            "tokensGenerated": result.tokensGenerated,
-            "result": result.result,
-        }
-    )
+    terminal = payload.get("state") in {"completed", "partial", "failed", "cancelled"}
+    payload = {
+        "source": "iPhone Companion",
+        "action": "submitted",
+        **payload,
+        "message": (
+            "Matching iPhone work is already complete; collect it when its result is relevant."
+            if terminal
+            else (
+                "The iPhone job is running asynchronously. Continue useful work on the Mac now; "
+                "collect it on a later pass when its result is relevant. Do not wait or busy-poll."
+            )
+        ),
+    }
     return json.dumps(
         payload,
         ensure_ascii=False,

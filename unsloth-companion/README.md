@@ -26,7 +26,9 @@ The prototype combines three reusable ideas:
    compaction and requires genuine progress or a changed strategy.
 3. **Phone companions** expose authenticated, capability-advertised workers. The
    orchestrator can choose the best phone or distribute independent tasks and
-   shards across several devices while keeping a local Mac fallback.
+   shards across several devices while keeping a local Mac fallback. Submission
+   returns immediately; the Mac continues independently and later collects completed
+   work from a mailbox scoped to the originating chat.
 
 Read [VISION.md](docs/VISION.md) for the longer-term idea: mixed generations of
 iPhones, a future Android worker, overnight task queues, and future image or other
@@ -41,8 +43,8 @@ media generation when mobile runtimes make it practical.
 - `scripts/build_llama_xcframework.sh`: reproducible `llama.xcframework` build
   from pinned llama.cpp commit `3173a56471c1753650cd806694145ffd6dcace67`.
 - `scripts/build_unsigned_ipa.sh`: unsigned, arm64 iPhone IPA packaging.
-- `scripts/test_desktop_companion.py`: protocol, pairing, scheduling, task,
-  cancellation, and real loopback WSS tests for the desktop manager.
+- `scripts/test_desktop_companion.py`: protocol, pairing, asynchronous mailbox,
+  scheduling, task, cancellation, and real loopback WSS tests for the desktop manager.
 - `docs/`: architecture, security, product, UX, pipelines, verification, vision,
   and a framework-neutral integration guide.
 - Desktop integration under `studio/backend/core/companion`,
@@ -80,6 +82,9 @@ one shared-memory accelerator.
 - P-256 identity, certificate pinning, six-digit SAS, and confirmation on both
   devices before accepting work.
 - Automatic best-device selection and optional multi-iPhone routing.
+- Asynchronous `submit` plus non-blocking `status`/`collect`: iPhone inference
+  never holds the Mac model's tool loop open, and stopping the Mac turn does not
+  implicitly cancel already-dispatched phone work.
 - llama.cpp/Metal runtime and real `mtmd` capability probes.
 - Typed task protocol, leases, heartbeats, cancellation, replay protection,
   checksums, backpressure, and late-result handling.

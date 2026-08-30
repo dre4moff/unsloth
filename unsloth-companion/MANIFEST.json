@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "name": "Unsloth Companion v1 release manifest",
-  "updatedAt": "2026-08-30T22:00:30+02:00",
+  "updatedAt": "2026-08-31T01:49:40+02:00",
   "runtime": {
     "project": "ggml-org/llama.cpp",
     "commit": "3173a56471c1753650cd806694145ffd6dcace67",
@@ -46,34 +46,34 @@
       "minimumOS": "18.6"
     },
     "macOSDMG": {
-      "path": "../release/Unsloth_0.1.800-mlx.9_aarch64.dmg",
-      "sha256": "50d09487898c0a67683bee804c9bfa50f64986f2e9424d67c1ea14390b1e45fe",
-      "bytes": 127469985,
+      "path": "../release/Unsloth_0.1.800-mlx.10_aarch64.dmg",
+      "sha256": "9cbf51679b8b62356ab94fb456a0f96227a1aeafa7b65ba3813d3e7dc8434523",
+      "bytes": 138132348,
       "architecture": "arm64",
       "minimumOS": "12.0",
       "signing": "ad-hoc",
       "notarized": false
     },
     "macOSExecutable": {
-      "path": "../release/Unsloth.app/Contents/MacOS/unsloth-studio",
-      "sha256": "b9c18693835217c2a9bfc0f99e1174f4134053683a86776ba75bea9a941b3262",
-      "bytes": 59518512
+      "path": "../release/Unsloth_0.1.800-mlx.10_aarch64.dmg::/Unsloth.app/Contents/MacOS/unsloth-studio",
+      "sha256": "a0d4a7d937654cfd92939b39a25ca835208bdccbf29a0ba7a014cf09ca4f8f36",
+      "bytes": 59518496
     },
     "desktopBackendWheel": {
-      "path": "../release/Unsloth.app/Contents/Resources/backend/unsloth-2026.8.18+mlxcompaction8.companion9-py3-none-any.whl",
-      "sha256": "b6cd669a8bce7c995c2b133ad80b463cd74237e8672aa6bfefeb349c226b0cfe",
-      "bytes": 81951552
+      "path": "../release/Unsloth_0.1.800-mlx.10_aarch64.dmg::/Unsloth.app/Contents/Resources/backend/unsloth-2026.8.18+mlxcompaction8.companion10-py3-none-any.whl",
+      "sha256": "b30240fec7b7b4f5b783475641944411f6cbd57102e12da3ef027543055a400e",
+      "bytes": 92622829
     }
   },
   "verification": {
     "swiftUnitTests": 13,
     "iOSUITests": 3,
-    "desktopPythonTests": 13,
+    "desktopPythonTests": 15,
     "typeScriptTypecheck": "passed",
     "targetedESLint": "passed",
     "localizationParity": "passed",
     "viteProductionBuild": "passed",
-    "latestCompanion9TestSuite": "13 desktop Python, 13 Swift unit, and 3 signed iOS UI tests passed during public release verification",
+    "latestCompanion10TestSuite": "15 desktop Python tests passed for the async mailbox correction; 13 Swift unit and 3 signed iOS UI results are carried forward because the iPhone protocol and app are unchanged",
     "simulatorModelDownloads": 0,
     "simulatorErasedAfterTests": true,
     "simulatorCompanionTracesAfterErase": 0,

@@ -151,6 +151,16 @@ The desktop remains the authority. If no worker qualifies, run locally. If a
 non-divisible task disconnects, discard partial output and either retry from the
 start or fall back. If the user explicitly cancels, do not automatically reassign.
 
+Treat remote work as a real subagent, not as a synchronous function call. Submission
+should return a stable job ID after admission and transport handoff, while the desktop
+model continues useful work. Keep a mailbox scoped to the originating conversation with
+three non-blocking operations: submit, inspect status, and collect terminal results.
+Advertise ready-result counts on later model passes so the orchestrator knows work is
+available, but never interrupt an active generation or busy-poll. Stopping the desktop
+turn must not cancel accepted phone work; cancellation remains an explicit job/device
+operation. Preserve failed and partial outcomes so the desktop can perform fallback when
+it next needs the result.
+
 ## 8. Output integrity
 
 The orchestrator chooses an output budget that the worker advertises it can

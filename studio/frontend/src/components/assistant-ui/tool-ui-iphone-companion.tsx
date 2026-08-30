@@ -21,17 +21,26 @@ const IPhoneCompanionToolUIImpl: ToolCallMessagePartComponent = ({
   status,
 }) => {
   const input = (args ?? {}) as {
+    action?: "submit" | "status" | "collect";
+    job_id?: string;
     kind?: string;
     instruction?: string;
     media_policy?: string;
   };
   const isRunning = status?.type === "running";
+  const action = input.action || "submit";
   const kind = (input.kind || "supporting task").replaceAll("_", " ");
+  const label =
+    action === "submit"
+      ? `iPhone Companion · ${kind}`
+      : action === "collect"
+        ? "iPhone Companion · collect"
+        : "iPhone Companion · status";
 
   return (
     <ToolFallbackRoot defaultOpen={isRunning}>
       <ToolFallbackTrigger
-        toolName={`iPhone Companion · ${kind}`}
+        toolName={label}
         status={status}
         icon={SmartphoneIcon}
       />
@@ -39,12 +48,18 @@ const IPhoneCompanionToolUIImpl: ToolCallMessagePartComponent = ({
         {isRunning ? (
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <Spinner className="size-3.5" />
-            <span>Running privately on the paired iPhone…</span>
+            <span>
+              {action === "submit"
+                ? "Dispatching private work to the paired iPhone…"
+                : "Reading the iPhone job mailbox…"}
+            </span>
           </div>
         ) : null}
         <ToolFallbackArgs
           argsText={JSON.stringify(
             {
+              action,
+              ...(input.job_id ? { job_id: input.job_id } : {}),
               kind: input.kind,
               ...(input.instruction ? { instruction: input.instruction } : {}),
               ...(input.media_policy

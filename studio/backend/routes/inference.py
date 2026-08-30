@@ -3719,9 +3719,14 @@ async def _select_request_tools(
             from core.companion import companion_manager
 
             companion_kinds = companion_manager.available_task_kinds()
+            companion_counts = companion_manager.background_counts(
+                getattr(payload, "thread_id", None)
+            )
         except Exception:
             companion_kinds = set()
-        if not companion_kinds:
+            companion_counts = {"pending": 0, "ready": 0, "collected": 0}
+        mailbox_open = bool(companion_counts["pending"] or companion_counts["ready"])
+        if not companion_kinds and not mailbox_open:
             tools = [t for t in tools if t["function"]["name"] != "iphone_companion"]
         else:
             restricted: list[dict] = []
@@ -3733,22 +3738,45 @@ async def _select_request_tools(
                 parameters = function.get("parameters") or {}
                 properties = parameters.get("properties") or {}
                 kind_property = properties.get("kind") or {}
+                action_property = properties.get("action") or {}
                 allowed = [
                     value
                     for value in kind_property.get("enum", [])
                     if value in companion_kinds
                 ]
+                actions = ["submit", "status", "collect"] if allowed else ["status", "collect"]
+                restricted_properties = (
+                    {
+                        **properties,
+                        "action": {**action_property, "enum": actions},
+                        "kind": {**kind_property, "enum": allowed},
+                    }
+                    if allowed
+                    else {
+                        "action": {**action_property, "enum": actions},
+                        "job_id": properties.get("job_id") or {"type": "string"},
+                    }
+                )
+                description = str(function.get("description") or "")
+                if companion_counts["ready"]:
+                    description += (
+                        f" This chat has {companion_counts['ready']} completed iPhone job(s) ready; "
+                        "call action=collect when their work is relevant."
+                    )
+                elif companion_counts["pending"]:
+                    description += (
+                        f" This chat has {companion_counts['pending']} iPhone job(s) still running; "
+                        "continue useful Mac work and do not busy-poll."
+                    )
                 restricted.append(
                     {
                         **tool,
                         "function": {
                             **function,
+                            "description": description,
                             "parameters": {
                                 **parameters,
-                                "properties": {
-                                    **properties,
-                                    "kind": {**kind_property, "enum": allowed},
-                                },
+                                "properties": restricted_properties,
                             },
                         },
                     }

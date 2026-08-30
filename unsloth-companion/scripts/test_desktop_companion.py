@@ -408,6 +408,86 @@ class CompanionManagerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls, 1)
         self.assertEqual(first_result, second_result)
 
+    async def test_background_job_returns_immediately_and_is_collected_later(self) -> None:
+        session = make_session("Async", 0.8, 10)
+        self.manager.sessions[session.device_id] = session
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def dispatch_once(selected: DeviceSession, task: CompanionTask) -> CompanionResult:
+            self.assertIs(selected, session)
+            started.set()
+            await release.wait()
+            return make_result(task, "background result")
+
+        self.manager._dispatch_once = dispatch_once
+        task = make_task()
+        media_root = Path(self.temporary.name) / "owned-media"
+        media_root.mkdir()
+        (media_root / "input.bin").write_bytes(b"test")
+
+        self.manager._event_loop = asyncio.get_running_loop()
+        submitted = await asyncio.wait_for(
+            asyncio.to_thread(
+                self.manager.submit_background_sync,
+                [task],
+                item_ids=["only"],
+                thread_id="chat-a",
+                cleanup_paths=[media_root],
+            ),
+            timeout=1,
+        )
+        self.assertIn(submitted["state"], {"queued", "running"})
+        self.assertEqual(submitted["taskIDs"], [str(task.taskID)])
+        await asyncio.wait_for(started.wait(), timeout=1)
+        self.assertFalse(release.is_set(), "submission must not wait for iPhone inference")
+        self.assertEqual(self.manager.background_counts("chat-a")["pending"], 1)
+
+        with self.assertRaisesRegex(CompanionUnavailable, "this chat"):
+            await self.manager.collect_background(
+                thread_id="chat-b",
+                job_id=UUID(submitted["jobID"]),
+            )
+
+        runner = self.manager._background_jobs[UUID(submitted["jobID"])].runner
+        self.assertIsNotNone(runner)
+        release.set()
+        await asyncio.wait_for(runner, timeout=1)
+        self.assertFalse(media_root.exists())
+        self.assertEqual(self.manager.background_counts("chat-a")["ready"], 1)
+
+        collected = await asyncio.to_thread(
+            self.manager.collect_background_sync,
+            thread_id="chat-a",
+            job_id=UUID(submitted["jobID"]),
+        )
+        job = collected["jobs"][0]
+        self.assertEqual(job["state"], "completed")
+        self.assertEqual(job["result"]["result"], {"summary": "background result"})
+        self.assertTrue(job["collected"])
+        self.assertEqual(self.manager.background_counts("chat-a")["ready"], 0)
+
+    async def test_background_failure_stays_available_for_mac_fallback(self) -> None:
+        session = make_session("Failing", 0.8, 10)
+        self.manager.sessions[session.device_id] = session
+
+        async def dispatch_once(_: DeviceSession, __: CompanionTask) -> CompanionResult:
+            raise CompanionUnavailable("phone went away")
+
+        self.manager._dispatch_once = dispatch_once
+        submitted = await self.manager.submit_background(
+            [make_task()],
+            item_ids=["failed"],
+            thread_id="chat-failure",
+        )
+        runner = self.manager._background_jobs[UUID(submitted["jobID"])].runner
+        if runner is not None:
+            await asyncio.wait_for(runner, timeout=1)
+
+        collected = await self.manager.collect_background(thread_id="chat-failure")
+        self.assertEqual(collected["jobs"][0]["state"], "failed")
+        self.assertIn("phone went away", collected["jobs"][0]["result"]["error"])
+
     async def test_only_divisible_shard_retries_another_iphone(self) -> None:
         first = make_session("First", 0.9, 1)
         second = make_session("Second", 0.8, 20)

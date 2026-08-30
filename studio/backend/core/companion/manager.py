@@ -8,6 +8,7 @@ import json
 import mimetypes
 import os
 import secrets
+import shutil
 import socket
 import time
 from dataclasses import dataclass, field
@@ -75,6 +76,24 @@ class PairingOfferFlow:
     created_monotonic: float = field(default_factory=time.monotonic)
 
 
+@dataclass
+class BackgroundCompanionJob:
+    job_id: UUID
+    thread_id: str | None
+    task_ids: list[UUID]
+    item_ids: list[str]
+    kind: str
+    idempotency_key: str
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    state: str = "queued"
+    completed_at: datetime | None = None
+    collected_at: datetime | None = None
+    outcomes: list[dict[str, Any]] = field(default_factory=list)
+    error: str | None = None
+    runner: asyncio.Task[None] | None = None
+    cleanup_paths: list[Path] = field(default_factory=list)
+
+
 class CompanionManager:
     def __init__(self) -> None:
         self.root = Path(auth_storage.DB_PATH).parent / "companion"
@@ -87,6 +106,8 @@ class CompanionManager:
         self.pending_pairings: dict[UUID, PairingFlow] = {}
         self.pairing_offers: dict[int, PairingOfferFlow] = {}
         self._idempotent_results: dict[str, asyncio.Future[CompanionResult]] = {}
+        self._background_jobs: dict[UUID, BackgroundCompanionJob] = {}
+        self._background_job_keys: dict[str, UUID] = {}
         self.server: Any = None
         self.listener_port: int | None = None
         self.zeroconf: Zeroconf | None = None
@@ -237,6 +258,311 @@ class CompanionManager:
             if isinstance(outcome, BaseException):
                 raise outcome
         return [outcome for outcome in outcomes if isinstance(outcome, CompanionResult)]
+
+    async def submit_background(
+        self,
+        tasks: list[CompanionTask],
+        *,
+        item_ids: list[str],
+        thread_id: str | None,
+        cleanup_paths: list[Path] | None = None,
+    ) -> dict[str, Any]:
+        """Queue Companion work and return before any iPhone generation completes.
+
+        The caller transfers ownership of ``cleanup_paths`` only after this method
+        accepts the job. They are retained for media transfer and removed as soon as
+        the background job reaches a terminal state.
+        """
+        self._expire_background_jobs()
+        owned_paths = list(cleanup_paths or [])
+        if not tasks or len(tasks) != len(item_ids):
+            await asyncio.to_thread(self._remove_paths, owned_paths)
+            raise CompanionUnavailable("A background iPhone job needs matching tasks and item IDs")
+
+        canonical_key = hashlib.sha256(
+            ((thread_id or "") + "\n" + "\n".join(task.idempotencyKey for task in tasks)).encode()
+        ).hexdigest()
+        if existing_id := self._background_job_keys.get(canonical_key):
+            existing = self._background_jobs.get(existing_id)
+            if existing is not None:
+                await asyncio.to_thread(self._remove_paths, owned_paths)
+                snapshot = self._background_snapshot(existing, include_outcomes=True)
+                snapshot["duplicate"] = True
+                return snapshot
+
+        missing_kind = next(
+            (task.kind for task in tasks if self._select_session(task.kind) is None),
+            None,
+        )
+        if missing_kind is not None:
+            await asyncio.to_thread(self._remove_paths, owned_paths)
+            raise CompanionUnavailable(
+                f"No eligible iPhone Companion is ready for {missing_kind}"
+            )
+
+        parent_ids = {task.parentTaskID for task in tasks if task.parentTaskID is not None}
+        job_id = next(iter(parent_ids)) if len(parent_ids) == 1 else tasks[0].taskID
+        if job_id in self._background_jobs:
+            job_id = uuid4()
+        job = BackgroundCompanionJob(
+            job_id=job_id,
+            thread_id=thread_id,
+            task_ids=[task.taskID for task in tasks],
+            item_ids=list(item_ids),
+            kind=tasks[0].kind,
+            idempotency_key=canonical_key,
+            cleanup_paths=owned_paths,
+        )
+        self._background_jobs[job_id] = job
+        self._background_job_keys[canonical_key] = job_id
+        job.runner = asyncio.create_task(
+            self._run_background_job(job, tasks),
+            name=f"iphone-companion-{job_id}",
+        )
+        # Let the runner claim its first available phone, but never wait for its
+        # result. This is the async boundary observed by the Mac tool loop.
+        await asyncio.sleep(0)
+        return self._background_snapshot(job)
+
+    async def background_status(
+        self,
+        *,
+        thread_id: str | None,
+        job_id: UUID | None = None,
+    ) -> dict[str, Any]:
+        self._expire_background_jobs()
+        if job_id is not None:
+            job = self._background_job(job_id, thread_id)
+            return {"source": "iPhone Companion", "jobs": [self._background_snapshot(job)]}
+        jobs = sorted(
+            self._background_jobs_for_thread(thread_id),
+            key=lambda value: value.created_at,
+        )
+        return {
+            "source": "iPhone Companion",
+            "jobs": [self._background_snapshot(job) for job in jobs],
+            "counts": self.background_counts(thread_id),
+        }
+
+    async def collect_background(
+        self,
+        *,
+        thread_id: str | None,
+        job_id: UUID | None = None,
+    ) -> dict[str, Any]:
+        """Take completed work without waiting; running jobs return status only."""
+        self._expire_background_jobs()
+        if job_id is not None:
+            jobs = [self._background_job(job_id, thread_id)]
+        else:
+            jobs = [
+                job
+                for job in self._background_jobs_for_thread(thread_id)
+                if self._job_is_terminal(job) and job.collected_at is None
+            ]
+        now = datetime.now(timezone.utc)
+        snapshots: list[dict[str, Any]] = []
+        for job in jobs:
+            terminal = self._job_is_terminal(job)
+            if terminal:
+                job.collected_at = now
+            snapshots.append(self._background_snapshot(job, include_outcomes=terminal))
+        return {
+            "source": "iPhone Companion",
+            "jobs": snapshots,
+            "counts": self.background_counts(thread_id),
+            "message": (
+                "Completed iPhone work collected. Critically evaluate it before using it."
+                if any(self._job_is_terminal(job) for job in jobs)
+                else "No completed iPhone work is ready. Continue on the Mac; do not busy-poll."
+            ),
+        }
+
+    def background_counts(self, thread_id: str | None) -> dict[str, int]:
+        self._expire_background_jobs()
+        jobs = self._background_jobs_for_thread(thread_id)
+        return {
+            "pending": sum(not self._job_is_terminal(job) for job in jobs),
+            "ready": sum(
+                self._job_is_terminal(job) and job.collected_at is None for job in jobs
+            ),
+            "collected": sum(job.collected_at is not None for job in jobs),
+        }
+
+    async def _run_background_job(
+        self,
+        job: BackgroundCompanionJob,
+        tasks: list[CompanionTask],
+    ) -> None:
+        job.state = "running"
+        slots = (
+            max(1, len(self._eligible_sessions()))
+            if self.settings.mode.value == "multiple"
+            else 1
+        )
+        semaphore = asyncio.Semaphore(slots)
+
+        async def run_one(index: int, task: CompanionTask) -> dict[str, Any]:
+            async with semaphore:
+                try:
+                    result = await self.dispatch(task)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # noqa: BLE001 - retained for later Mac fallback
+                    return {
+                        "id": job.item_ids[index],
+                        "taskID": str(task.taskID),
+                        "error": str(exc),
+                    }
+                return {
+                    "id": job.item_ids[index],
+                    "taskID": str(result.taskID),
+                    "durationMS": result.durationMS,
+                    "tokensGenerated": result.tokensGenerated,
+                    "result": result.result,
+                }
+
+        try:
+            job.outcomes = list(
+                await asyncio.gather(
+                    *(run_one(index, task) for index, task in enumerate(tasks))
+                )
+            )
+            succeeded = sum("result" in outcome for outcome in job.outcomes)
+            if succeeded == len(job.outcomes):
+                job.state = "completed"
+            elif succeeded:
+                job.state = "partial"
+                job.error = "Some iPhone subtasks failed; completed results remain available"
+            else:
+                job.state = "failed"
+                job.error = "; ".join(
+                    dict.fromkeys(
+                        str(outcome.get("error") or "iPhone task failed")
+                        for outcome in job.outcomes
+                    )
+                )
+        except asyncio.CancelledError:
+            job.state = "cancelled"
+            job.error = "Background iPhone job cancelled"
+            raise
+        finally:
+            job.completed_at = datetime.now(timezone.utc)
+            job.runner = None
+            paths, job.cleanup_paths = job.cleanup_paths, []
+            await asyncio.to_thread(self._remove_paths, paths)
+
+    def submit_background_sync(
+        self,
+        tasks: list[CompanionTask],
+        *,
+        item_ids: list[str],
+        thread_id: str | None,
+        cleanup_paths: list[Path] | None = None,
+        cancel_event: Any = None,
+    ) -> dict[str, Any]:
+        if cancel_event is not None and cancel_event.is_set():
+            self._remove_paths(list(cleanup_paths or []))
+            raise CompanionUnavailable("iPhone Companion submission was cancelled")
+        return self._run_sync(
+            self.submit_background(
+                tasks,
+                item_ids=item_ids,
+                thread_id=thread_id,
+                cleanup_paths=cleanup_paths,
+            )
+        )
+
+    def background_status_sync(
+        self,
+        *,
+        thread_id: str | None,
+        job_id: UUID | None = None,
+    ) -> dict[str, Any]:
+        return self._run_sync(self.background_status(thread_id=thread_id, job_id=job_id))
+
+    def collect_background_sync(
+        self,
+        *,
+        thread_id: str | None,
+        job_id: UUID | None = None,
+    ) -> dict[str, Any]:
+        return self._run_sync(self.collect_background(thread_id=thread_id, job_id=job_id))
+
+    def _run_sync(self, coroutine: Any) -> Any:
+        loop = self._event_loop
+        if loop is None or not loop.is_running():
+            coroutine.close()
+            raise CompanionUnavailable("iPhone Companion event loop is unavailable")
+        pending = asyncio.run_coroutine_threadsafe(coroutine, loop)
+        try:
+            # Submission and mailbox reads do not wait for phone inference. A
+            # bounded bridge timeout only protects against a stopped backend loop.
+            return pending.result(timeout=10)
+        except concurrent.futures.TimeoutError as exc:
+            pending.cancel()
+            raise CompanionUnavailable("iPhone Companion mailbox is unavailable") from exc
+
+    def _background_job(self, job_id: UUID, thread_id: str | None) -> BackgroundCompanionJob:
+        job = self._background_jobs.get(job_id)
+        if job is None or job.thread_id != thread_id:
+            raise CompanionUnavailable("iPhone Companion job not found in this chat")
+        return job
+
+    def _background_jobs_for_thread(
+        self, thread_id: str | None
+    ) -> list[BackgroundCompanionJob]:
+        return [job for job in self._background_jobs.values() if job.thread_id == thread_id]
+
+    @staticmethod
+    def _job_is_terminal(job: BackgroundCompanionJob) -> bool:
+        return job.state in {"completed", "partial", "failed", "cancelled"}
+
+    def _background_snapshot(
+        self,
+        job: BackgroundCompanionJob,
+        *,
+        include_outcomes: bool = False,
+    ) -> dict[str, Any]:
+        value: dict[str, Any] = {
+            "jobID": str(job.job_id),
+            "state": job.state,
+            "kind": job.kind,
+            "taskIDs": [str(task_id) for task_id in job.task_ids],
+            "createdAt": job.created_at.isoformat(),
+            "completedAt": job.completed_at.isoformat() if job.completed_at else None,
+            "collected": job.collected_at is not None,
+        }
+        if job.error:
+            value["error"] = job.error
+        if include_outcomes and self._job_is_terminal(job):
+            if len(job.outcomes) == 1:
+                value["result"] = job.outcomes[0]
+            else:
+                value["parallelResults"] = job.outcomes
+        return value
+
+    def _expire_background_jobs(self) -> None:
+        cutoff = datetime.now(timezone.utc).timestamp() - 24 * 60 * 60
+        for job_id, job in list(self._background_jobs.items()):
+            if not self._job_is_terminal(job) or job.completed_at is None:
+                continue
+            if job.completed_at.timestamp() >= cutoff:
+                continue
+            self._background_jobs.pop(job_id, None)
+            if self._background_job_keys.get(job.idempotency_key) == job_id:
+                self._background_job_keys.pop(job.idempotency_key, None)
+
+    @staticmethod
+    def _remove_paths(paths: list[Path]) -> None:
+        for path in paths:
+            try:
+                if path.is_dir():
+                    shutil.rmtree(path)
+                else:
+                    path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     async def _dispatch_once(self, session: DeviceSession, task: CompanionTask) -> CompanionResult:
         future: asyncio.Future[CompanionResult] = asyncio.get_running_loop().create_future()
