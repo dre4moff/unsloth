@@ -56,7 +56,9 @@ export function IPhoneCompanionComposerButton({
       ? italian
         ? `${devices.length} iPhone selezionati`
         : `${devices.length} selected iPhones`
-      : devices[0]?.name ?? "iPhone";
+      : italian
+        ? `${devices.length} iPhone disponibili`
+        : `${devices.length} available iPhones`;
   const detail = !usable
     ? italian
       ? "Il modello selezionato non supporta i tool di Studio."
@@ -67,8 +69,8 @@ export function IPhoneCompanionComposerButton({
         : "Disabled in chats."
       : ready
         ? italian
-          ? `Subagent attivo · ${status?.settings.mode === "multiple" ? "Multi-iPhone" : "migliore automatico"}: ${selection}. Il modello Mac può delegargli task generali e resta orchestratore e fallback.`
-          : `Subagent active · ${status?.settings.mode === "multiple" ? "Multi-iPhone" : "automatic best"}: ${selection}. The Mac model can delegate general tasks and remains orchestrator and fallback.`
+          ? `Subagent asincroni attivi · ${status?.settings.mode === "multiple" ? "pool selezionato" : "pool automatico"}: ${selection}. Il modello Mac vede la capacità live, distribuisce lavoro parallelo e continua il proprio ramo.`
+          : `Asynchronous subagents active · ${status?.settings.mode === "multiple" ? "selected pool" : "automatic pool"}: ${selection}. The Mac model sees live capacity, fans out parallel work, and continues its own branch.`
         : statusError
           ? statusError
           : status?.settings.enabled === false

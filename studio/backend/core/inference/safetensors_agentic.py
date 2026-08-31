@@ -536,7 +536,11 @@ def run_safetensors_tool_loop(
     # Forced first-pass RAG (mirrors the GGUF loop) so doc Qs don't lose to
     # web_search. Skip only when a retrieval call would actually prompt (ask
     # mode); auto never gates the safe search_knowledge_base tool.
-    from core.inference.tools import build_rag_autoinject
+    from core.inference.tools import (
+        build_rag_autoinject,
+        iphone_companion_runtime_notice,
+        refresh_iphone_companion_tool_catalog,
+    )
 
     # off never prompts, so (like auto) it must not lose first-pass retrieval
     # even if a direct caller passes a stale confirm_tool_calls flag.
@@ -620,6 +624,13 @@ def run_safetensors_tool_loop(
     _max_model_passes = (
         max_tool_iterations * (MAX_ACT_REPROMPTS + 1) + MAX_ACT_REPROMPTS + 1
     )
+    _companion_enabled = any(
+        (tool.get("function") or {}).get("name") == "iphone_companion"
+        for tool in (tools or [])
+    )
+    _last_companion_notice = (
+        iphone_companion_runtime_notice(thread_id) if _companion_enabled else ""
+    )
     for iteration in range(_max_model_passes):
         if cancel_event is not None and cancel_event.is_set():
             return
@@ -632,6 +643,8 @@ def run_safetensors_tool_loop(
             active_tools = tool_controller.active_tools()
             if turn_checkpoint is not None:
                 active_tools = turn_checkpoint.active_tools(active_tools)
+            if _companion_enabled:
+                active_tools = refresh_iphone_companion_tool_catalog(active_tools, thread_id)
             if not active_tools and not unrestricted_tools:
                 final_attempt_done = True
                 active_tools = []
@@ -643,6 +656,11 @@ def run_safetensors_tool_loop(
 
         if turn_checkpoint is not None:
             conversation = turn_checkpoint.inject(conversation)
+        if _companion_enabled:
+            _current_companion_notice = iphone_companion_runtime_notice(thread_id)
+            if iteration > 0 and _current_companion_notice and _current_companion_notice != _last_companion_notice:
+                conversation.append({"role": "user", "content": _current_companion_notice})
+            _last_companion_notice = _current_companion_notice
 
         # MLX keeps its tokenizer in the inference subprocess. The orchestrator
         # supplies a request-scoped fitter that measures this exact iteration,

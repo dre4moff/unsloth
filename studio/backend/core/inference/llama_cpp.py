@@ -22573,8 +22573,10 @@ class LlamaCppBackend:
             build_rag_autoinject,
             execute_tool,
             has_text_only_provisional_card,
+            iphone_companion_runtime_notice,
             is_always_safe_tool,
             is_high_risk_tool_call,
+            refresh_iphone_companion_tool_catalog,
         )
 
         # "full" and bypass_permissions are the same switch, whichever arrives
@@ -22842,6 +22844,7 @@ class LlamaCppBackend:
         from core.inference.chat_template_helpers import sweep_cache as _sweep_cache
 
         _markup_cache = _sweep_cache()
+        _last_companion_notice = iphone_companion_runtime_notice(thread_id)
         for iteration in range(_max_model_passes):
             if cancel_event is not None and cancel_event.is_set():
                 return
@@ -22854,9 +22857,14 @@ class LlamaCppBackend:
             active_tools = tool_controller.active_tools()
             if turn_checkpoint is not None:
                 active_tools = turn_checkpoint.active_tools(active_tools)
+            active_tools = refresh_iphone_companion_tool_catalog(active_tools, thread_id)
             if not active_tools:
                 _append_budget_exhausted_nudge = False
                 break
+            _current_companion_notice = iphone_companion_runtime_notice(thread_id)
+            if iteration > 0 and _current_companion_notice and _current_companion_notice != _last_companion_notice:
+                conversation.append({"role": "user", "content": _current_companion_notice})
+            _last_companion_notice = _current_companion_notice
             from core.inference.chat_template_helpers import neutralize_tool_descriptions
 
             # An MCP server's description and inputSchema are remote text the template renders

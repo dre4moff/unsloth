@@ -40,12 +40,19 @@ Il Mac è sempre l'orchestratore. Un task non divisibile viene eseguito da un so
 - orchestratore esistente: delega della compressione contesto quando un iPhone idoneo è pronto; altrimenti conserva il percorso Mac.
 - frontend Connections: switch globale, auto-best, Multi-iPhone, stato device e cancellazione dell'attività corrente.
 
-Il tool Desktop usa tre azioni. `submit` registra il job e restituisce subito il suo
+Il tool Desktop usa quattro azioni. `submit` registra il job e restituisce subito il suo
 ID, senza attendere l'inferenza dell'iPhone; `status` legge uno snapshot senza attesa;
-`collect` preleva i risultati terminali quando servono al modello principale. Il job
+`collect` preleva i risultati terminali gia pronti; `wait` e la sola barriera di join,
+usata quando il Mac ha terminato ogni lavoro indipendente e necessita degli esiti. Il job
 non dipende dal ciclo di vita del turno Mac che lo ha avviato. I job pronti vengono
-segnalati nel catalogo tool dei passaggi successivi, ma non interrompono una generazione
-Mac in corso e non causano polling attivo.
+segnalati sia nel catalogo tool aggiornato a ogni passaggio sia come cambio di stato interno
+tra i passaggi, ma non interrompono una generazione Mac in corso e non causano polling attivo.
+
+Il catalogo comunica al modello principale il numero di worker connessi, idonei, liberi e
+occupati e la capacita parallela per ogni `kind`. Un batch `items` usa tutti gli iPhone
+liberi compatibili anche in routing automatico; la modalita Multi-iPhone limita invece il
+pool al sottoinsieme selezionato dall'utente. Il modello deve fare fork, continuare il proprio
+ramo sul Mac e fare join soltanto alla fine: non puo descrivere il parallelismo come concettuale.
 
 ## Routing
 

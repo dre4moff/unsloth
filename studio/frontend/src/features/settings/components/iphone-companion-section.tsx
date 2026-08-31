@@ -48,7 +48,7 @@ export function IPhoneCompanionSection() {
     <section className="space-y-5 rounded-xl border p-4" aria-labelledby="iphone-companion-heading">
       <div className="flex items-start justify-between gap-4">
         <div><h2 id="iphone-companion-heading" className="font-semibold">iPhone Companion</h2>
-          <p className="text-muted-foreground text-sm">{tx("Use paired iPhones as private local co-processors. The Mac remains the orchestrator and fallback.", "Usa gli iPhone associati come co-processori locali privati. Il Mac resta orchestratore e fallback.")}</p></div>
+          <p className="text-muted-foreground text-sm">{tx("Use paired iPhones as real asynchronous local subagents. The Mac sees the live pool, orchestrates parallel work, and remains the fallback.", "Usa gli iPhone associati come veri subagent locali asincroni. Il Mac vede il pool in tempo reale, orchestra il lavoro parallelo e resta il fallback.")}</p></div>
         <Switch checked={status?.settings.enabled ?? false} disabled={!status || busy} onCheckedChange={(enabled) => update({ enabled })} aria-label={tx("Enable iPhone Companion", "Attiva iPhone Companion")} />
       </div>
       {error ? <p className="text-destructive text-sm">{error}</p> : null}
@@ -56,9 +56,9 @@ export function IPhoneCompanionSection() {
         <>
           <div className="space-y-2">
             <div className="font-medium text-sm">{tx("Device selection", "Selezione dispositivi")}</div>
-            <label className="flex items-center gap-2 text-sm"><input type="radio" checked={status.settings.mode === "automatic_best"} onChange={() => update({ mode: "automatic_best" })} />{tx("Best available iPhone automatically", "Miglior iPhone disponibile automaticamente")}</label>
+            <label className="flex items-center gap-2 text-sm"><input type="radio" checked={status.settings.mode === "automatic_best"} onChange={() => update({ mode: "automatic_best" })} />{tx("Automatically use every available iPhone, best first", "Usa automaticamente tutti gli iPhone disponibili, migliori per primi")}</label>
             <label className="flex items-center gap-2 text-sm"><input type="radio" checked={status.settings.mode === "multiple"} onChange={() => update({ mode: "multiple" })} />{tx("Use multiple selected iPhones in parallel", "Usa più iPhone selezionati in parallelo")}</label>
-            <p className="text-muted-foreground text-xs">{tx("Multi-iPhone distributes independent tasks, chunks, frames, and batches. One generation and its KV cache are never sharded.", "Multi-iPhone distribuisce task distinti, chunk, frame e batch. Una singola generazione e la relativa KV cache non vengono mai suddivise.")}</p>
+            <p className="text-muted-foreground text-xs">{tx("Both modes distribute independent work in parallel. Automatic mode uses the whole eligible pool; Multi-iPhone restricts it to your selected devices. One generation and its KV cache are never sharded.", "Entrambe le modalità distribuiscono lavoro indipendente in parallelo. La modalità automatica usa l'intero pool idoneo; Multi-iPhone lo limita ai dispositivi selezionati. Una singola generazione e la relativa KV cache non vengono mai suddivise.")}</p>
           </div>
           {status.pendingPairings.map((pairing) => (
             <div key={pairing.pairingID} className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3">

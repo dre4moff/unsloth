@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "name": "Unsloth Companion v1 release manifest",
-  "updatedAt": "2026-08-31T01:49:40+02:00",
+  "updatedAt": "2026-08-31T18:39:01Z",
   "runtime": {
     "project": "ggml-org/llama.cpp",
     "commit": "3173a56471c1753650cd806694145ffd6dcace67",
@@ -46,23 +46,23 @@
       "minimumOS": "18.6"
     },
     "macOSDMG": {
-      "path": "../release/Unsloth_0.1.800-mlx.10_aarch64.dmg",
-      "sha256": "9cbf51679b8b62356ab94fb456a0f96227a1aeafa7b65ba3813d3e7dc8434523",
-      "bytes": 138132348,
+      "path": "../release/Unsloth_0.1.800-mlx.11_aarch64.dmg",
+      "sha256": "d21da922eec934abd78180a0fb0dbecfaedb4aa5e2b6bfffabf60e33e7e1fadf",
+      "bytes": 138142392,
       "architecture": "arm64",
       "minimumOS": "12.0",
       "signing": "ad-hoc",
       "notarized": false
     },
     "macOSExecutable": {
-      "path": "../release/Unsloth_0.1.800-mlx.10_aarch64.dmg::/Unsloth.app/Contents/MacOS/unsloth-studio",
-      "sha256": "a0d4a7d937654cfd92939b39a25ca835208bdccbf29a0ba7a014cf09ca4f8f36",
-      "bytes": 59518496
+      "path": "../release/Unsloth_0.1.800-mlx.11_aarch64.dmg::/Unsloth.app/Contents/MacOS/unsloth-studio",
+      "sha256": "0bf9fa9b4200b1c61c4aa573a4b37c200968c805bf07cb7a14f80ecce883e1ce",
+      "bytes": 59517632
     },
     "desktopBackendWheel": {
-      "path": "../release/Unsloth_0.1.800-mlx.10_aarch64.dmg::/Unsloth.app/Contents/Resources/backend/unsloth-2026.8.18+mlxcompaction8.companion10-py3-none-any.whl",
-      "sha256": "b30240fec7b7b4f5b783475641944411f6cbd57102e12da3ef027543055a400e",
-      "bytes": 92622829
+      "path": "../release/Unsloth_0.1.800-mlx.11_aarch64.dmg::/Unsloth.app/Contents/Resources/backend/unsloth-2026.8.18+mlxcompaction8.companion11-py3-none-any.whl",
+      "sha256": "14739a6ab9be8d193b5a8bae445ab56952feea5796413b6955ed866909c62976",
+      "bytes": 92627056
     }
   },
   "verification": {
@@ -73,7 +73,7 @@
     "targetedESLint": "passed",
     "localizationParity": "passed",
     "viteProductionBuild": "passed",
-    "latestCompanion10TestSuite": "15 desktop Python tests passed for the async mailbox correction; 13 Swift unit and 3 signed iOS UI results are carried forward because the iPhone protocol and app are unchanged",
+    "latestCompanion11TestSuite": "not run by user request; the 15 Desktop, 13 Swift unit, and 3 signed iOS UI results are carried forward only as historical evidence because the iPhone protocol and app are unchanged",
     "simulatorModelDownloads": 0,
     "simulatorErasedAfterTests": true,
     "simulatorCompanionTracesAfterErase": 0,

@@ -27,7 +27,8 @@ The prototype combines three reusable ideas:
 3. **Phone companions** expose authenticated, capability-advertised workers. The
    orchestrator can choose the best phone or distribute independent tasks and
    shards across several devices while keeping a local Mac fallback. Submission
-   returns immediately; the Mac continues independently and later collects completed
+   returns immediately; every later model pass sees the live per-kind worker capacity,
+   the Mac continues independently, and it later collects or explicitly joins completed
    work from a mailbox scoped to the originating chat.
 
 Read [VISION.md](docs/VISION.md) for the longer-term idea: mixed generations of
@@ -82,9 +83,12 @@ one shared-memory accelerator.
 - P-256 identity, certificate pinning, six-digit SAS, and confirmation on both
   devices before accepting work.
 - Automatic best-device selection and optional multi-iPhone routing.
-- Asynchronous `submit` plus non-blocking `status`/`collect`: iPhone inference
+- Asynchronous `submit`, non-blocking `status`/`collect`, and a bounded final `wait`: iPhone inference
   never holds the Mac model's tool loop open, and stopping the Mac turn does not
   implicitly cancel already-dispatched phone work.
+- Live worker-pool orchestration: the model sees connected, idle, and busy counts,
+  fans an independent `items` batch across all eligible phones, receives mailbox
+  state changes between model passes, and uses `wait` only as the final fork/join barrier.
 - llama.cpp/Metal runtime and real `mtmd` capability probes.
 - Typed task protocol, leases, heartbeats, cancellation, replay protection,
   checksums, backpressure, and late-result handling.

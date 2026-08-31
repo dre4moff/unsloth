@@ -76,7 +76,13 @@ from core.inference.tool_stream_exec import (
     accepts_output_callback,
     stream_tool_execution,
 )
-from core.inference.tools import build_rag_autoinject, execute_tool, is_high_risk_tool_call
+from core.inference.tools import (
+    build_rag_autoinject,
+    execute_tool,
+    iphone_companion_runtime_notice,
+    is_high_risk_tool_call,
+    refresh_iphone_companion_tool_catalog,
+)
 from state.tool_approvals import (
     TOOL_REJECTED_MESSAGE,
     abort_tool_decision,
@@ -813,6 +819,10 @@ async def stream_with_studio_tools(
     used_call_ids: set[str] = _replayed_call_ids(conversation)
     spent_budget_passes = 0
     fruitless_turns = 0
+    companion_enabled = "iphone_companion" in allowed_tool_names
+    last_companion_notice = (
+        iphone_companion_runtime_notice(thread_id) if companion_enabled else ""
+    )
     # One provider call per possible execution, plus headroom for the no-op,
     # nudge and final-answer passes that legitimately execute nothing. The
     # unlimited sentinel keeps its own budget rather than dropping to a smaller
@@ -833,6 +843,12 @@ async def stream_with_studio_tools(
         healer = StreamToolCallHealer(heal_names, tools) if heal_names else None
 
         active_tools = controller.active_tools()
+        if companion_enabled:
+            active_tools = refresh_iphone_companion_tool_catalog(active_tools, thread_id)
+            current_companion_notice = iphone_companion_runtime_notice(thread_id)
+            if provider_turns > 1 and current_companion_notice and current_companion_notice != last_companion_notice:
+                _append_user_turn(conversation, current_companion_notice)
+            last_companion_notice = current_companion_notice
         tools_available = (
             tool_choice != "none" and bool(active_tools) and (unlimited or remaining > 0)
         )

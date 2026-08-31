@@ -4,8 +4,8 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
-app_version="0.1.800-mlx.10"
-backend_version="2026.8.18+mlxcompaction8.companion10"
+app_version="0.1.800-mlx.11"
+backend_version="2026.8.18+mlxcompaction8.companion11"
 rust_toolchain="1.89.0"
 wheel_name="unsloth-${backend_version}-py3-none-any.whl"
 resource_dir="$repo_root/studio/src-tauri/resources/backend"
@@ -118,8 +118,12 @@ if ! grep -Fq '"name": "iphone_companion"' "$wheel_workspace/tools.py"; then
     echo "Backend wheel does not expose the iPhone Companion chat tool." >&2
     exit 1
 fi
-if ! grep -Fq '"enum": ["submit", "status", "collect"]' "$wheel_workspace/tools.py"; then
+if ! grep -Fq '"enum": ["submit", "status", "collect", "wait"]' "$wheel_workspace/tools.py"; then
     echo "Backend wheel does not expose asynchronous Companion tool actions." >&2
+    exit 1
+fi
+if ! grep -Fq 'refresh_iphone_companion_tool_catalog' "$wheel_workspace/tools.py"; then
+    echo "Backend wheel does not expose the live Companion worker pool." >&2
     exit 1
 fi
 

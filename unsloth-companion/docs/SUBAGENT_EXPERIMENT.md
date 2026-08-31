@@ -1,6 +1,6 @@
 # Report — Test tool `iphone_companion` come subagente
 
-> Aggiornamento 2026-08-31, release `companion10`: il comportamento descritto sotto appartiene alle corse precedenti ai fix. Oltre alle correzioni di prompt/output di `companion9`, il tool ora usa un contratto asincrono: `submit` restituisce subito un job ID, il Mac continua il proprio lavoro e recupera in seguito il risultato con `collect`, senza polling bloccante. Nessun nuovo test fisico del subagente e stato eseguito durante questo intervento, come richiesto.
+> Aggiornamento 2026-08-31, release `companion11`: il comportamento descritto sotto appartiene alle corse precedenti ai fix. Il modello Mac ora riceve a ogni passaggio il pool e la capacita parallela reali, fa fan-out sugli iPhone idonei, continua il proprio ramo e usa `collect` o `wait` solo per il join finale. Il prompt dichiara esplicitamente falso sia il modello sincrono sia il parallelismo puramente concettuale. Nessun test automatico o fisico e stato eseguito durante questo intervento, come richiesto.
 
 **Data:** 2026-08-30
 **Ambiente:** macOS, host locale redatto prima della pubblicazione

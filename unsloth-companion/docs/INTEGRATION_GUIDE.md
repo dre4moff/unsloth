@@ -154,12 +154,20 @@ start or fall back. If the user explicitly cancels, do not automatically reassig
 Treat remote work as a real subagent, not as a synchronous function call. Submission
 should return a stable job ID after admission and transport handoff, while the desktop
 model continues useful work. Keep a mailbox scoped to the originating conversation with
-three non-blocking operations: submit, inspect status, and collect terminal results.
+three non-blocking operations—submit, inspect status, and collect terminal results—plus
+one explicit bounded wait operation used only for the final join.
 Advertise ready-result counts on later model passes so the orchestrator knows work is
 available, but never interrupt an active generation or busy-poll. Stopping the desktop
 turn must not cancel accepted phone work; cancellation remains an explicit job/device
 operation. Preserve failed and partial outcomes so the desktop can perform fallback when
 it next needs the result.
+
+Also expose the exact live worker count and per-task-kind idle capacity to every model
+pass. The orchestrator should fan out at most one independent item per compatible idle
+worker, immediately execute its own independent branch, and only then use an explicit
+bounded `wait` operation as the fork/join barrier when a required result is not already
+collectable. Refresh mailbox state between model passes. The model must never be told that
+submission waits for inference or that parallel execution is merely conceptual.
 
 ## 8. Output integrity
 

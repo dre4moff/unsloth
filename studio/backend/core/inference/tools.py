@@ -9871,11 +9871,13 @@ IPHONE_COMPANION_TOOL = {
     "function": {
         "name": "iphone_companion",
         "description": (
-            "Manage independent local LLM subagents on the user's paired iPhone Companion. "
-            "action=submit dispatches work and returns a job ID immediately: the Mac must continue "
-            "its own work instead of waiting for the iPhone. On a later reasoning pass, use "
-            "action=status for a non-blocking snapshot or action=collect to take completed work. "
-            "Never busy-poll and never treat a running status as a reason to stop Mac-side progress. "
+            "Manage real concurrent local LLM subagents on the user's paired iPhone Companion pool. "
+            "action=submit returns only Desktop acceptance plus a job ID, before phone inference "
+            "finishes; it never returns the delegated answer. The iPhone job then runs independently "
+            "while the main model continues its own Mac-side branch. Use action=status or "
+            "action=collect later without waiting, or action=wait only as the final join barrier after "
+            "all useful independent Mac work is exhausted. Never describe this runtime as synchronous "
+            "or its parallelism as conceptual: both would be false. Never busy-poll. "
             "This is not limited to context compression: use kind=subagent for a self-contained "
             "reasoning, analysis, drafting, review, planning, or transformation subtask, passing "
             "all context it needs. The Mac remains the orchestrator and fallback: choose an explicit "
@@ -9895,16 +9897,23 @@ IPHONE_COMPANION_TOOL = {
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["submit", "status", "collect"],
+                    "enum": ["submit", "status", "collect", "wait"],
                     "description": (
                         "submit starts work asynchronously; status checks without waiting; collect returns "
-                        "completed results without waiting. Use collect with no job_id to take every ready "
-                        "result for this chat."
+                        "completed results without waiting; wait joins one or more running jobs only after "
+                        "the Mac has finished work that can overlap. Use collect or wait with no job_id to "
+                        "take every ready result for this chat."
                     ),
                 },
                 "job_id": {
                     "type": "string",
-                    "description": "Job ID returned by submit. Optional for status and collect; omit to inspect this chat's mailbox.",
+                    "description": "Job ID returned by submit. Optional for status, collect, and wait; omit to inspect this chat's mailbox.",
+                },
+                "wait_seconds": {
+                    "type": "number",
+                    "minimum": 1,
+                    "maximum": 300,
+                    "description": "Bounded join duration for action=wait; default 30 seconds. A timeout never cancels phone work.",
                 },
                 "kind": {
                     "type": "string",
@@ -9929,8 +9938,8 @@ IPHONE_COMPANION_TOOL = {
                     "minItems": 1,
                     "maxItems": 16,
                     "description": (
-                        "Independent text items for parallel Multi-iPhone work. Use only when "
-                        "each item can complete separately; never split one generation or KV cache."
+                        "Independent text items for parallel worker-pool fan-out. Use up to the live "
+                        "capacity reported in this tool description; never split one generation or KV cache."
                     ),
                     "items": {
                         "type": "object",
@@ -9985,6 +9994,127 @@ IPHONE_COMPANION_TOOL = {
         },
     },
 }
+
+
+def _companion_orchestration_snapshot(thread_id: str | None) -> dict[str, object]:
+    try:
+        from core.companion import companion_manager
+
+        return companion_manager.orchestration_snapshot(thread_id)
+    except Exception:
+        return {
+            "mode": "automatic",
+            "connectedWorkerCount": 0,
+            "eligibleWorkerCount": 0,
+            "readyWorkerCount": 0,
+            "busyWorkerCount": 0,
+            "capacityByKind": {},
+            "mailbox": {"pending": 0, "ready": 0, "collected": 0},
+        }
+
+
+def refresh_iphone_companion_tool_catalog(
+    tools: list[dict],
+    thread_id: str | None,
+) -> list[dict]:
+    """Expose the live phone-worker pool on every model pass.
+
+    This function always rebuilds the Companion schema from its canonical base,
+    so repeated tool-loop refreshes never accumulate stale runtime descriptions.
+    """
+    if not any((tool.get("function") or {}).get("name") == "iphone_companion" for tool in tools):
+        return tools
+    snapshot = _companion_orchestration_snapshot(thread_id)
+    capacity_by_kind = {
+        str(kind): int(capacity)
+        for kind, capacity in dict(snapshot.get("capacityByKind") or {}).items()
+        if int(capacity) > 0
+    }
+    mailbox = dict(snapshot.get("mailbox") or {})
+    mailbox_open = bool(int(mailbox.get("pending") or 0) or int(mailbox.get("ready") or 0))
+    base_function = IPHONE_COMPANION_TOOL["function"]
+    base_parameters = base_function["parameters"]
+    base_properties = base_parameters["properties"]
+    allowed = [
+        value
+        for value in base_properties["kind"]["enum"]
+        if capacity_by_kind.get(value, 0) > 0
+    ]
+    if not allowed and not mailbox_open:
+        return [
+            tool
+            for tool in tools
+            if (tool.get("function") or {}).get("name") != "iphone_companion"
+        ]
+
+    actions = ["submit", "status", "collect", "wait"] if allowed else ["status", "collect", "wait"]
+    properties = (
+        {
+            **base_properties,
+            "action": {**base_properties["action"], "enum": actions},
+            "kind": {**base_properties["kind"], "enum": allowed},
+        }
+        if allowed
+        else {
+            "action": {**base_properties["action"], "enum": actions},
+            "job_id": base_properties["job_id"],
+            "wait_seconds": base_properties["wait_seconds"],
+        }
+    )
+    capacity_text = ", ".join(
+        f"{kind}={capacity_by_kind[kind]}" for kind in sorted(capacity_by_kind)
+    ) or "none currently idle"
+    runtime_description = (
+        " LIVE RUNTIME POOL (authoritative): "
+        f"{int(snapshot.get('connectedWorkerCount') or 0)} connected, "
+        f"{int(snapshot.get('eligibleWorkerCount') or 0)} eligible, "
+        f"{int(snapshot.get('readyWorkerCount') or 0)} idle and "
+        f"{int(snapshot.get('busyWorkerCount') or 0)} busy under "
+        f"{snapshot.get('mode') or 'automatic'} routing. "
+        f"Current idle parallel capacity by kind: {capacity_text}. "
+        f"This chat mailbox has {int(mailbox.get('pending') or 0)} running and "
+        f"{int(mailbox.get('ready') or 0)} completed uncollected job(s). "
+        "Fan out independent items up to the capacity for their kind, continue the Mac share "
+        "immediately after submit, then collect or join only when the delegated output is needed."
+    )
+    refreshed: list[dict] = []
+    for tool in tools:
+        function = tool.get("function") or {}
+        if function.get("name") != "iphone_companion":
+            refreshed.append(tool)
+            continue
+        refreshed.append(
+            {
+                **tool,
+                "function": {
+                    **base_function,
+                    "description": str(base_function["description"]) + runtime_description,
+                    "parameters": {**base_parameters, "properties": properties},
+                },
+            }
+        )
+    return refreshed
+
+
+def iphone_companion_runtime_notice(thread_id: str | None) -> str:
+    """Changed mailbox state injected between model passes, never mid-generation."""
+    snapshot = _companion_orchestration_snapshot(thread_id)
+    mailbox = dict(snapshot.get("mailbox") or {})
+    ready = int(mailbox.get("ready") or 0)
+    pending = int(mailbox.get("pending") or 0)
+    if ready:
+        return (
+            f"[iPhone Companion runtime update] {ready} delegated job(s) completed concurrently "
+            "and are ready in this chat. Call iphone_companion action=collect before finalizing "
+            "any answer that depends on them."
+        )
+    if pending:
+        return (
+            f"[iPhone Companion runtime update] {pending} delegated job(s) are still running "
+            "independently. Continue the Mac-side share. If no useful independent work remains "
+            "and their output is required, action=wait is the join barrier; submit itself did not block."
+        )
+    return ""
 
 ALL_TOOLS = [
     WEB_SEARCH_TOOL,
@@ -10367,29 +10497,43 @@ def _execute_iphone_companion(
     from core.companion.models import CompanionTask
 
     action = str((arguments or {}).get("action") or "submit").strip().lower()
-    if action in {"status", "collect"}:
+    if action in {"status", "collect", "wait"}:
         raw_job_id = str((arguments or {}).get("job_id") or "").strip()
         try:
             job_id = uuid.UUID(raw_job_id) if raw_job_id else None
         except ValueError:
             return "iPhone Companion error: job_id must be a UUID."
         try:
-            payload = (
-                companion_manager.background_status_sync(
+            if action == "status":
+                payload = companion_manager.background_status_sync(
                     thread_id=thread_id,
                     job_id=job_id,
                 )
-                if action == "status"
-                else companion_manager.collect_background_sync(
+            elif action == "collect":
+                payload = companion_manager.collect_background_sync(
                     thread_id=thread_id,
                     job_id=job_id,
                 )
-            )
+            else:
+                try:
+                    wait_seconds = max(
+                        1.0,
+                        min(300.0, float((arguments or {}).get("wait_seconds") or 30.0)),
+                    )
+                except (TypeError, ValueError):
+                    wait_seconds = 30.0
+                payload = companion_manager.wait_background_sync(
+                    thread_id=thread_id,
+                    job_id=job_id,
+                    timeout_seconds=wait_seconds,
+                    cancel_event=cancel_event,
+                )
         except Exception as exc:  # noqa: BLE001 - mailbox errors are model-visible
             return f"iPhone Companion mailbox unavailable: {exc}. Continue on the Mac."
+        payload["pool"] = companion_manager.orchestration_snapshot(thread_id)
         return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     if action != "submit":
-        return "iPhone Companion error: action must be submit, status, or collect."
+        return "iPhone Companion error: action must be submit, status, collect, or wait."
 
     kind = str((arguments or {}).get("kind") or "").strip()
     media_task = kind in _COMPANION_MEDIA_KINDS
@@ -10546,6 +10690,7 @@ def _execute_iphone_companion(
         "source": "iPhone Companion",
         "action": "submitted",
         **payload,
+        "pool": companion_manager.orchestration_snapshot(thread_id),
         "message": (
             "Matching iPhone work is already complete; collect it when its result is relevant."
             if terminal

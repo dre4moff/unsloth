@@ -266,6 +266,13 @@ def status_for_tool(tool_name: str, arguments: Mapping[str, Any]) -> str:
         path = str(arguments.get("path") or "").strip()
         name = path.replace("\\", "/").rstrip("/").rpartition("/")[2]
         return f"Editing: {name}" if name else "Editing file..."
+    if tool_name == "iphone_companion":
+        action = str(arguments.get("action") or "submit")
+        if action == "submit":
+            return "Dispatching asynchronous iPhone subagent..."
+        if action == "wait":
+            return "Joining iPhone subagent work..."
+        return "Reading iPhone subagent mailbox..."
     mcp = mcp_display_parts(tool_name)
     if mcp:
         return f"Calling: {mcp[0]} · {mcp[1]}"

@@ -17,9 +17,9 @@ Il codice previsto dal piano esecutivo v1 e implementato. Questo registro distin
 | Pipeline testo/media/DSP | Completato | Pipeline OCR, image, video, audio, DSP e task testuali compilate per `iphoneos`; `subagent` usa il contesto visibile fornito dal Mac, non riformula l'obiettivo delegato e restituisce testo libero in `result.text` per default, usando JSON solo quando viene richiesto `result_schema` |
 | UI iPhone e accessibilita | Completato | 3 UI test firmati: onboarding, EN, IT, assenza alert; download disabilitato nel simulatore |
 | Desktop auto-best/Multi-iPhone | Completato | 13 test Python di protocollo/manager; typecheck, lint mirato, i18n e build frontend superati |
-| Companion nella chat Desktop | Completato, collaudo fisico riservato all'utente | `submit` restituisce subito un job ID e il modello Mac continua senza attendere; `status` e `collect` leggono senza bloccare una mailbox isolata per chat. I job sopravvivono allo stop del turno Mac, i risultati pronti sono segnalati nei passaggi successivi e gli esiti parziali/falliti restano disponibili per il fallback. Budget 256-16384, auto-best e Multi-iPhone restano attivi |
+| Companion nella chat Desktop | Completato, collaudo fisico riservato all'utente | Ogni passaggio del modello vede worker connessi/idonei/liberi/occupati e capacita parallela per `kind`. `submit` restituisce solo accettazione e job ID; il modello fa fan-out, continua il ramo Mac e usa `collect` o il `wait` limitato soltanto come join finale. I cambi mailbox vengono iniettati tra i passaggi e il prompt vieta di descrivere il tool come sincrono o il parallelismo come concettuale |
 | Layout chat Desktop | Completato | Il piano dell'ultimo turno e ancorato sopra il composer e rimosso dalla cronologia; dopo Stop un piano cancellato o rimasto attivo viene rimosso e nessun indicatore continua ad animarsi; il contesto resta visibile nelle finestre strette |
-| App/DMG macOS | Completato | Build `2026.8.18+mlxcompaction8.companion10` / `0.1.800-mlx.10`: arm64, macOS 12, metadata, firma ad hoc, privacy rete locale e servizio Bonjour dichiarati, wheel Companion incorporata e `hdiutil verify` |
+| App/DMG macOS | Completato | Build `2026.8.18+mlxcompaction8.companion11` / `0.1.800-mlx.11`: arm64, macOS 12, metadata, firma ad hoc, privacy rete locale e servizio Bonjour dichiarati, wheel Companion incorporata e `hdiutil verify` |
 | IPA unsigned | Completato | Artefatto iOS rigenerato come 0.0.1 build 3 arm64/iOS 18.6 con contesto runtime adattivo 4k/8k/16k, task `subagent`, `llama.framework` incorporato, nessuna firma/provisioning o percorso locale e ZIP integro |
 | Pulizia simulatore | Completato | iPhone 17 Pro simulato azzerato e spento; container, cache e tracce Companion assenti; nessun modello scaricato |
 | Build firmata iPhone | Completato | Profilo Xcode generato e build `iphoneos` firmata con team configurato |
@@ -28,7 +28,7 @@ Il codice previsto dal piano esecutivo v1 e implementato. Questo registro distin
 
 ## Test automatici superati
 
-Per la correzione asincrona del 2026-08-31 sono stati eseguiti con esito positivo 15 test Python del protocollo/manager Desktop. I nuovi casi provano che il bridge sincrono restituisce prima della fine dell'inferenza, che il risultato viene raccolto in seguito nella chat corretta, che un errore resta disponibile per il fallback e che i media temporanei vengono rimossi. Il protocollo iPhone e il codice Swift non sono cambiati: i 13 test Swift unitari e 3 UI test iOS firmati restano la verifica della release precedente. Non è stato eseguito un nuovo task subagente su iPhone fisico, riservato al collaudo dell'utente.
+Per `companion11` non sono stati eseguiti test automatici ne collaudi fisici, come richiesto dall'utente. La build e le verifiche di integrita dell'artefatto finale non vengono indicate come test comportamentali. I 15 test Python di `companion10`, i 13 test Swift unitari e i 3 UI test iOS firmati restano esclusivamente evidenza storica delle release precedenti. Protocollo e codice Swift non sono cambiati; l'IPA unsigned viene riutilizzata byte per byte.
 
 - 13 test Swift unitari.
 - 3 test UI iOS firmati.

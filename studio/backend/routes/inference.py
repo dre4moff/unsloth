@@ -3449,15 +3449,20 @@ _TOOL_ARTIFACT_TIP = (
 )
 
 _TOOL_COMPANION_TIP = (
-    "A paired iPhone Companion is available as a separate private local LLM subagent, "
-    "not merely for context compression. Proactively delegate independent bounded "
-    "reasoning, analysis, drafting, review, planning, transformation, or media work with "
-    "iphone_companion; use kind=subagent for a general assignment and pass the complete "
-    "objective, constraints, and context because it does not share this conversation. "
-    "For exact or free-form output, omit result_schema and read result.text; request a "
-    "result_schema only when structured JSON is useful. For Multi-iPhone, send independent "
-    "items that can finish separately. Critically evaluate its result and synthesize the final answer on the Mac, which remains the "
-    "orchestrator and fallback. Never split one autoregressive generation or KV cache."
+    "IMPORTANT RUNTIME FACT: iPhone Companion provides real asynchronous local LLM "
+    "subagents, not a synchronous function and not conceptual parallelism. The live worker "
+    "counts and per-kind parallel capacity in the iphone_companion description are authoritative. "
+    "For substantial divisible work, proactively fan out independent bounded assignments up to "
+    "that capacity, preferably as one items batch, then immediately perform the independent "
+    "Mac-side share while the phones run. action=submit returns only acceptance and job IDs "
+    "before inference finishes; never claim that it returned the delegated result or blocked for it. "
+    "On later model passes, action=collect takes ready work. If the Mac has exhausted all useful "
+    "overlapping work and a delegated result is required, action=wait is the explicit final join "
+    "barrier; do not wait immediately after submit and do not busy-poll. Do not finalize an answer "
+    "that depends on delegated work before collecting it. Use kind=subagent for general reasoning, "
+    "analysis, drafting, review, planning, or transformation and pass complete objective, constraints, "
+    "and context because phones do not share this conversation. Critically evaluate collected work "
+    "and synthesize the final answer on the Mac. Never split one autoregressive generation or KV cache."
 )
 
 
@@ -3672,6 +3677,7 @@ async def _select_request_tools(
         ALL_TOOLS,
         apply_full_access_tool_descriptions,
         get_enabled_mcp_tools,
+        refresh_iphone_companion_tool_catalog,
     )
 
     if not tools_on:
@@ -3710,78 +3716,12 @@ async def _select_request_tools(
             # meeting a large catalogue at a compaction boundary have been seen calling a
             # guessed tool name. Read-only and always-safe, so it prompts for nothing.
             tools = [t for t in tools if t["function"]["name"] == "search_conversation"]
-    # The chat preference may stay on while an iPhone locks, disconnects, enters
-    # draining, or has no compatible model loaded. In those states omit the tool
-    # entirely so the main model continues on the Mac instead of selecting a call
-    # that cannot start. Restrict the enum to live capabilities for the same reason.
-    if any(t["function"]["name"] == "iphone_companion" for t in tools):
-        try:
-            from core.companion import companion_manager
-
-            companion_kinds = companion_manager.available_task_kinds()
-            companion_counts = companion_manager.background_counts(
-                getattr(payload, "thread_id", None)
-            )
-        except Exception:
-            companion_kinds = set()
-            companion_counts = {"pending": 0, "ready": 0, "collected": 0}
-        mailbox_open = bool(companion_counts["pending"] or companion_counts["ready"])
-        if not companion_kinds and not mailbox_open:
-            tools = [t for t in tools if t["function"]["name"] != "iphone_companion"]
-        else:
-            restricted: list[dict] = []
-            for tool in tools:
-                function = tool.get("function") or {}
-                if function.get("name") != "iphone_companion":
-                    restricted.append(tool)
-                    continue
-                parameters = function.get("parameters") or {}
-                properties = parameters.get("properties") or {}
-                kind_property = properties.get("kind") or {}
-                action_property = properties.get("action") or {}
-                allowed = [
-                    value
-                    for value in kind_property.get("enum", [])
-                    if value in companion_kinds
-                ]
-                actions = ["submit", "status", "collect"] if allowed else ["status", "collect"]
-                restricted_properties = (
-                    {
-                        **properties,
-                        "action": {**action_property, "enum": actions},
-                        "kind": {**kind_property, "enum": allowed},
-                    }
-                    if allowed
-                    else {
-                        "action": {**action_property, "enum": actions},
-                        "job_id": properties.get("job_id") or {"type": "string"},
-                    }
-                )
-                description = str(function.get("description") or "")
-                if companion_counts["ready"]:
-                    description += (
-                        f" This chat has {companion_counts['ready']} completed iPhone job(s) ready; "
-                        "call action=collect when their work is relevant."
-                    )
-                elif companion_counts["pending"]:
-                    description += (
-                        f" This chat has {companion_counts['pending']} iPhone job(s) still running; "
-                        "continue useful Mac work and do not busy-poll."
-                    )
-                restricted.append(
-                    {
-                        **tool,
-                        "function": {
-                            **function,
-                            "description": description,
-                            "parameters": {
-                                **parameters,
-                                "properties": restricted_properties,
-                            },
-                        },
-                    }
-                )
-            tools = restricted
+    # Refresh on request entry; the backend-specific loops refresh this same
+    # schema again before every later model pass as phone jobs change state.
+    tools = refresh_iphone_companion_tool_catalog(
+        tools,
+        getattr(payload, "thread_id", None),
+    )
     # Built-ins only, so this runs before the MCP append: an MCP tool's
     # description is the server's to write, and Full access says nothing about
     # how that server runs.

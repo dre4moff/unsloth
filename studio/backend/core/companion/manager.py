@@ -92,6 +92,7 @@ class BackgroundCompanionJob:
     error: str | None = None
     runner: asyncio.Task[None] | None = None
     cleanup_paths: list[Path] = field(default_factory=list)
+    done_event: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
 
 
 class CompanionManager:
@@ -344,6 +345,60 @@ class CompanionManager:
             "counts": self.background_counts(thread_id),
         }
 
+    async def wait_background(
+        self,
+        *,
+        thread_id: str | None,
+        job_id: UUID | None = None,
+        timeout_seconds: float = 30.0,
+    ) -> dict[str, Any]:
+        """Join background work only after the Mac has exhausted useful parallel work.
+
+        Waiting never cancels the phone job. A timeout returns a current snapshot so
+        the orchestrator can continue locally and join again only when necessary.
+        """
+        self._expire_background_jobs()
+        if job_id is not None:
+            jobs = [self._background_job(job_id, thread_id)]
+        else:
+            jobs = [
+                job
+                for job in self._background_jobs_for_thread(thread_id)
+                if job.collected_at is None
+            ]
+        if not jobs:
+            return {
+                "source": "iPhone Companion",
+                "jobs": [],
+                "counts": self.background_counts(thread_id),
+                "message": "No uncollected iPhone job exists in this chat.",
+            }
+        if any(self._job_is_terminal(job) for job in jobs):
+            return await self.collect_background(thread_id=thread_id, job_id=job_id)
+
+        timeout_seconds = max(1.0, min(300.0, float(timeout_seconds)))
+        watchers = [asyncio.create_task(job.done_event.wait()) for job in jobs]
+        try:
+            done, pending = await asyncio.wait(
+                watchers,
+                timeout=timeout_seconds,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        finally:
+            for watcher in watchers:
+                if not watcher.done():
+                    watcher.cancel()
+            await asyncio.gather(*watchers, return_exceptions=True)
+        if not done:
+            status = await self.background_status(thread_id=thread_id, job_id=job_id)
+            status["timedOut"] = True
+            status["message"] = (
+                "The join timed out, but the iPhone job continues independently. "
+                "Continue useful Mac work and join again only when its result is required."
+            )
+            return status
+        return await self.collect_background(thread_id=thread_id, job_id=job_id)
+
     async def collect_background(
         self,
         *,
@@ -389,17 +444,35 @@ class CompanionManager:
             "collected": sum(job.collected_at is not None for job in jobs),
         }
 
+    def orchestration_snapshot(self, thread_id: str | None) -> dict[str, Any]:
+        """Live worker-pool capacity exposed to the Mac orchestrator."""
+        connected = self._connected_policy_sessions()
+        eligible = self._orchestration_sessions()
+        ready = [session for session in eligible if session.status.queueDepth == 0]
+        capacity_by_kind: dict[str, int] = {}
+        for session in ready:
+            for kind in session.status.capabilities.taskKinds:
+                capacity_by_kind[kind] = capacity_by_kind.get(kind, 0) + 1
+        return {
+            "mode": self.settings.mode.value,
+            "connectedWorkerCount": len(connected),
+            "eligibleWorkerCount": len(eligible),
+            "readyWorkerCount": len(ready),
+            "busyWorkerCount": max(0, len(eligible) - len(ready)),
+            "capacityByKind": dict(sorted(capacity_by_kind.items())),
+            "mailbox": self.background_counts(thread_id),
+        }
+
     async def _run_background_job(
         self,
         job: BackgroundCompanionJob,
         tasks: list[CompanionTask],
     ) -> None:
         job.state = "running"
-        slots = (
-            max(1, len(self._eligible_sessions()))
-            if self.settings.mode.value == "multiple"
-            else 1
-        )
+        # Every idle, policy-eligible phone that supports this kind is a real
+        # concurrent worker. Automatic mode chooses the best free phone for each
+        # item; Multi-iPhone mode applies the user's selected-device subset.
+        slots = max(1, len(self._eligible_sessions_for_kind(job.kind)))
         semaphore = asyncio.Semaphore(slots)
 
         async def run_one(index: int, task: CompanionTask) -> dict[str, Any]:
@@ -451,6 +524,7 @@ class CompanionManager:
             job.runner = None
             paths, job.cleanup_paths = job.cleanup_paths, []
             await asyncio.to_thread(self._remove_paths, paths)
+            job.done_event.set()
 
     def submit_background_sync(
         self,
@@ -488,6 +562,41 @@ class CompanionManager:
         job_id: UUID | None = None,
     ) -> dict[str, Any]:
         return self._run_sync(self.collect_background(thread_id=thread_id, job_id=job_id))
+
+    def wait_background_sync(
+        self,
+        *,
+        thread_id: str | None,
+        job_id: UUID | None = None,
+        timeout_seconds: float = 30.0,
+        cancel_event: Any = None,
+    ) -> dict[str, Any]:
+        loop = self._event_loop
+        if loop is None or not loop.is_running():
+            raise CompanionUnavailable("iPhone Companion event loop is unavailable")
+        pending = asyncio.run_coroutine_threadsafe(
+            self.wait_background(
+                thread_id=thread_id,
+                job_id=job_id,
+                timeout_seconds=timeout_seconds,
+            ),
+            loop,
+        )
+        deadline = time.monotonic() + max(1.0, min(300.0, timeout_seconds)) + 5.0
+        while True:
+            if cancel_event is not None and cancel_event.is_set():
+                pending.cancel()
+                raise CompanionUnavailable(
+                    "The Mac stopped waiting; accepted iPhone jobs continue independently"
+                )
+            try:
+                return pending.result(timeout=0.25)
+            except concurrent.futures.TimeoutError as exc:
+                if time.monotonic() >= deadline:
+                    pending.cancel()
+                    raise CompanionUnavailable(
+                        "iPhone Companion join bridge timed out; phone jobs continue"
+                    ) from exc
 
     def _run_sync(self, coroutine: Any) -> Any:
         loop = self._event_loop
@@ -684,12 +793,7 @@ class CompanionManager:
                 return
 
     def _select_session(self, kind: str, excluded: set[UUID] | None = None) -> DeviceSession | None:
-        candidates = [
-            session
-            for session in self._eligible_sessions(excluded)
-            if session.status.capabilities
-            and kind in session.status.capabilities.taskKinds
-        ]
+        candidates = self._eligible_sessions_for_kind(kind, excluded)
         return max(candidates, key=lambda value: self._scored(value.status).score, default=None)
 
     def available_task_kinds(self) -> set[str]:
@@ -701,20 +805,49 @@ class CompanionManager:
         return kinds
 
     def _eligible_sessions(self, excluded: set[UUID] | None = None) -> list[DeviceSession]:
+        excluded = excluded or set()
+        return [
+            session
+            for session in self._orchestration_sessions()
+            if session.device_id not in excluded and session.status.queueDepth == 0
+        ]
+
+    def _eligible_sessions_for_kind(
+        self,
+        kind: str,
+        excluded: set[UUID] | None = None,
+    ) -> list[DeviceSession]:
+        return [
+            session
+            for session in self._eligible_sessions(excluded)
+            if session.status.capabilities
+            and kind in session.status.capabilities.taskKinds
+        ]
+
+    def _connected_policy_sessions(self) -> list[DeviceSession]:
         if not self.settings.enabled or self._stopping:
             return []
-        excluded = excluded or set()
         candidates = [
-            session for session in self.sessions.values()
-            if session.device_id not in excluded and session.paired.enabled and session.status.connected and session.status.authenticated
-            and session.status.capabilities
-            and session.status.state in {"ready", "leased", "running"}
-            and session.status.queueDepth == 0
-            and not session.status.lowPowerMode and session.status.battery >= 0.10 and session.status.thermalState < 2
+            session
+            for session in self.sessions.values()
+            if session.paired.enabled
+            and session.status.connected
+            and session.status.authenticated
         ]
         if self.settings.mode.value == "multiple":
             candidates = [value for value in candidates if value.device_id in self.settings.selectedDeviceIDs]
         return candidates
+
+    def _orchestration_sessions(self) -> list[DeviceSession]:
+        return [
+            session
+            for session in self._connected_policy_sessions()
+            if session.status.capabilities
+            and session.status.state in {"ready", "leased", "running"}
+            and not session.status.lowPowerMode
+            and session.status.battery >= 0.10
+            and session.status.thermalState < 2
+        ]
 
     async def _start_listener(self) -> None:
         if self.server:

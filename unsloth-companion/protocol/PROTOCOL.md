@@ -52,7 +52,9 @@ The wire protocol remains completion-based, but the Desktop caller is asynchrono
 after `task_submit` is admitted, the Mac-side tool returns a job handle instead of
 waiting for `task_completed`. Terminal envelopes are retained in a per-chat Desktop
 mailbox and collected later. This mailbox is an orchestrator concern and does not change
-protocol version 1 or require a new iPhone message type.
+protocol version 1 or require a new iPhone message type. Worker-count advertisement,
+per-kind scheduling capacity, and the Desktop `wait` join barrier are likewise entirely
+Desktop-side concerns, so this release does not require an IPA rebuild.
 
 ## Binary media
 

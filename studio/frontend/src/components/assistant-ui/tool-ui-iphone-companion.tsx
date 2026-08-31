@@ -21,8 +21,9 @@ const IPhoneCompanionToolUIImpl: ToolCallMessagePartComponent = ({
   status,
 }) => {
   const input = (args ?? {}) as {
-    action?: "submit" | "status" | "collect";
+    action?: "submit" | "status" | "collect" | "wait";
     job_id?: string;
+    wait_seconds?: number;
     kind?: string;
     instruction?: string;
     media_policy?: string;
@@ -35,7 +36,9 @@ const IPhoneCompanionToolUIImpl: ToolCallMessagePartComponent = ({
       ? `iPhone Companion · ${kind}`
       : action === "collect"
         ? "iPhone Companion · collect"
-        : "iPhone Companion · status";
+        : action === "wait"
+          ? "iPhone Companion · join"
+          : "iPhone Companion · status";
 
   return (
     <ToolFallbackRoot defaultOpen={isRunning}>
@@ -51,7 +54,9 @@ const IPhoneCompanionToolUIImpl: ToolCallMessagePartComponent = ({
             <span>
               {action === "submit"
                 ? "Dispatching private work to the paired iPhone…"
-                : "Reading the iPhone job mailbox…"}
+                : action === "wait"
+                  ? "Joining completed iPhone subagent work…"
+                  : "Reading the iPhone job mailbox…"}
             </span>
           </div>
         ) : null}
@@ -60,6 +65,7 @@ const IPhoneCompanionToolUIImpl: ToolCallMessagePartComponent = ({
             {
               action,
               ...(input.job_id ? { job_id: input.job_id } : {}),
+              ...(input.wait_seconds ? { wait_seconds: input.wait_seconds } : {}),
               kind: input.kind,
               ...(input.instruction ? { instruction: input.instruction } : {}),
               ...(input.media_policy
