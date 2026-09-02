@@ -880,7 +880,9 @@ def _archive_content_on_branch(content, transcript: Optional[list[str]]) -> bool
 
 
 def _sticky_compaction_boundary(
-    thread_id: Optional[str], branch_messages: Optional[list[dict]] = None
+    thread_id: Optional[str],
+    branch_messages: Optional[list[dict]] = None,
+    branch_message_ids: Optional[list[str]] = None,
 ) -> int:
     """How many leading messages this thread last compacted away, or 0.
 
@@ -899,22 +901,40 @@ def _sticky_compaction_boundary(
         from core.inference import checkpoint
         from storage import studio_db
 
-        # The stored rows are the whole DAG, so the newest assistant turn can belong to a
-        # sibling branch left by Retry, whose boundary is sized for history this branch
-        # does not have. Skip rows the request's own messages do not contain.
-        # Assistant messages only: the rows being checked are assistant replies, and
-        # against every role a short abandoned one ("Done") rides in on a live user
-        # message that merely contains it ("not done yet"), taking its boundary with it.
-        _branch = _archive_branch_transcript(branch_messages, ("assistant",))
-        if branch_messages and not _branch:
-            # A branch with no reply of its own has no boundary to restore.
-            return 0
-        candidates = [
-            message
-            for message in reversed(studio_db.list_chat_messages(thread_id) or [])
-            if message.get("role") == "assistant"
-            and _archive_content_on_branch(message.get("content"), _branch)
-        ]
+        rows = studio_db.list_chat_messages(thread_id) or []
+        exact_branch = branch_message_ids is not None
+        if exact_branch:
+            # Studio sends the active branch's persisted IDs. One saved assistant
+            # turn can replay as several OpenAI wire messages (reasoning, calls,
+            # results, final text), so text is not a stable branch key there. Walk
+            # the caller's IDs from newest to oldest and take the exact rows instead.
+            # This also distinguishes byte-identical Retry siblings without a guess.
+            by_id = {
+                str(message.get("id")): message
+                for message in rows
+                if message.get("id") is not None
+            }
+            candidates = [
+                by_id[str(message_id)]
+                for message_id in reversed(branch_message_ids or [])
+                if str(message_id) in by_id
+                and by_id[str(message_id)].get("role") == "assistant"
+            ]
+        else:
+            # Compatibility for API clients that do not send Studio message IDs.
+            # The stored rows are the whole DAG, so the newest assistant turn can
+            # belong to a sibling branch left by Retry. Skip rows the request's
+            # assistant text does not contain.
+            _branch = _archive_branch_transcript(branch_messages, ("assistant",))
+            if branch_messages and not _branch:
+                # A branch with no reply of its own has no boundary to restore.
+                return 0
+            candidates = [
+                message
+                for message in reversed(rows)
+                if message.get("role") == "assistant"
+                and _archive_content_on_branch(message.get("content"), _branch)
+            ]
         if not candidates:
             return 0
 
@@ -926,14 +946,20 @@ def _sticky_compaction_boundary(
         # That check is also a substring test (an archived turn is matched against
         # fragments of itself), so an abandoned "Done" can ride in on a live "Not done
         # yet" and then decide the boundary alone. Prefer exact matches where any exist.
-        _live = set(_branch or ())
-        _exact = [
-            message
-            for message in candidates
-            if _archive_message_text(message.get("content")) in _live
-        ]
-        if _exact:
-            candidates = _exact
+        if exact_branch:
+            # The ID already identifies one concrete branch turn. Older turns
+            # cannot override the newest turn's state (including a deliberate
+            # return to a whole branch that fits with no checkpoint metadata).
+            candidates = candidates[:1]
+        else:
+            _live = set(_branch or ())
+            _exact = [
+                message
+                for message in candidates
+                if _archive_message_text(message.get("content")) in _live
+            ]
+            if _exact:
+                candidates = _exact
 
         newest = _archive_message_text(candidates[0].get("content"))
         boundaries = []
@@ -22186,6 +22212,7 @@ class LlamaCppBackend:
         perf_callback: Optional[Callable[[dict], None]] = None,
         context_overflow: Optional[str] = None,
         thread_id: Optional[str] = None,
+        branch_message_ids: Optional[list[str]] = None,
         tools_withheld: bool = False,
         _allow_respawn_retry: bool = True,
     ) -> Generator[Union[str, dict], None, None]:
@@ -22268,7 +22295,9 @@ class LlamaCppBackend:
                         should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
                     ),
                     reserve_tokens = _conversation_recall_reserve(thread_id),
-                    sticky_dropped = _sticky_compaction_boundary(thread_id, _before_fit),
+                    sticky_dropped = _sticky_compaction_boundary(
+                        thread_id, _before_fit, branch_message_ids
+                    ),
                     keeps_boundary = _keeps_compaction_boundary(thread_id),
                     can_reset = _can_reset_epoch(
                         thread_id,
@@ -22497,6 +22526,7 @@ class LlamaCppBackend:
                     # archived nowhere and no reserve or boundary applies, on the one path
                     # that deliberately compacts again.
                     thread_id = thread_id,
+                    branch_message_ids = branch_message_ids,
                     # The retry refits, so it must be told the same about this request's
                     # tools as the first attempt was.
                     tools_withheld = tools_withheld,
@@ -22539,6 +22569,7 @@ class LlamaCppBackend:
         tool_call_timeout: int = 300,
         session_id: Optional[str] = None,
         thread_id: Optional[str] = None,
+        branch_message_ids: Optional[list[str]] = None,
         rag_scope: Optional[dict] = None,
         seed: Optional[int] = None,
         disable_parallel_tool_use: bool = False,
@@ -22574,9 +22605,11 @@ class LlamaCppBackend:
             execute_tool,
             has_text_only_provisional_card,
             iphone_companion_runtime_notice,
+            iphone_companion_submit_nudge,
             is_always_safe_tool,
             is_high_risk_tool_call,
             refresh_iphone_companion_tool_catalog,
+            should_force_iphone_companion_submit,
         )
 
         # "full" and bypass_permissions are the same switch, whichever arrives
@@ -22830,6 +22863,11 @@ class LlamaCppBackend:
         # re-prompt slots don't extend the budget. Mirrors the safetensors guard.
         _tool_iters_done = 0
         _forced_tool_call_pending = False
+        # Explicit user delegation is stronger than the model's learned habit of
+        # discussing tools in prose. Give the native function grammar two bounded
+        # chances before falling back to an ordinary Mac answer.
+        _companion_force_requested = False
+        _companion_force_attempts = 0
 
         # Tool calls, not model passes, spend the user-facing budget. Reserve
         # recovery room after every productive call; consecutive no-progress
@@ -22855,8 +22893,6 @@ class LlamaCppBackend:
                 conversation = turn_checkpoint.inject(conversation)
 
             active_tools = tool_controller.active_tools()
-            if turn_checkpoint is not None:
-                active_tools = turn_checkpoint.active_tools(active_tools)
             active_tools = refresh_iphone_companion_tool_catalog(active_tools, thread_id)
             if not active_tools:
                 _append_budget_exhausted_nudge = False
@@ -22874,6 +22910,27 @@ class LlamaCppBackend:
             safe_tools = neutralize_tool_descriptions(
                 active_tools, _markup_cache, self.markup_profile
             )
+            if iteration == 0:
+                _companion_force_requested = should_force_iphone_companion_submit(
+                    messages,
+                    safe_tools,
+                )
+            _force_plan_this_pass = bool(
+                turn_checkpoint is not None
+                and turn_checkpoint.requires_plan_review
+                and any(
+                    (tool.get("function") or {}).get("name") == "update_plan"
+                    for tool in safe_tools
+                )
+            )
+            _force_companion_this_pass = bool(
+                _companion_force_requested
+                and not _force_plan_this_pass
+                and not _tool_succeeded("iphone_companion")
+                and _companion_force_attempts < 2
+            )
+            if _force_companion_this_pass:
+                _companion_force_attempts += 1
             # Gate the markerless bare-JSON form on enabled names so an ordinary JSON answer isn't misread as a call.
             _enabled_tool_names = {
                 (tool.get("function") or {}).get("name")
@@ -22894,6 +22951,10 @@ class LlamaCppBackend:
             _reasoning_kw = self._request_reasoning_kwargs(
                 enable_thinking, reasoning_effort, preserve_thinking
             )
+            if _force_companion_this_pass:
+                # This pass only serializes a function call. Hidden reasoning adds
+                # latency and was the source of multi-minute local-model stalls.
+                _reasoning_kw = self._request_reasoning_kwargs(False, "none", False)
             _preflight_context_length = None
             _preflight_succeeded = False
             if (
@@ -22932,7 +22993,9 @@ class LlamaCppBackend:
                         sticky_dropped = (
                             0
                             if _sticky_boundary_applied
-                            else _sticky_compaction_boundary(thread_id, _request_branch)
+                            else _sticky_compaction_boundary(
+                                thread_id, _request_branch, branch_message_ids
+                            )
                         ),
                     )
                     # Accounted for in this request now, whatever the fit decided.
@@ -23025,7 +23088,6 @@ class LlamaCppBackend:
                 "repeat_penalty": repetition_penalty,
                 "presence_penalty": presence_penalty,
             }
-
             if perf_callback is not None:
                 payload["return_progress"] = True
                 payload["timings_per_token"] = True
@@ -23033,7 +23095,20 @@ class LlamaCppBackend:
             # now empty, and "tools": [] would still advertise tool use.
             if safe_tools:
                 payload["tools"] = safe_tools
-                payload["tool_choice"] = "auto"
+                payload["tool_choice"] = (
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": (
+                                "update_plan"
+                                if _force_plan_this_pass
+                                else "iphone_companion"
+                            )
+                        },
+                    }
+                    if _force_plan_this_pass or _force_companion_this_pass
+                    else "auto"
+                )
             if _reasoning_kw is not None:
                 payload["chat_template_kwargs"] = _reasoning_kw
             # Re-checked per iteration: once a tool result is appended the partial is
@@ -23046,6 +23121,8 @@ class LlamaCppBackend:
                 if max_tokens is not None
                 else (self._effective_context_length or _DEFAULT_MAX_TOKENS_FLOOR)
             )
+            if _force_companion_this_pass:
+                payload["max_tokens"] = min(int(payload["max_tokens"]), 4_096)
             if stop:
                 payload["stop"] = stop
             if seed is not None:
@@ -23158,7 +23235,9 @@ class LlamaCppBackend:
                 # Provisional tool_start cards already shown, keyed by tool_call_id.
                 provisional_started_tool_calls: dict[str, str] = {}
                 resolved_provisional_tool_call_ids: set[str] = set()
-                _suppress_visible_output = _forced_tool_call_pending
+                _suppress_visible_output = (
+                    _forced_tool_call_pending or _force_companion_this_pass
+                )
                 # Cards that already got their first tool_args event; later
                 # fragments stream individually so a big payload isn't a dead spinner.
                 arg_streamed_tool_call_ids: set[str] = set()
@@ -23763,6 +23842,74 @@ class LlamaCppBackend:
                         _stripped = content_accum.strip()
                         if not _stripped:
                             _stripped = reasoning_accum.strip()
+                        if _force_companion_this_pass:
+                            if turn_checkpoint is not None:
+                                turn_checkpoint.record_stall()
+                            logger.warning(
+                                "Named iphone_companion tool choice produced no call "
+                                "(attempt %s/2, %s chars)",
+                                _companion_force_attempts,
+                                len(_stripped),
+                            )
+                            _fu_r = _backfill_usage_from_timings(
+                                _iter_usage,
+                                _iter_timings,
+                            ) or {}
+                            _accumulated_completion_tokens += _fu_r.get(
+                                "completion_tokens",
+                                0,
+                            )
+                            _it_r = _iter_timings or {}
+                            _accumulated_predicted_ms += _it_r.get("predicted_ms", 0)
+                            _accumulated_predicted_n += _it_r.get("predicted_n", 0)
+                            yield {"type": "status", "text": ""}
+                            if _companion_force_attempts < 2:
+                                append_assistant_turn(
+                                    conversation,
+                                    {
+                                        "role": "assistant",
+                                        "content": (
+                                            "I did not emit the required iPhone Companion "
+                                            "function call."
+                                        ),
+                                    },
+                                    continue_final_message=continue_final_message,
+                                )
+                                conversation.append(
+                                    {
+                                        "role": "user",
+                                        "content": iphone_companion_submit_nudge(),
+                                    }
+                                )
+                                yield {
+                                    "type": "status",
+                                    "text": "Dispatching to iPhone Companion…",
+                                }
+                                continue
+                            _companion_force_requested = False
+                            append_assistant_turn(
+                                conversation,
+                                {
+                                    "role": "assistant",
+                                    "content": (
+                                        "I still did not emit the required iPhone Companion "
+                                        "function call."
+                                    ),
+                                },
+                                continue_final_message=continue_final_message,
+                            )
+                            conversation.append(
+                                {
+                                    "role": "user",
+                                    "content": (
+                                        "[Studio runtime] The model failed twice to emit the "
+                                        "required iPhone Companion function call. Continue on "
+                                        "the Mac and state that delegation did not start; do not "
+                                        "pretend an iPhone job exists."
+                                    ),
+                                }
+                            )
+                            continue
                         _render_html_already_done_intent = _tool_succeeded(
                             "render_html"
                         ) and re.search(
@@ -24116,6 +24263,8 @@ class LlamaCppBackend:
                         )
 
                     if decision.tool_name == "update_plan" and turn_checkpoint is not None:
+                        if not provisional_match:
+                            yield decision.tool_start_event()
                         result = turn_checkpoint.update_plan(decision.arguments)
                         completion = tool_controller.record_result(decision, result)
                         resolved_provisional_tool_call_ids.add(decision.tool_call_id)
@@ -24125,6 +24274,7 @@ class LlamaCppBackend:
                         if _forced_tool_call_pending:
                             _forced_tool_call_pending = False
                         yield {"type": "turn_plan", **turn_checkpoint.plan_snapshot()}
+                        yield completion.tool_end_event()
                         continue
 
                     # Bypass wins here too, so a direct internal caller with both
@@ -24514,19 +24664,16 @@ class LlamaCppBackend:
                     can_reset = _can_reset_epoch(
                         thread_id,
                         _backend_supports_tools(self),
-                        # Withheld, not `tools`: this is the synthesised final answer
-                        # and `stream_payload` below sends no tools array at all, so
-                        # the request's catalogue answers a question it does not pose
-                        # and would let a NEW epoch start on the one pass that can
-                        # never call `search_conversation`. Replaying an epoch already
-                        # in force is unaffected.
+                        # The final pass has no tools array, so it cannot search a new epoch.
                         tools_withheld = True,
                     ),
                     reserve_tokens = _conversation_recall_reserve(thread_id),
                     sticky_dropped = (
                         0
                         if _sticky_boundary_applied
-                        else _sticky_compaction_boundary(thread_id, _request_branch)
+                        else _sticky_compaction_boundary(
+                            thread_id, _request_branch, branch_message_ids
+                        )
                     ),
                 )
                 _sticky_boundary_applied = True
@@ -24536,9 +24683,8 @@ class LlamaCppBackend:
                         _before_final_fit,
                         branch_messages = _extend_live_branch(_before_final_fit),
                         thread_id = thread_id,
-                        # Inline, not tool: this final-answer request is counted and sent
-                        # with no tools array, so a forged tool role has no catalogue to
-                        # match and breaks strict templates.
+                        # Inline, not tool: the final pass has no tools array, so a forged
+                        # result would be invalid here.
                         style = "inline",
                         # Checkpoint mode recalls once, on the turn that reset; rolling has no
                         # such key and keeps recalling on every turn that evicted anything.
@@ -24642,7 +24788,7 @@ class LlamaCppBackend:
                     can_reset = _can_reset_epoch(
                         thread_id,
                         _backend_supports_tools(self),
-                        # The final pass again, so again no tools array is sent.
+                        # The final pass again has no tools array.
                         tools_withheld = True,
                     ),
                 )

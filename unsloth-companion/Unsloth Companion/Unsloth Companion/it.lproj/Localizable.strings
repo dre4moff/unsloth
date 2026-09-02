@@ -216,6 +216,11 @@
 "The blob name is not part of the task." = "Il nome del blob non fa parte del task.";
 "The declared media size is invalid." = "La dimensione dichiarata dei media non è valida.";
 "The iPhone runtime is busy." = "Il runtime dell’iPhone è occupato.";
+"The iPhone model repeated the delegated task instead of completing it." = "Il modello dell’iPhone ha ripetuto il compito delegato invece di completarlo.";
+"The iPhone model returned a placeholder instead of the requested answer." = "Il modello dell’iPhone ha restituito un segnaposto invece della risposta richiesta.";
+"The iPhone model did not return the exact requested text." = "Il modello dell’iPhone non ha restituito esattamente il testo richiesto.";
+"The iPhone model entered a self-correction loop instead of returning the final answer." = "Il modello dell’iPhone è entrato in un ciclo di autocorrezione invece di restituire la risposta finale.";
+"The model entered an invalid repetitive response." = "Il modello è entrato in una risposta ripetitiva non valida.";
 "The requested capability is not currently available." = "La funzionalità richiesta non è attualmente disponibile.";
 "The selected model has no mmproj." = "Il modello selezionato non dispone di mmproj.";
 "The task media policy is not enabled on this iPhone." = "La policy media del task non è abilitata su questo iPhone.";

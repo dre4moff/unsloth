@@ -15,6 +15,7 @@ const QUEUED_SETTING_KEYS = [
   "reasoningEffort",
   "preserveThinking",
   "toolsEnabled",
+  "turnPlanningEnabled",
   "codeToolsEnabled",
   "imageToolsEnabled",
   "artifactsEnabled",

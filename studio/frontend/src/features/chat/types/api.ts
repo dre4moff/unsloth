@@ -624,6 +624,12 @@ export interface OpenAIChatCompletionsRequest {
   max_tool_calls_per_message?: number;
   tool_call_timeout?: number;
   session_id?: string;
+  /**
+   * Ordered Studio message IDs on this branch. The local backend uses these
+   * only to restore the exact persisted context checkpoint; they are never
+   * included in the model prompt.
+   */
+  branch_message_ids?: string[];
   cancel_id?: string;
   provider_id?: string;
   provider_type?: string;

@@ -7,6 +7,7 @@ import hashlib
 import json
 import mimetypes
 import os
+import re
 import secrets
 import shutil
 import socket
@@ -14,7 +15,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from uuid import UUID, uuid4
 
 from websockets.asyncio.server import ServerConnection, serve
@@ -45,6 +46,159 @@ class CompanionUnavailable(RuntimeError):
 
 class CompanionUserCancelled(CompanionUnavailable):
     pass
+
+
+class CompanionRetryableUnavailable(CompanionUnavailable):
+    def __init__(self, message: str, *, code: str = "") -> None:
+        super().__init__(message)
+        self.code = code
+
+
+_SUBAGENT_PLACEHOLDER_OUTPUTS = frozenset(
+    {
+        "[final deliverable output]",
+        "[final output]",
+        "[deliverable output]",
+        "[answer]",
+        "[response]",
+        "[result]",
+        "<final output>",
+        "<answer>",
+        "<response>",
+        "<result>",
+        "final deliverable output",
+    }
+)
+
+
+def _requested_literal_output(task: CompanionTask) -> str | None:
+    cues = (
+        "exactly",
+        "only the string",
+        "reply with only",
+        "respond with only",
+        "write only",
+        "return only",
+        "esattamente",
+        "solo la stringa",
+        "rispondi con solo",
+        "scrivi solo",
+    )
+    patterns = (r'"([^"\r\n]{1,1024})"', r"“([^”\r\n]{1,1024})”", r"«([^»\r\n]{1,1024})»", r"`([^`\r\n]{1,1024})`")
+    for source in (str(task.input.get("instruction") or ""), str(task.input.get("text") or "")):
+        folded = source.casefold()
+        if not any(cue in folded for cue in cues):
+            continue
+        for pattern in patterns:
+            if match := re.search(pattern, source):
+                candidate = match.group(1).strip()
+                if candidate:
+                    return candidate
+    return None
+
+
+def _normalized_echo_text(value: str) -> str:
+    return " ".join(re.findall(r"[^\W_]+", value.casefold(), flags=re.UNICODE))
+
+
+def _is_near_delegation_echo(generated: str, source: str) -> bool:
+    normalized_generated = _normalized_echo_text(generated)
+    normalized_source = _normalized_echo_text(source)
+    if len(normalized_source) < 24 or len(normalized_generated) < 16:
+        return False
+    if normalized_generated == normalized_source:
+        return True
+    if normalized_source in normalized_generated and len(normalized_generated) <= len(normalized_source) + 80:
+        return True
+    if normalized_generated in normalized_source and len(normalized_generated) * 4 >= len(normalized_source) * 3:
+        return True
+    generated_words = set(normalized_generated.split())
+    source_words = set(normalized_source.split())
+    smaller = min(len(generated_words), len(source_words))
+    larger = max(len(generated_words), len(source_words))
+    if smaller < 6 or not larger:
+        return False
+    overlap = len(generated_words & source_words)
+    return overlap / smaller >= 0.85 and overlap / larger >= 0.65
+
+
+def _json_string_leaves(value: object) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [leaf for child in value.values() for leaf in _json_string_leaves(child)]
+    if isinstance(value, list):
+        return [leaf for child in value for leaf in _json_string_leaves(child)]
+    return []
+
+
+def _meaningful_output_strings(value: object) -> list[str]:
+    if not isinstance(value, str):
+        return _json_string_leaves(value)
+    stripped = value.strip()
+    if not stripped:
+        return []
+    json_text = stripped
+    if json_text.startswith("```"):
+        lines = json_text.splitlines()[1:]
+        if lines and lines[-1].strip() == "```":
+            lines.pop()
+        json_text = "\n".join(lines).strip()
+    try:
+        decoded = json.loads(json_text)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return [stripped]
+    leaves = _json_string_leaves(decoded)
+    return leaves or [stripped]
+
+
+def _validate_subagent_result(task: CompanionTask, result: CompanionResult) -> None:
+    if task.kind != "subagent":
+        return
+    raw_output: object = result.result if task.resultSchema else result.result.get("text")
+    outputs = _meaningful_output_strings(raw_output)
+    if not outputs:
+        raise CompanionUnavailable("iPhone subagent returned no usable output; Mac fallback required")
+    if not task.resultSchema:
+        output = result.result.get("text")
+        if not isinstance(output, str) or not output.strip():
+            raise CompanionUnavailable("iPhone subagent returned no usable text; Mac fallback required")
+        expected = _requested_literal_output(task)
+        if expected is not None:
+            if output != expected:
+                raise CompanionUnavailable("iPhone subagent did not return the exact requested text; Mac fallback required")
+            return
+    sources = [
+        str(task.input.get(field) or "").strip()
+        for field in ("text", "instruction")
+        if str(task.input.get(field) or "").strip()
+    ]
+    if sources and all(any(_is_near_delegation_echo(output, source) for source in sources) for output in outputs):
+        raise CompanionUnavailable("iPhone subagent repeated the delegated task instead of completing it; Mac fallback required")
+    normalized_outputs = [_normalized_echo_text(output) for output in outputs]
+    generic_markers = {
+        _normalized_echo_text(marker)
+        for marker in _SUBAGENT_PLACEHOLDER_OUTPUTS
+        if marker.startswith("[") or marker.startswith("<")
+    }
+    final_markers = {
+        _normalized_echo_text(marker)
+        for marker in _SUBAGENT_PLACEHOLDER_OUTPUTS
+        if "final" in marker or "deliverable" in marker
+    }
+    if normalized_outputs and all(
+        normalized in final_markers
+        or normalized in generic_markers and (
+            output.strip().startswith(("[", "<")) and output.strip().endswith(("]", ">"))
+        )
+        or len(normalized) <= 160 and (
+            "placeholder" in normalized
+            or "insert " in normalized
+            or "final deliverable" in normalized
+        )
+        for normalized, output in zip(normalized_outputs, outputs)
+    ):
+        raise CompanionUnavailable("iPhone subagent returned a placeholder instead of an answer; Mac fallback required")
 
 
 @dataclass
@@ -89,6 +243,9 @@ class BackgroundCompanionJob:
     completed_at: datetime | None = None
     collected_at: datetime | None = None
     outcomes: list[dict[str, Any]] = field(default_factory=list)
+    item_states: dict[UUID, str] = field(default_factory=dict)
+    assignments: dict[UUID, dict[str, str]] = field(default_factory=dict)
+    outcome_by_task: dict[UUID, dict[str, Any]] = field(default_factory=dict)
     error: str | None = None
     runner: asyncio.Task[None] | None = None
     cleanup_paths: list[Path] = field(default_factory=list)
@@ -116,6 +273,10 @@ class CompanionManager:
         self.heartbeat_task: asyncio.Task[None] | None = None
         self._seen_messages: dict[UUID, float] = {}
         self._lifecycle_lock = asyncio.Lock()
+        # Background submissions may outnumber the connected phones. Waiters sleep
+        # here until one runtime is free instead of failing a job just because every
+        # compatible iPhone is currently generating.
+        self._worker_state_changed = asyncio.Event()
         self._event_loop: asyncio.AbstractEventLoop | None = None
         self._stopping = False
 
@@ -184,6 +345,7 @@ class CompanionManager:
         if session := self.sessions.pop(device_id, None):
             await self._cancel_all(session, "desktop_request")
             await session.websocket.close(code=1008, reason="Pairing revoked")
+        self._worker_state_changed.set()
 
     async def rename(self, device_id: UUID, name: str) -> None:
         device = self.paired.get(device_id)
@@ -204,8 +366,15 @@ class CompanionManager:
             session.status.enabled = enabled
             if not enabled:
                 await self._cancel_all(session, "companion_disabled")
+        self._worker_state_changed.set()
 
-    async def dispatch(self, task: CompanionTask) -> CompanionResult:
+    async def dispatch(
+        self,
+        task: CompanionTask,
+        *,
+        on_assigned: Callable[[DeviceSession], None] | None = None,
+        queue_if_busy: bool = False,
+    ) -> CompanionResult:
         if existing := self._idempotent_results.get(task.idempotencyKey):
             try:
                 return await asyncio.wait_for(asyncio.shield(existing), timeout=task.timeoutSeconds)
@@ -214,18 +383,42 @@ class CompanionManager:
         shared: asyncio.Future[CompanionResult] = asyncio.get_running_loop().create_future()
         self._idempotent_results[task.idempotencyKey] = shared
         excluded: set[UUID] = set()
+        busy_retry_deadline = time.monotonic() + min(5.0, max(1.0, task.timeoutSeconds / 4))
         try:
             while True:
                 session = self._select_session(task.kind, excluded)
                 if not session:
-                    raise CompanionUnavailable("No eligible iPhone Companion is ready")
+                    compatible = self._compatible_sessions_for_kind(task.kind, excluded)
+                    if not queue_if_busy or not compatible:
+                        raise CompanionUnavailable("No eligible iPhone Companion is ready")
+                    # No await occurs between the availability check and clear, so a
+                    # completion cannot be lost in that interval on this event loop.
+                    self._worker_state_changed.clear()
+                    session = self._select_session(task.kind, excluded)
+                    if session is None:
+                        await self._worker_state_changed.wait()
+                        continue
                 try:
+                    if on_assigned is not None:
+                        on_assigned(session)
                     result = await self._dispatch_once(session, task)
                     if not shared.done():
                         shared.set_result(result)
                     asyncio.get_running_loop().call_later(120, self._expire_idempotency, task.idempotencyKey, shared)
                     return result
                 except CompanionUserCancelled:
+                    raise
+                except CompanionRetryableUnavailable as exc:
+                    # Old IPA builds acknowledged completion before they had cleared
+                    # their runtime. Prefer another idle phone; with one phone, absorb
+                    # that short readiness race instead of failing the queued item.
+                    excluded.add(session.device_id)
+                    if self._select_session(task.kind, excluded) is not None:
+                        continue
+                    if exc.code == "runtime_error" and time.monotonic() < busy_retry_deadline:
+                        excluded.clear()
+                        await asyncio.sleep(0.25)
+                        continue
                     raise
                 except CompanionUnavailable:
                     excluded.add(session.device_id)
@@ -292,13 +485,17 @@ class CompanionManager:
                 return snapshot
 
         missing_kind = next(
-            (task.kind for task in tasks if self._select_session(task.kind) is None),
+            (
+                task.kind
+                for task in tasks
+                if not self._compatible_sessions_for_kind(task.kind)
+            ),
             None,
         )
         if missing_kind is not None:
             await asyncio.to_thread(self._remove_paths, owned_paths)
             raise CompanionUnavailable(
-                f"No eligible iPhone Companion is ready for {missing_kind}"
+                f"No eligible iPhone Companion supports {missing_kind}"
             )
 
         parent_ids = {task.parentTaskID for task in tasks if task.parentTaskID is not None}
@@ -313,6 +510,7 @@ class CompanionManager:
             kind=tasks[0].kind,
             idempotency_key=canonical_key,
             cleanup_paths=owned_paths,
+            item_states={task.taskID: "queued" for task in tasks},
         )
         self._background_jobs[job_id] = job
         self._background_job_keys[canonical_key] = job_id
@@ -322,7 +520,10 @@ class CompanionManager:
         )
         # Let the runner claim its first available phone, but never wait for its
         # result. This is the async boundary observed by the Mac tool loop.
-        await asyncio.sleep(0)
+        for _ in range(3):
+            await asyncio.sleep(0)
+            if job.assignments or job.runner is None:
+                break
         return self._background_snapshot(job)
 
     async def background_status(
@@ -450,9 +651,13 @@ class CompanionManager:
         eligible = self._orchestration_sessions()
         ready = [session for session in eligible if session.status.queueDepth == 0]
         capacity_by_kind: dict[str, int] = {}
-        for session in ready:
+        idle_capacity_by_kind: dict[str, int] = {}
+        for session in eligible:
             for kind in session.status.capabilities.taskKinds:
                 capacity_by_kind[kind] = capacity_by_kind.get(kind, 0) + 1
+        for session in ready:
+            for kind in session.status.capabilities.taskKinds:
+                idle_capacity_by_kind[kind] = idle_capacity_by_kind.get(kind, 0) + 1
         return {
             "mode": self.settings.mode.value,
             "connectedWorkerCount": len(connected),
@@ -460,6 +665,7 @@ class CompanionManager:
             "readyWorkerCount": len(ready),
             "busyWorkerCount": max(0, len(eligible) - len(ready)),
             "capacityByKind": dict(sorted(capacity_by_kind.items())),
+            "idleCapacityByKind": dict(sorted(idle_capacity_by_kind.items())),
             "mailbox": self.background_counts(thread_id),
         }
 
@@ -472,28 +678,52 @@ class CompanionManager:
         # Every idle, policy-eligible phone that supports this kind is a real
         # concurrent worker. Automatic mode chooses the best free phone for each
         # item; Multi-iPhone mode applies the user's selected-device subset.
-        slots = max(1, len(self._eligible_sessions_for_kind(job.kind)))
+        slots = max(1, len(self._compatible_sessions_for_kind(job.kind)))
         semaphore = asyncio.Semaphore(slots)
 
         async def run_one(index: int, task: CompanionTask) -> dict[str, Any]:
             async with semaphore:
+                def record_assignment(session: DeviceSession) -> None:
+                    job.assignments[task.taskID] = {
+                        "deviceID": str(session.device_id),
+                        "deviceName": session.paired.name,
+                    }
+                    job.item_states[task.taskID] = "running"
+
                 try:
-                    result = await self.dispatch(task)
+                    result = await self.dispatch(
+                        task,
+                        on_assigned=record_assignment,
+                        queue_if_busy=True,
+                    )
                 except asyncio.CancelledError:
+                    job.item_states[task.taskID] = "cancelled"
                     raise
                 except Exception as exc:  # noqa: BLE001 - retained for later Mac fallback
-                    return {
+                    outcome = {
                         "id": job.item_ids[index],
                         "taskID": str(task.taskID),
                         "error": str(exc),
                     }
-                return {
+                    assignment = job.assignments.get(task.taskID)
+                    if assignment:
+                        outcome.update(assignment)
+                    job.item_states[task.taskID] = "failed"
+                    job.outcome_by_task[task.taskID] = outcome
+                    return outcome
+                outcome = {
                     "id": job.item_ids[index],
                     "taskID": str(result.taskID),
                     "durationMS": result.durationMS,
                     "tokensGenerated": result.tokensGenerated,
                     "result": result.result,
                 }
+                assignment = job.assignments.get(task.taskID)
+                if assignment:
+                    outcome.update(assignment)
+                job.item_states[task.taskID] = "completed"
+                job.outcome_by_task[task.taskID] = outcome
+                return outcome
 
         try:
             job.outcomes = list(
@@ -518,6 +748,9 @@ class CompanionManager:
         except asyncio.CancelledError:
             job.state = "cancelled"
             job.error = "Background iPhone job cancelled"
+            for task_id, state in list(job.item_states.items()):
+                if state not in {"completed", "failed"}:
+                    job.item_states[task_id] = "cancelled"
             raise
         finally:
             job.completed_at = datetime.now(timezone.utc)
@@ -641,7 +874,42 @@ class CompanionManager:
             "createdAt": job.created_at.isoformat(),
             "completedAt": job.completed_at.isoformat() if job.completed_at else None,
             "collected": job.collected_at is not None,
+            "items": [],
         }
+        items: list[dict[str, Any]] = []
+        for index, (task_id, item_id) in enumerate(
+            zip(job.task_ids, job.item_ids, strict=True)
+        ):
+            item: dict[str, Any] = {
+                "id": item_id,
+                "taskID": str(task_id),
+                "state": job.item_states.get(task_id, "queued"),
+                "index": index,
+            }
+            if assignment := job.assignments.get(task_id):
+                item.update(assignment)
+            if include_outcomes and self._job_is_terminal(job):
+                outcome = job.outcome_by_task.get(task_id)
+                if outcome is None:
+                    outcome = next(
+                        (
+                            value
+                            for value in job.outcomes
+                            if value.get("taskID") == str(task_id)
+                        ),
+                        None,
+                    )
+                if outcome:
+                    for key in (
+                        "durationMS",
+                        "tokensGenerated",
+                        "result",
+                        "error",
+                    ):
+                        if key in outcome:
+                            item[key] = outcome[key]
+            items.append(item)
+        value["items"] = items
         if job.error:
             value["error"] = job.error
         if include_outcomes and self._job_is_terminal(job):
@@ -697,7 +965,9 @@ class CompanionManager:
             for path, remote_name in zip(media_paths, remote_names, strict=True):
                 await self._send_blob(session, task.taskID, path, remote_name)
             try:
-                return await asyncio.wait_for(asyncio.shield(future), timeout=task.timeoutSeconds)
+                result = await asyncio.wait_for(asyncio.shield(future), timeout=task.timeoutSeconds)
+                _validate_subagent_result(task, result)
+                return result
             except asyncio.TimeoutError as exc:
                 await self.cancel(task.taskID, explicit_user=False)
                 raise CompanionUnavailable("iPhone task timed out; Mac fallback required") from exc
@@ -705,19 +975,20 @@ class CompanionManager:
             session.pending_results.pop(task.taskID, None)
             session.pending_tasks.pop(task.taskID, None)
             session.status.queueDepth = max(0, session.status.queueDepth - 1)
+            self._worker_state_changed.set()
 
     def _safe_maximum_tokens(self, session: DeviceSession, task: CompanionTask) -> int:
         """Honor the Mac model's budget while reserving room in the selected iPhone context."""
         try:
-            requested = int(task.input.get("maximumTokens") or 4_096)
+            requested = int(task.input.get("maximumTokens") or 8_192)
         except (TypeError, ValueError):
-            requested = 4_096
-        requested = max(256, min(16_384, requested))
+            requested = 8_192
+        requested = max(8_192, min(16_384, requested))
 
         capabilities = session.status.capabilities
         context_size = int(capabilities.contextSize) if capabilities else 0
         if context_size <= 0:
-            return min(requested, 4_096)
+            return requested
 
         text = str(task.input.get("text") or "")
         instruction = str(task.input.get("instruction") or "")
@@ -730,6 +1001,8 @@ class CompanionManager:
             safe_available = min(safe_available, context_size // 2)
         if safe_available < 256:
             raise CompanionUnavailable("iPhone context is too small for this delegated prompt; Mac fallback required")
+        # The requested Mac budget keeps its 8K floor. Only the phone's physical
+        # context may lower the transmitted ceiling so prompt + output still fit.
         return max(256, min(requested, safe_available))
 
     def dispatch_sync(self, task: CompanionTask, cancel_event: Any = None) -> CompanionResult:
@@ -774,7 +1047,7 @@ class CompanionManager:
             kind="context_compression",
             priority=80,
             timeoutSeconds=120,
-            input={"text": canonical, "instruction": "Preserve message roles and every binding instruction.", "maximumTokens": 1536},
+            input={"text": canonical, "instruction": "Preserve message roles and every binding instruction.", "maximumTokens": 8_192},
             resultSchema={"type": "object", "required": ["compressedContext", "preservedFacts"]},
         )
         result = self.dispatch_sync(task, cancel_event=cancel_event)
@@ -799,7 +1072,7 @@ class CompanionManager:
     def available_task_kinds(self) -> set[str]:
         """Capabilities currently dispatchable under the user's device policy."""
         kinds: set[str] = set()
-        for session in self._eligible_sessions():
+        for session in self._orchestration_sessions():
             if session.status.capabilities:
                 kinds.update(session.status.capabilities.taskKinds)
         return kinds
@@ -821,6 +1094,21 @@ class CompanionManager:
             session
             for session in self._eligible_sessions(excluded)
             if session.status.capabilities
+            and kind in session.status.capabilities.taskKinds
+        ]
+
+    def _compatible_sessions_for_kind(
+        self,
+        kind: str,
+        excluded: set[UUID] | None = None,
+    ) -> list[DeviceSession]:
+        """Policy-eligible workers that support ``kind``, including busy ones."""
+        excluded = excluded or set()
+        return [
+            session
+            for session in self._orchestration_sessions()
+            if session.device_id not in excluded
+            and session.status.capabilities
             and kind in session.status.capabilities.taskKinds
         ]
 
@@ -883,6 +1171,7 @@ class CompanionManager:
 
     async def _stop_listener(self) -> None:
         self._stopping = True
+        self._worker_state_changed.set()
         try:
             if self.heartbeat_task:
                 self.heartbeat_task.cancel()
@@ -940,6 +1229,7 @@ class CompanionManager:
                 for future in session.pending_results.values():
                     if not future.done():
                         future.set_exception(CompanionUnavailable("iPhone disconnected; Mac fallback required"))
+                self._worker_state_changed.set()
             for pairing_id, flow in list(self.pending_pairings.items()):
                 if flow.websocket is websocket:
                     self.pending_pairings.pop(pairing_id, None)
@@ -956,6 +1246,7 @@ class CompanionManager:
         status = DeviceStatus(deviceID=paired.deviceID, name=paired.name, enabled=paired.enabled, connected=True, authenticated=True, lastSeen=datetime.now(timezone.utc))
         session = DeviceSession(device_id=paired.deviceID, websocket=websocket, paired=paired, status=status)
         self.sessions[paired.deviceID] = session
+        self._worker_state_changed.set()
         return session
 
     async def _begin_pairing(self, websocket: ServerConnection, device_id: UUID, hello: dict[str, Any]) -> None:
@@ -1021,11 +1312,13 @@ class CompanionManager:
         await self._send(flow.websocket, Envelope(type="pairing_result", payload={"accepted": True}))
         status = DeviceStatus(deviceID=paired.deviceID, name=paired.name, connected=True, authenticated=True, enabled=True, lastSeen=datetime.now(timezone.utc))
         self.sessions[paired.deviceID] = DeviceSession(device_id=paired.deviceID, websocket=flow.websocket, paired=paired, status=status)
+        self._worker_state_changed.set()
 
     async def _handle_session_message(self, session: DeviceSession, envelope: Envelope) -> None:
         session.status.lastSeen = datetime.now(timezone.utc)
         if envelope.type == "capabilities":
             session.status.capabilities = CapabilityReport.model_validate(envelope.payload)
+            self._worker_state_changed.set()
         elif envelope.type == "heartbeat":
             session.last_heartbeat_received = time.monotonic()
             sent = float(envelope.payload.get("echoMonotonic", session.last_heartbeat_sent))
@@ -1047,7 +1340,15 @@ class CompanionManager:
             if future := session.pending_results.get(task_id):
                 if not future.done():
                     message = str(envelope.payload.get("message") or envelope.payload.get("reason"))
-                    error = CompanionUserCancelled(message) if envelope.type == "task_cancelled" and envelope.payload.get("reason") == "user" else CompanionUnavailable(message)
+                    if envelope.type == "task_cancelled" and envelope.payload.get("reason") == "user":
+                        error = CompanionUserCancelled(message)
+                    elif bool(envelope.payload.get("retryable", False)):
+                        error = CompanionRetryableUnavailable(
+                            message,
+                            code=str(envelope.payload.get("code") or ""),
+                        )
+                    else:
+                        error = CompanionUnavailable(message)
                     future.set_exception(error)
         elif envelope.type == "client_draining":
             session.status.state = "draining"

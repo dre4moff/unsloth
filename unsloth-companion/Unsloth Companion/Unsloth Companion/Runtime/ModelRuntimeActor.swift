@@ -11,7 +11,7 @@ enum ModelRuntimeState: Sendable, Equatable {
 
 enum ModelRuntimeError: LocalizedError {
     case modelNotLoaded, modelLoadFailed, contextCreationFailed, samplerCreationFailed
-    case tokenizationFailed, promptTooLong, decodeFailed(Int32), cancelled, emptyOutput, outputTruncated(Int), busy
+    case tokenizationFailed, promptTooLong, decodeFailed(Int32), cancelled, emptyOutput, invalidOutput, outputTruncated(Int), busy
 
     var errorDescription: String? {
         switch self {
@@ -24,6 +24,7 @@ enum ModelRuntimeError: LocalizedError {
         case .decodeFailed(let code): return String(localized: "llama.cpp decode failed with code \(code).")
         case .cancelled: return String(localized: "The task was cancelled.")
         case .emptyOutput: return String(localized: "The model returned an empty result.")
+        case .invalidOutput: return String(localized: "The model entered an invalid repetitive response.")
         case .outputTruncated(let limit): return String(localized: "The model reached its \(limit)-token output budget before completing the answer.")
         case .busy: return String(localized: "The runtime is already processing a task.")
         }
@@ -153,6 +154,7 @@ actor ModelRuntimeActor {
         mediaPayloads: [Data] = [],
         maximumTokens: Int,
         requireJSONObject: Bool,
+        shouldAbortOutput: (@Sendable (String) -> Bool)? = nil,
         onToken: @escaping @Sendable (String) async -> Void
     ) async throws -> RuntimeGeneration {
         guard state == .ready else {
@@ -211,6 +213,9 @@ actor ModelRuntimeActor {
             if !piece.isEmpty {
                 output += piece
                 tokenCount += 1
+                if shouldAbortOutput?(output) == true {
+                    throw ModelRuntimeError.invalidOutput
+                }
                 await onToken(piece)
             }
             llama_sampler_accept(sampler, token)
@@ -335,7 +340,7 @@ actor ModelRuntimeActor {
 
     private func makeSampler(vocabulary: OpaquePointer, requireJSONObject: Bool) -> UnsafeMutablePointer<llama_sampler>? {
         guard let chain = llama_sampler_chain_init(llama_sampler_chain_default_params()) else { return nil }
-        llama_sampler_chain_add(chain, llama_sampler_init_penalties(llama_vocab_n_tokens(vocabulary), 128, 1.08, 0, 0))
+        llama_sampler_chain_add(chain, llama_sampler_init_penalties(llama_vocab_n_tokens(vocabulary), 256, 1.12, 0, 0))
         if requireJSONObject {
             let grammar = #"""
             root ::= object

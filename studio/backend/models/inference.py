@@ -1647,6 +1647,14 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = "[x-unsloth] Conversation ID for scoping stateful tool sessions (e.g. stdio MCP); stays per-thread where session_id may be shared project-wide.",
     )
+    branch_message_ids: Optional[list[str]] = Field(
+        None,
+        description = (
+            "[x-unsloth] Ordered IDs of the Studio messages on the active branch. "
+            "Used only to restore that branch's persisted context-checkpoint boundary "
+            "without relying on lossy text matching; never forwarded to the model."
+        ),
+    )
     rag_scope: Optional[dict] = Field(
         None,
         description = (

@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "name": "Unsloth Companion v1 release manifest",
-  "updatedAt": "2026-08-31T18:39:01Z",
+  "updatedAt": "2026-09-02T14:49:00Z",
   "runtime": {
     "project": "ggml-org/llama.cpp",
     "commit": "3173a56471c1753650cd806694145ffd6dcace67",
@@ -40,40 +40,40 @@
   "releaseArtifacts": {
     "unsignedIPA": {
       "path": "../release/Unsloth-Companion_0.0.1_unsigned.ipa",
-      "sha256": "397b6073ec586f0c31fc25bbe4c16f0ab946d511dc190a542f0fa9312133b7c6",
-      "bytes": 4037038,
+      "sha256": "722547db680a5da8e9434c0201a91c439c5edf31a55cad89d85d067260b528f7",
+      "bytes": 4048141,
       "signed": false,
       "minimumOS": "18.6"
     },
     "macOSDMG": {
-      "path": "../release/Unsloth_0.1.800-mlx.11_aarch64.dmg",
-      "sha256": "d21da922eec934abd78180a0fb0dbecfaedb4aa5e2b6bfffabf60e33e7e1fadf",
-      "bytes": 138142392,
+      "path": "../release/Unsloth_0.1.800-mlx.20_aarch64.dmg",
+      "sha256": "4bf89903f4c741ffe0cb3b2bfabe4e1d348d4fe146897502f6ed73b1f01222ed",
+      "bytes": 138166251,
       "architecture": "arm64",
       "minimumOS": "12.0",
       "signing": "ad-hoc",
       "notarized": false
     },
     "macOSExecutable": {
-      "path": "../release/Unsloth_0.1.800-mlx.11_aarch64.dmg::/Unsloth.app/Contents/MacOS/unsloth-studio",
-      "sha256": "0bf9fa9b4200b1c61c4aa573a4b37c200968c805bf07cb7a14f80ecce883e1ce",
-      "bytes": 59517632
+      "path": "../release/Unsloth_0.1.800-mlx.20_aarch64.dmg::/Unsloth.app/Contents/MacOS/unsloth-studio",
+      "sha256": "abf23e68488193c482fc8497d41d7f09f45ca349ae4b5273f0100e81aa416ef6",
+      "bytes": 59518832
     },
     "desktopBackendWheel": {
-      "path": "../release/Unsloth_0.1.800-mlx.11_aarch64.dmg::/Unsloth.app/Contents/Resources/backend/unsloth-2026.8.18+mlxcompaction8.companion11-py3-none-any.whl",
-      "sha256": "14739a6ab9be8d193b5a8bae445ab56952feea5796413b6955ed866909c62976",
-      "bytes": 92627056
+      "path": "../release/Unsloth_0.1.800-mlx.20_aarch64.dmg::/Unsloth.app/Contents/Resources/backend/unsloth-2026.8.19+mlxcompaction8.companion20-py3-none-any.whl",
+      "sha256": "f6ef08704c56d795465b8bc860d4abfd346c9c4f3934611d3ece4ed5fd3b5fb0",
+      "bytes": 92649657
     }
   },
   "verification": {
-    "swiftUnitTests": 13,
+    "swiftUnitTests": 14,
     "iOSUITests": 3,
-    "desktopPythonTests": 15,
-    "typeScriptTypecheck": "passed",
-    "targetedESLint": "passed",
-    "localizationParity": "passed",
+    "desktopPythonTests": 0,
+    "typeScriptTypecheck": "passed during the production build",
+    "targetedESLint": "not run for companion20",
+    "localizationParity": "compiled in the signed simulator and unsigned device builds; no separate parity script exists",
     "viteProductionBuild": "passed",
-    "latestCompanion11TestSuite": "not run by user request; the 15 Desktop, 13 Swift unit, and 3 signed iOS UI results are carried forward only as historical evidence because the iPhone protocol and app are unchanged",
+    "currentCompanion20Verification": "production TypeScript and Vite builds plus unsigned iphoneos build 8 passed; arm64 metadata, embedded wheel/source identity, ad-hoc code-sign, DMG, IPA archive, manifest, and checksum integrity passed. No fresh automated, simulator, or physical-device behavioral tests were run; prior test counts remain historical only",
     "simulatorModelDownloads": 0,
     "simulatorErasedAfterTests": true,
     "simulatorCompanionTracesAfterErase": 0,

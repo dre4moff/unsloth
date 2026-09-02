@@ -80,8 +80,10 @@ from core.inference.tools import (
     build_rag_autoinject,
     execute_tool,
     iphone_companion_runtime_notice,
+    iphone_companion_submit_nudge,
     is_high_risk_tool_call,
     refresh_iphone_companion_tool_catalog,
+    should_force_iphone_companion_submit,
 )
 from state.tool_approvals import (
     TOOL_REJECTED_MESSAGE,
@@ -820,6 +822,8 @@ async def stream_with_studio_tools(
     spent_budget_passes = 0
     fruitless_turns = 0
     companion_enabled = "iphone_companion" in allowed_tool_names
+    companion_force_requested = False
+    companion_force_attempts = 0
     last_companion_notice = (
         iphone_companion_runtime_notice(thread_id) if companion_enabled else ""
     )
@@ -849,6 +853,23 @@ async def stream_with_studio_tools(
             if provider_turns > 1 and current_companion_notice and current_companion_notice != last_companion_notice:
                 _append_user_turn(conversation, current_companion_notice)
             last_companion_notice = current_companion_notice
+        if provider_turns == 1 and tool_choice == "auto":
+            companion_force_requested = should_force_iphone_companion_submit(
+                request_branch,
+                active_tools,
+            )
+        force_companion_this_turn = bool(
+            companion_force_requested
+            and not executed_any
+            and companion_force_attempts < 2
+        )
+        if force_companion_this_turn:
+            companion_force_attempts += 1
+            active_tools = [
+                tool
+                for tool in active_tools
+                if (tool.get("function") or {}).get("name") == "iphone_companion"
+            ]
         tools_available = (
             tool_choice != "none" and bool(active_tools) and (unlimited or remaining > 0)
         )
@@ -856,7 +877,14 @@ async def stream_with_studio_tools(
         # tool surface (the route withholds enabled_tools), so there are no
         # provider-hosted builtins left for "none" to revoke, and saying it
         # explicitly stops a model from calling a tool it was just denied.
-        turn_tool_choice = tool_choice if tools_available else "none"
+        turn_tool_choice = (
+            {
+                "type": "function",
+                "function": {"name": "iphone_companion"},
+            }
+            if tools_available and force_companion_this_turn
+            else (tool_choice if tools_available else "none")
+        )
         # A forced choice applies until the model actually calls something; the
         # result follow-up must be free to answer in prose.
         if executed_any and turn_tool_choice not in ("auto", "none"):
@@ -1056,6 +1084,18 @@ async def stream_with_studio_tools(
             # gets one nudge to actually do it, the same recovery the local loops
             # give a stalled small model, then the answer stands as written.
             visible_answer = "".join(turn.text)
+            if force_companion_this_turn:
+                if companion_force_attempts < 2:
+                    _append_user_turn(conversation, iphone_companion_submit_nudge())
+                    continue
+                companion_force_requested = False
+                _append_user_turn(
+                    conversation,
+                    "[Studio runtime] The provider failed twice to emit the required "
+                    "iPhone Companion function call. Continue on the Mac and state "
+                    "that delegation did not start; do not invent an iPhone job.",
+                )
+                continue
             if (
                 tools_available
                 and not controller.force_final_answer

@@ -22,14 +22,21 @@ The prototype combines three reusable ideas:
 
 1. **Model-aware context compaction** keeps long local chats inside the active
    model's actual context budget and repeats fitting before every model pass.
+   Studio carries the active branch's stable message IDs as private request metadata,
+   so a checkpoint survives reasoning/tool replay without being mistaken for a new epoch.
 2. **A persistent objective and checklist** preserves the current task across
-   compaction and requires genuine progress or a changed strategy.
+   compaction and requires genuine progress or a changed strategy. Studio exposes
+   it as an independent persisted `Plan` tool and hides the checklist when the turn ends.
 3. **Phone companions** expose authenticated, capability-advertised workers. The
    orchestrator can choose the best phone or distribute independent tasks and
    shards across several devices while keeping a local Mac fallback. Submission
    returns immediately; every later model pass sees the live per-kind worker capacity,
    the Mac continues independently, and it later collects or explicitly joins completed
    work from a mailbox scoped to the originating chat.
+   Its complete live schema is attached to every enabled model pass, allowing the Mac
+   model to orchestrate available phones immediately without probing the filesystem.
+   A busy single iPhone remains a valid serial worker queue across separate submissions;
+   multiple phones consume independent queued work concurrently.
 
 Read [VISION.md](docs/VISION.md) for the longer-term idea: mixed generations of
 iPhones, a future Android worker, overnight task queues, and future image or other
@@ -86,9 +93,15 @@ one shared-memory accelerator.
 - Asynchronous `submit`, non-blocking `status`/`collect`, and a bounded final `wait`: iPhone inference
   never holds the Mac model's tool loop open, and stopping the Mac turn does not
   implicitly cancel already-dispatched phone work.
-- Live worker-pool orchestration: the model sees connected, idle, and busy counts,
-  fans an independent `items` batch across all eligible phones, receives mailbox
-  state changes between model passes, and uses `wait` only as the final fork/join barrier.
+- Live worker-pool orchestration: the model sees compatible task kinds and the explicit
+  one-phone serial queue contract, fans an independent `items` batch across eligible phones,
+  receives mailbox state changes between model passes, and uses `wait` only as the final
+  fork/join barrier.
+- Context-window and checkpoint fitting match releases `.7` through `.11` exactly, before
+  and after every checkpoint; stable system/tool prefixes remain cacheable across ordinary
+  plans and tool passes.
+- Independent persisted `Plan` tool: queued turns retain their selected state and the
+  visible objective/checklist disappears when generation completes.
 - llama.cpp/Metal runtime and real `mtmd` capability probes.
 - Typed task protocol, leases, heartbeats, cancellation, replay protection,
   checksums, backpressure, and late-result handling.
@@ -96,8 +109,10 @@ one shared-memory accelerator.
   automatic/manual cleanup.
 - Foreground-only service availability. Locking or backgrounding the app drains
   work and performs cleanup; the prototype does not misuse iOS background modes.
-- Mac-side output-budget selection and fallback when a phone cannot fit or finish
-  a generation cleanly.
+- Mac-side 8192-16384 output-ceiling selection, byte-exact literal validation,
+  explicit objective/source separation, near-literal objective-echo detection inside
+  plain or JSON output, placeholder rejection, and fallback when a phone cannot fit or
+  finish a generation cleanly.
 
 ## Prototype limits
 

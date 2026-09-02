@@ -1,6 +1,6 @@
 # Report — Test tool `iphone_companion` come subagente
 
-> Aggiornamento 2026-08-31, release `companion11`: il comportamento descritto sotto appartiene alle corse precedenti ai fix. Il modello Mac ora riceve a ogni passaggio il pool e la capacita parallela reali, fa fan-out sugli iPhone idonei, continua il proprio ramo e usa `collect` o `wait` solo per il join finale. Il prompt dichiara esplicitamente falso sia il modello sincrono sia il parallelismo puramente concettuale. Nessun test automatico o fisico e stato eseguito durante questo intervento, come richiesto.
+> Aggiornamento 2026-09-02, prerelease `companion20`: una chiamata reale `text`-only per scrivere una fiaba ha mostrato sia il task vuoto del vecchio prompt sia un loop meta di self-correction. Build 8 interpreta `text` come obiettivo quando `instruction` manca, conserva la separazione contesto/obiettivo, riconosce eco dentro JSON e interrompe durante la generazione i loop meta ripetuti prima del completamento. Il retry ripete il formato richiesto e il Desktop applica lo stesso controllo difensivo. Il comportamento storico sotto resta come evidenza delle corse precedenti; per `companion20` non sono stati eseguiti nuovi test automatici o fisici.
 
 **Data:** 2026-08-30
 **Ambiente:** macOS, host locale redatto prima della pubblicazione

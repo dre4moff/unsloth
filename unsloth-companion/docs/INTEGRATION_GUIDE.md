@@ -34,6 +34,13 @@ tool catalog, reasoning controls, and any runtime-specific wrapper. Re-run fitti
 before every model pass, including passes after tool results. Cumulative processed
 token usage is not the same as resident context occupancy.
 
+Persist checkpoint state against stable message identities, not only flattened text.
+A single stored assistant turn may replay as separate reasoning, function-call, tool-result,
+and final-text wire messages. Carry the ordered active-branch IDs as request-only metadata,
+resolve the newest exact persisted assistant row from them, and never render those IDs into
+the model prompt. Keep conservative text matching only as a compatibility fallback for older
+or generic API clients.
+
 When a checkpoint is safe:
 
 1. preserve the system contract and newest user turn;
@@ -162,8 +169,15 @@ turn must not cancel accepted phone work; cancellation remains an explicit job/d
 operation. Preserve failed and partial outcomes so the desktop can perform fallback when
 it next needs the result.
 
-Also expose the exact live worker count and per-task-kind idle capacity to every model
-pass. The orchestrator should fan out at most one independent item per compatible idle
+Queue admission must consider compatible busy workers, not only idle workers. A second
+submission made while the only phone is running must be accepted into the desktop-owned
+queue and dispatched automatically when that phone becomes free. With multiple phones,
+the queue may be consumed concurrently up to one active task per runtime.
+
+Expose compatible per-task-kind capacity and a compact live worker/mailbox update to every
+model pass. Keep volatile counts out of a tool schema rendered near the start of the prompt:
+otherwise an idle-to-busy transition invalidates the model's long cached prefix. The
+orchestrator should fan out at most one independent item per compatible idle
 worker, immediately execute its own independent branch, and only then use an explicit
 bounded `wait` operation as the fork/join barrier when a required result is not already
 collectable. Refresh mailbox state between model passes. The model must never be told that
@@ -176,8 +190,32 @@ support. The worker must report why generation stopped. Treat context overflow,
 token-cap exhaustion without EOS, malformed schema output, checksum mismatch, and
 runtime cancellation as unusable results.
 
+The reference Companion contract exposes a Mac-selected `maximum_tokens` ceiling
+between 8192 and 16384 for every delegated task. This is a ceiling rather than a
+forced output length: EOS can finish earlier, while the phone's physical context
+still bounds prompt plus generation. The Desktop may transmit a lower explicit ceiling only
+when prompt plus the selected Mac budget cannot fit the phone's physical context; reject
+output that exhausts the available context without EOS.
+
 Structured output is optional. Free-text subagents should return free text by
-default and use JSON only when the caller supplied a result schema.
+default and use JSON only when the caller supplied a result schema. A response that
+copies the delegated objective or consists only of a placeholder is not a successful
+result. Do not end prompts with a named completion slot such as
+`[Final deliverable output]`: small workers may imitate it. The reference pipeline
+uses a minimal prompt and byte-for-byte validation for exact-literal requests; other
+invalid outputs receive one marker-free corrective attempt and then fail. Desktop
+repeats literal and placeholder validation before accepting the result.
+Detect repeated meta-generation such as self-correction and final-attempt announcements
+while tokens are streaming and abort that attempt early; do not spend the remaining ceiling
+on a loop that is demonstrably not producing the requested deliverable.
+
+Keep the delegated objective distinct from optional source material. In the reference
+tool contract, `instruction` is the objective and `text` is context. For compatibility,
+a `text`-only subagent payload is interpreted as the objective rather than being placed
+in a context block beside an empty task. Echo validation should inspect string leaves in
+plain text, fenced JSON, and structured JSON and should detect near-copies that only drop
+an imperative or alter an article; the corrective retry must repeat the required output
+format as well as the objective.
 
 ## 9. Mobile lifecycle and storage
 
@@ -222,6 +260,8 @@ Before calling a port ready, verify:
 - lease expiry, disconnects, explicit cancellation, and late results;
 - scheduler behavior with mixed capabilities and multiple phones;
 - context fitting before every ordinary and tool-loop generation;
+- early searchable checkpoint reset plus stable prompt prefixes across repeated tool passes;
+- serial queue admission across separate submissions with one busy worker;
 - objective persistence and no-progress strategy changes;
 - output-cap and malformed-result rejection;
 - crash recovery and zero terminal task-cache residue;

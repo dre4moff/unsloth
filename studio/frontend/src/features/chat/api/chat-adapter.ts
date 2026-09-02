@@ -1675,6 +1675,7 @@ export async function buildLocalTokenCountExtras(
   const {
     supportsTools,
     toolsEnabled,
+    turnPlanningEnabled,
     codeToolsEnabled,
     artifactsEnabled,
     mcpEnabledForChat,
@@ -1694,6 +1695,7 @@ export async function buildLocalTokenCountExtras(
   const ragOn = ragEnabled || projectRagEnabled;
   if (
     !toolsEnabled &&
+    !turnPlanningEnabled &&
     !codeToolsEnabled &&
     !artifactsEnabled &&
     !mcpEnabledForChat &&
@@ -1712,7 +1714,7 @@ export async function buildLocalTokenCountExtras(
 
   return {
     enable_tools: true,
-    turn_planning: true,
+    turn_planning: turnPlanningEnabled,
     // Auto-Heal off leaves leaked tool markup in the real prompt, so the count keeps it.
     auto_heal_tool_calls: autoHealToolCalls,
     // Full access swaps the python/terminal descriptions and adds a nudge
@@ -4196,6 +4198,7 @@ export function createOpenAIStreamAdapter(
       const {
         supportsTools,
         toolsEnabled,
+        turnPlanningEnabled,
         codeToolsEnabled,
         imageToolsEnabled,
         artifactsEnabled,
@@ -5523,7 +5526,19 @@ export function createOpenAIStreamAdapter(
             video_base64: videoBase64,
             cancel_id: cancelId,
             ...(sandboxSessionId ? { session_id: sandboxSessionId } : {}),
-            ...(resolvedThreadId ? { thread_id: resolvedThreadId } : {}),
+            ...(resolvedThreadId
+              ? {
+                  thread_id: resolvedThreadId,
+                  // Text replay is intentionally lossy (one stored assistant
+                  // message can become reasoning + several tool wire turns).
+                  // Give the local backend the branch's stable identities so
+                  // it can restore the previous checkpoint instead of mistaking
+                  // the next turn for a brand-new 50k-token epoch.
+                  branch_message_ids: survivingMessages.map(
+                    (message) => message.id,
+                  ),
+                }
+              : {}),
             ...(useAdapter === undefined ? {} : { use_adapter: useAdapter }),
             ...(supportsReasoning
               ? reasoningStyle === "enable_thinking_effort"
@@ -5564,6 +5579,7 @@ export function createOpenAIStreamAdapter(
             bypass_permissions: bypassPermissions,
             ...(supportsTools &&
             (toolsEnabled ||
+              turnPlanningEnabled ||
               codeToolsEnabled ||
               renderHtmlToolEnabledForThisTurn ||
               mcpEnabledForChat ||
@@ -5572,7 +5588,7 @@ export function createOpenAIStreamAdapter(
               projectRagEnabled)
               ? {
                   enable_tools: true,
-                  turn_planning: true,
+                  turn_planning: turnPlanningEnabled,
                   enabled_tools: [
                     // First so retrieval is the primary tool when Docs is on.
                     ...(ragEnabled || projectRagEnabled

@@ -57,6 +57,32 @@ def test_public_request_without_studio_identity_does_not_create_checkpoint(monke
     assert not (tmp_path / "share" / "active-turns").exists()
 
 
+def test_turn_ledger_updates_latest_user_without_rewriting_stable_system_prefix(
+    monkeypatch, tmp_path
+):
+    from core.inference.turn_checkpoint import ActiveTurnCheckpoint
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    state = ActiveTurnCheckpoint.start(
+        [{"role": "user", "content": "complete the task"}],
+        thread_id = "thread-prefix",
+        session_id = "session-prefix",
+    )
+    assert state is not None
+    state.record_tool("terminal", {"command": "true"}, "exit 0")
+    messages = [
+        {"role": "system", "content": "stable system prompt"},
+        {"role": "user", "content": "complete the task"},
+    ]
+
+    injected = state.inject(messages)
+
+    assert injected[0] == messages[0]
+    assert "<active_turn_checkpoint>" in injected[1]["content"]
+    assert injected[1]["content"].startswith("complete the task")
+    state.finish("completed")
+
+
 def test_generator_wrapper_keeps_file_for_active_turn_and_removes_it_on_finish(
     monkeypatch, tmp_path
 ):

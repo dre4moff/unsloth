@@ -9,10 +9,149 @@ struct PreparedTaskInput: Sendable {
     let mediaPayloads: [Data]
     let derivedResult: [String: JSONValue]
     let requireJSONObject: Bool
+    let retryPrompt: String?
+    let forbiddenEchoes: [String]
+    let expectedLiteralOutput: String?
+
+    init(
+        prompt: String,
+        mediaPayloads: [Data],
+        derivedResult: [String: JSONValue],
+        requireJSONObject: Bool,
+        retryPrompt: String? = nil,
+        forbiddenEchoes: [String] = [],
+        expectedLiteralOutput: String? = nil
+    ) {
+        self.prompt = prompt
+        self.mediaPayloads = mediaPayloads
+        self.derivedResult = derivedResult
+        self.requireJSONObject = requireJSONObject
+        self.retryPrompt = retryPrompt
+        self.forbiddenEchoes = forbiddenEchoes
+        self.expectedLiteralOutput = expectedLiteralOutput
+    }
+
+    func validationError(for output: String) -> TaskPipelineError? {
+        if let expectedLiteralOutput {
+            return output == expectedLiteralOutput ? nil : .literalOutputMismatch
+        }
+        if isRunawayMetaOutput(output) { return .runawayMetaOutput }
+        if isDelegationEcho(output) { return .delegationEcho }
+        if isPlaceholderOutput(output) { return .placeholderOutput }
+        return nil
+    }
+
+    func shouldAbortGeneration(_ partialOutput: String) -> Bool {
+        if let expectedLiteralOutput {
+            let candidate = partialOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+            return !candidate.isEmpty && !expectedLiteralOutput.hasPrefix(candidate)
+        }
+        return isRunawayMetaOutput(partialOutput)
+    }
+
+    private func isRunawayMetaOutput(_ output: String) -> Bool {
+        guard output.count >= 160 else { return false }
+        let folded = output.folding(
+            options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
+            locale: nil
+        )
+        let markers = [
+            "self-correction", "self correction", "final attempt", "new attempt",
+            "final output generation", "this is not what was asked", "i will now generate",
+            "i must provide", "generating the final output"
+        ]
+        let markerCount = markers.reduce(into: 0) { count, marker in
+            count += max(0, folded.components(separatedBy: marker).count - 1)
+        }
+        return markerCount >= 2
+    }
+
+    private func isDelegationEcho(_ output: String) -> Bool {
+        let outputs = Self.meaningfulOutputStrings(output)
+        guard !outputs.isEmpty else { return false }
+        return outputs.allSatisfy { generated in
+            forbiddenEchoes.contains { source in
+                Self.isNearEcho(generated, of: source)
+            }
+        }
+    }
+
+    private static func normalizedForEchoCheck(_ value: String) -> String {
+        value.folding(options: [.diacriticInsensitive, .widthInsensitive], locale: nil)
+            .lowercased()
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+    }
+
+    private static func isNearEcho(_ generated: String, of source: String) -> Bool {
+        let normalizedGenerated = normalizedForEchoCheck(generated)
+        let normalizedSource = normalizedForEchoCheck(source)
+        guard normalizedSource.count >= 24, normalizedGenerated.count >= 16 else { return false }
+        if normalizedGenerated == normalizedSource { return true }
+        if normalizedGenerated.contains(normalizedSource), normalizedGenerated.count <= normalizedSource.count + 80 { return true }
+        if normalizedSource.contains(normalizedGenerated), normalizedGenerated.count * 4 >= normalizedSource.count * 3 { return true }
+
+        let generatedWords = Set(normalizedGenerated.split(separator: " ").map(String.init))
+        let sourceWords = Set(normalizedSource.split(separator: " ").map(String.init))
+        let smallerCount = min(generatedWords.count, sourceWords.count)
+        let largerCount = max(generatedWords.count, sourceWords.count)
+        guard smallerCount >= 6, largerCount > 0 else { return false }
+        let overlap = generatedWords.intersection(sourceWords).count
+        return Double(overlap) / Double(smallerCount) >= 0.85
+            && Double(overlap) / Double(largerCount) >= 0.65
+    }
+
+    private static func meaningfulOutputStrings(_ output: String) -> [String] {
+        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+        var jsonText = trimmed
+        if jsonText.hasPrefix("```") {
+            var lines = jsonText.components(separatedBy: .newlines)
+            if !lines.isEmpty { lines.removeFirst() }
+            if lines.last?.trimmingCharacters(in: .whitespacesAndNewlines) == "```" { lines.removeLast() }
+            jsonText = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        if let data = jsonText.data(using: .utf8),
+           let object = try? JSONSerialization.jsonObject(with: data),
+           let strings = jsonStringLeaves(object),
+           !strings.isEmpty {
+            return strings
+        }
+        return [trimmed]
+    }
+
+    private static func jsonStringLeaves(_ value: Any) -> [String]? {
+        if let string = value as? String { return [string] }
+        if let array = value as? [Any] { return array.flatMap { jsonStringLeaves($0) ?? [] } }
+        if let object = value as? [String: Any] { return object.values.flatMap { jsonStringLeaves($0) ?? [] } }
+        return nil
+    }
+
+    private func isPlaceholderOutput(_ output: String) -> Bool {
+        let strings = Self.meaningfulOutputStrings(output)
+        return !strings.isEmpty && strings.allSatisfy(Self.isPlaceholder)
+    }
+
+    private static func isPlaceholder(_ value: String) -> Bool {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalized = normalizedForEchoCheck(value)
+        let wrapped = trimmed.count >= 2 && (
+            trimmed.first == "[" && trimmed.last == "]"
+            || trimmed.first == "<" && trimmed.last == ">"
+        )
+        if ["final deliverable output", "final output", "deliverable output"].contains(normalized) { return true }
+        if wrapped && ["answer", "response", "result"].contains(normalized) { return true }
+        guard normalized.count <= 160 else { return false }
+        return normalized.contains("placeholder")
+            || normalized.contains("insert ")
+            || normalized.contains("final deliverable")
+    }
 }
 
 enum TaskPipelineError: LocalizedError {
     case missingText, missingMedia, unsupportedMedia, rawMediaNotAuthorized, invalidStructuredOutput
+    case delegationEcho, placeholderOutput, literalOutputMismatch, runawayMetaOutput
 
     var errorDescription: String? {
         switch self {
@@ -21,6 +160,10 @@ enum TaskPipelineError: LocalizedError {
         case .unsupportedMedia: return String(localized: "The media format cannot be processed.")
         case .rawMediaNotAuthorized: return String(localized: "Raw media processing was not authorized on this iPhone.")
         case .invalidStructuredOutput: return String(localized: "The model did not return a complete JSON result.")
+        case .delegationEcho: return String(localized: "The iPhone model repeated the delegated task instead of completing it.")
+        case .placeholderOutput: return String(localized: "The iPhone model returned a placeholder instead of the requested answer.")
+        case .literalOutputMismatch: return String(localized: "The iPhone model did not return the exact requested text.")
+        case .runawayMetaOutput: return String(localized: "The iPhone model entered a self-correction loop instead of returning the final answer.")
         }
     }
 }
@@ -36,28 +179,55 @@ actor TaskPipelineActor {
         case .subagent:
             guard !text.isEmpty || !instruction.isEmpty else { throw TaskPipelineError.missingText }
             let requireJSONObject = !task.resultSchema.isEmpty
+            let expectedLiteralOutput = requireJSONObject ? nil : exactLiteralOutput(text: text, instruction: instruction)
+            let objective = instruction.isEmpty ? text : instruction
+            let context = instruction.isEmpty ? "" : text
+            let contextSection = context.isEmpty ? "" : """
+
+                <context>
+                \(context)
+                </context>
+                """
             let formatInstruction: String
             if requireJSONObject {
                 let schema = resultSchemaText(task.resultSchema)
                 formatInstruction = "Return exactly one complete JSON object that conforms to this result schema: \(schema)"
             } else {
-                formatInstruction = "Follow the delegated objective's requested output format exactly. Return only the final deliverable. Do not add a JSON wrapper, metadata, commentary, or extra fields unless the delegated objective explicitly asks for them."
+                formatInstruction = "Follow the delegated objective's requested output format exactly. Return only the requested content. Do not add a JSON wrapper, metadata, commentary, labels, or extra fields unless the objective explicitly asks for them."
+            }
+            if let expectedLiteralOutput {
+                return PreparedTaskInput(
+                    prompt: "Reply with exactly the following text and nothing else:\n\(expectedLiteralOutput)",
+                    mediaPayloads: [],
+                    derivedResult: [:],
+                    requireJSONObject: false,
+                    retryPrompt: "Your previous answer was not exact. Reply with only these characters:\n\(expectedLiteralOutput)",
+                    forbiddenEchoes: [],
+                    expectedLiteralOutput: expectedLiteralOutput
+                )
             }
             return PreparedTaskInput(
                 prompt: """
-                You are an execution subagent for the Mac orchestrator. Complete the delegated objective using the Mac-supplied context below. The delegated objective is an instruction, not text to reproduce.
+                Complete the task below. \(formatInstruction)
+                Use the reference only as source material. Preserve the requested constraints.
+                \(contextSection)
+                TASK:
+                \(objective)
 
-                Start directly with the requested answer or deliverable. Do not quote, repeat, paraphrase, summarize, or preface the delegated objective. Do not answer by describing the assignment. If the objective asks what is happening "now", "here", or "in the current context", interpret that as the MAC-SUPPLIED CONTEXT below, not as hidden model internals. Do not give a generic explanation about being a language model when the supplied context is sufficient. Preserve every constraint and identify genuine uncertainty without inventing facts. \(formatInstruction)
-
-                DELEGATED OBJECTIVE:
-                \(instruction)
-
-                MAC-SUPPLIED CONTEXT:
-                \(text)
+                Output the completed content only.
                 """,
                 mediaPayloads: [],
                 derivedResult: [:],
-                requireJSONObject: requireJSONObject
+                requireJSONObject: requireJSONObject,
+                retryPrompt: """
+                Complete this task now. \(formatInstruction)
+                \(contextSection)
+                TASK:
+                \(objective)
+
+                Output only the completed content, with no notes about writing it.
+                """,
+                forbiddenEchoes: [text, instruction].filter { !$0.isEmpty }
             )
         case .classification:
             guard !text.isEmpty else { throw TaskPipelineError.missingText }
@@ -126,6 +296,27 @@ actor TaskPipelineActor {
               let data = try? ProtocolCoding.encoder.encode(schema),
               let text = String(data: data, encoding: .utf8) else { return "{}" }
         return text
+    }
+
+    private func exactLiteralOutput(text: String, instruction: String) -> String? {
+        let cues = [
+            "exactly", "only the string", "reply with only", "respond with only",
+            "write only", "return only", "esattamente", "solo la stringa",
+            "rispondi con solo", "scrivi solo"
+        ]
+        let delimiterPairs: [(Character, Character)] = [("\"", "\""), ("“", "”"), ("«", "»"), ("`", "`")]
+        for source in [instruction, text] {
+            let lowercasedSource = source.lowercased()
+            guard cues.contains(where: { lowercasedSource.contains($0) }) else { continue }
+            for delimiters in delimiterPairs {
+                guard let start = source.firstIndex(of: delimiters.0) else { continue }
+                let contentStart = source.index(after: start)
+                guard let end = source[contentStart...].firstIndex(of: delimiters.1) else { continue }
+                let candidate = source[contentStart..<end].trimmingCharacters(in: .whitespacesAndNewlines)
+                if !candidate.isEmpty, candidate.count <= 1_024 { return String(candidate) }
+            }
+        }
+        return nil
     }
 
     private func requireRawAuthorization(_ task: CompanionTask, allowRawMedia: Bool) throws {

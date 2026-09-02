@@ -51,6 +51,7 @@ from core.companion.models import (
     PairedDevice,
 )
 from core.companion.security import DesktopIdentity
+from core.inference.tools import IPHONE_COMPANION_TOOL, refresh_iphone_companion_tool_catalog
 
 
 class FakeWebSocket:
@@ -134,6 +135,36 @@ def make_result(task: CompanionTask, text: str = "done") -> CompanionResult:
 
 
 class ProtocolContractTests(unittest.TestCase):
+    def test_companion_schema_is_stable_while_one_iphone_moves_from_idle_to_busy(self) -> None:
+        common = {
+            "mode": "automatic",
+            "connectedWorkerCount": 1,
+            "eligibleWorkerCount": 1,
+            "capacityByKind": {"subagent": 1, "summary": 1},
+        }
+        idle = {
+            **common,
+            "readyWorkerCount": 1,
+            "busyWorkerCount": 0,
+            "idleCapacityByKind": {"subagent": 1, "summary": 1},
+            "mailbox": {"pending": 0, "ready": 0, "collected": 0},
+        }
+        busy = {
+            **common,
+            "readyWorkerCount": 0,
+            "busyWorkerCount": 1,
+            "idleCapacityByKind": {},
+            "mailbox": {"pending": 1, "ready": 0, "collected": 0},
+        }
+        with patch("core.inference.tools._companion_orchestration_snapshot", return_value=idle):
+            idle_schema = refresh_iphone_companion_tool_catalog([IPHONE_COMPANION_TOOL], "thread")
+        with patch("core.inference.tools._companion_orchestration_snapshot", return_value=busy):
+            busy_schema = refresh_iphone_companion_tool_catalog([IPHONE_COMPANION_TOOL], "thread")
+
+        self.assertEqual(idle_schema, busy_schema)
+        actions = idle_schema[0]["function"]["parameters"]["properties"]["action"]["enum"]
+        self.assertEqual(actions, ["submit", "status", "collect", "wait"])
+
     def test_schema_fixture_and_swift_message_types_match(self) -> None:
         schema = json.loads((PACKAGE_ROOT / "protocol" / "schema-v1.json").read_text())
         Draft202012Validator.check_schema(schema)
@@ -487,6 +518,70 @@ class CompanionManagerTests(unittest.IsolatedAsyncioTestCase):
         collected = await self.manager.collect_background(thread_id="chat-failure")
         self.assertEqual(collected["jobs"][0]["state"], "failed")
         self.assertIn("phone went away", collected["jobs"][0]["result"]["error"])
+
+    async def test_separate_jobs_queue_behind_one_busy_iphone(self) -> None:
+        session = make_session("Serial", 0.8, 10)
+        self.manager.sessions[session.device_id] = session
+        first_started = asyncio.Event()
+        release_first = asyncio.Event()
+        order: list[UUID] = []
+        active = 0
+        maximum_active = 0
+
+        async def dispatch_once(selected: DeviceSession, task: CompanionTask) -> CompanionResult:
+            nonlocal active, maximum_active
+            selected.status.queueDepth += 1
+            active += 1
+            maximum_active = max(maximum_active, active)
+            order.append(task.taskID)
+            try:
+                if len(order) == 1:
+                    first_started.set()
+                    await release_first.wait()
+                return make_result(task, f"result-{len(order)}")
+            finally:
+                active -= 1
+                selected.status.queueDepth -= 1
+                self.manager._worker_state_changed.set()
+
+        self.manager._dispatch_once = dispatch_once
+        first_task = make_task()
+        second_task = make_task()
+        first = await self.manager.submit_background(
+            [first_task], item_ids=["first"], thread_id="queued-chat"
+        )
+        await asyncio.wait_for(first_started.wait(), timeout=1)
+
+        second = await asyncio.wait_for(
+            self.manager.submit_background(
+                [second_task], item_ids=["second"], thread_id="queued-chat"
+            ),
+            timeout=1,
+        )
+        second_job = self.manager._background_jobs[UUID(second["jobID"])]
+        self.assertEqual(second_job.item_states[second_task.taskID], "queued")
+        snapshot = self.manager.orchestration_snapshot("queued-chat")
+        self.assertEqual(snapshot["capacityByKind"]["summary"], 1)
+        self.assertNotIn("summary", snapshot["idleCapacityByKind"])
+
+        release_first.set()
+        first_runner = self.manager._background_jobs[UUID(first["jobID"])].runner
+        self.assertIsNotNone(first_runner)
+        self.assertIsNotNone(second_job.runner)
+        await asyncio.wait_for(asyncio.gather(first_runner, second_job.runner), timeout=1)
+        self.assertEqual(order, [first_task.taskID, second_task.taskID])
+        self.assertEqual(maximum_active, 1)
+        self.assertEqual(second_job.item_states[second_task.taskID], "completed")
+
+    async def test_mac_output_budget_keeps_previous_floor(self) -> None:
+        session = make_session("Budget", 0.8, 10)
+        session.status.capabilities = session.status.capabilities.model_copy(
+            update={"contextSize": 32_768}
+        )
+        task = make_task().model_copy(
+            update={"input": {"text": "Short answer", "maximumTokens": 256}}
+        )
+        self.assertEqual(self.manager._safe_maximum_tokens(session, task), 8_192)
 
     async def test_only_divisible_shard_retries_another_iphone(self) -> None:
         first = make_session("First", 0.9, 1)

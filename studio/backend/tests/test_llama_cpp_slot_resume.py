@@ -535,6 +535,8 @@ def test_window_without_kv_dims_still_saves(monkeypatch, tmp_path):
     backend._kv_key_length = None
     backend._kv_value_length = None
     backend._swa_full = False
+    # Keep this capability test independent from the host's current free space.
+    _fake_disk(monkeypatch)
     posted = []
     monkeypatch.setattr(
         llama_cpp.httpx,

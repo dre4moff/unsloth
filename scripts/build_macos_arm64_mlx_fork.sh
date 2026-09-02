@@ -4,8 +4,9 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
-app_version="0.1.800-mlx.11"
-backend_version="2026.8.18+mlxcompaction8.companion11"
+release_dir="$repo_root/release"
+app_version="0.1.800-mlx.20"
+backend_version="2026.8.19+mlxcompaction8.companion20"
 rust_toolchain="1.89.0"
 wheel_name="unsloth-${backend_version}-py3-none-any.whl"
 resource_dir="$repo_root/studio/src-tauri/resources/backend"
@@ -25,8 +26,11 @@ done
 
 python3 -m py_compile \
     "$repo_root/studio/backend/core/companion/manager.py" \
+    "$repo_root/studio/backend/core/inference/inference.py" \
+    "$repo_root/studio/backend/core/inference/llama_cpp.py" \
     "$repo_root/studio/backend/core/inference/orchestrator.py" \
     "$repo_root/studio/backend/core/inference/tools.py" \
+    "$repo_root/studio/backend/models/inference.py" \
     "$repo_root/studio/backend/routes/inference.py"
 
 if ! grep -Fq "version = \"$app_version\"" "$repo_root/studio/src-tauri/Cargo.toml"; then
@@ -112,6 +116,10 @@ if ! grep -Fq 'def submit_background_sync' "$wheel_workspace/companion-manager.p
     echo "Backend wheel does not contain the asynchronous Companion mailbox." >&2
     exit 1
 fi
+if ! grep -Fq 'def _is_near_delegation_echo' "$wheel_workspace/companion-manager.py"; then
+    echo "Backend wheel does not validate near-literal Companion prompt echoes." >&2
+    exit 1
+fi
 unzip -p "$built_wheel" studio/backend/core/inference/tools.py \
     >"$wheel_workspace/tools.py"
 if ! grep -Fq '"name": "iphone_companion"' "$wheel_workspace/tools.py"; then
@@ -124,6 +132,20 @@ if ! grep -Fq '"enum": ["submit", "status", "collect", "wait"]' "$wheel_workspac
 fi
 if ! grep -Fq 'refresh_iphone_companion_tool_catalog' "$wheel_workspace/tools.py"; then
     echo "Backend wheel does not expose the live Companion worker pool." >&2
+    exit 1
+fi
+if ! grep -Fq 'complete live schema' "$wheel_workspace/tools.py"; then
+    echo "Backend wheel does not tell the Mac model to use the attached Companion schema." >&2
+    exit 1
+fi
+if ! grep -Fq 'Put the objective to execute in instruction' "$wheel_workspace/tools.py"; then
+    echo "Backend wheel does not expose the Companion objective/context contract." >&2
+    exit 1
+fi
+unzip -p "$built_wheel" studio/backend/core/inference/llama_cpp.py \
+    >"$wheel_workspace/llama_cpp.py"
+if ! grep -Fq 'branch_message_ids' "$wheel_workspace/llama_cpp.py"; then
+    echo "Backend wheel does not restore context checkpoints by active-branch ID." >&2
     exit 1
 fi
 
@@ -219,6 +241,9 @@ fi
 codesign --verify --deep --strict --verbose=2 "$app_path"
 hdiutil verify "$dmg_path"
 
+mkdir -p "$release_dir"
+install -m 0644 "$dmg_path" "$release_dir/Unsloth_${app_version}_aarch64.dmg"
+
 echo "Bundled backend SHA-256: $wheel_sha256"
 echo "App: $app_path"
-echo "DMG: $dmg_path"
+echo "DMG: $release_dir/Unsloth_${app_version}_aarch64.dmg"

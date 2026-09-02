@@ -183,19 +183,50 @@ actor CompanionTaskCoordinator {
             var generatedTokens = 0
             var durationMS = 0
             if !prepared.prompt.isEmpty {
-                let requestedValue = task.input["maximumTokens"]?.number ?? 4_096
-                let requestedTokens = requestedValue.isFinite ? Int(requestedValue) : 4_096
-                let generation = try await runtime.generate(
-                    taskID: task.taskID,
-                    prompt: prepared.prompt,
-                    mediaPayloads: prepared.mediaPayloads,
-                    maximumTokens: max(256, min(16_384, requestedTokens)),
-                    requireJSONObject: prepared.requireJSONObject
-                ) { [weak self] token in
-                    try? await self?.send(.taskToken, ["taskID": .string(task.taskID.uuidString), "token": .string(token)])
+                let requestedValue = task.input["maximumTokens"]?.number ?? 8_192
+                let requestedTokens = requestedValue.isFinite ? Int(requestedValue) : 8_192
+                // Desktop normally requests 8K-16K, but may transmit a lower
+                // ceiling when the selected model's physical context requires it.
+                let maximumTokens = max(256, min(16_384, requestedTokens))
+                var generation: RuntimeGeneration?
+                do {
+                    generation = try await runtime.generate(
+                        taskID: task.taskID,
+                        prompt: prepared.prompt,
+                        mediaPayloads: prepared.mediaPayloads,
+                        maximumTokens: maximumTokens,
+                        requireJSONObject: prepared.requireJSONObject,
+                        shouldAbortOutput: { prepared.shouldAbortGeneration($0) }
+                    ) { [weak self] token in
+                        try? await self?.send(.taskToken, ["taskID": .string(task.taskID.uuidString), "token": .string(token)])
+                    }
+                } catch ModelRuntimeError.invalidOutput {
+                    // A small worker can narrate repeated self-corrections for thousands
+                    // of tokens. Abort that pass as soon as the pattern is clear and use
+                    // the compact correction prompt once.
                 }
-                generatedTokens = generation.tokensGenerated
-                durationMS = generation.durationMS
+                if let generation {
+                    generatedTokens += generation.tokensGenerated
+                    durationMS += generation.durationMS
+                }
+                if (generation == nil || prepared.validationError(for: generation?.text ?? "") != nil),
+                   let retryPrompt = prepared.retryPrompt {
+                    try await send(.taskProgress, ["taskID": .string(task.taskID.uuidString), "progress": .number(0.55)])
+                    generation = try await runtime.generate(
+                        taskID: task.taskID,
+                        prompt: retryPrompt,
+                        mediaPayloads: prepared.mediaPayloads,
+                        maximumTokens: maximumTokens,
+                        requireJSONObject: prepared.requireJSONObject,
+                        shouldAbortOutput: { prepared.shouldAbortGeneration($0) }
+                    ) { [weak self] token in
+                        try? await self?.send(.taskToken, ["taskID": .string(task.taskID.uuidString), "token": .string(token)])
+                    }
+                    generatedTokens += generation?.tokensGenerated ?? 0
+                    durationMS += generation?.durationMS ?? 0
+                }
+                guard let generation else { throw TaskPipelineError.runawayMetaOutput }
+                if let validationError = prepared.validationError(for: generation.text) { throw validationError }
                 if prepared.requireJSONObject {
                     guard let data = generation.text.data(using: .utf8),
                           let object = try? ProtocolCoding.decoder.decode([String: JSONValue].self, from: data) else {
@@ -208,9 +239,12 @@ actor CompanionTaskCoordinator {
             }
             let hash = try ProtocolCoding.digest(result)
             let response = CompanionTaskResult(taskID: task.taskID, result: result, sha256: hash, durationMS: durationMS, tokensGenerated: generatedTokens)
-            try await send(.taskCompleted, try JSONValue.encode(response).object ?? [:])
             try await saveActivity(task: task, state: .completed, detail: "Completed", durationMS: durationMS, tokens: generatedTokens)
+            // Publish completion only after the coordinator, runtime, and service model are
+            // ready for the next task. Sending first let the Mac dequeue immediately into a
+            // still-busy iPhone and turned valid queued work into a transient failure.
             try await cleanup(taskID: task.taskID)
+            try await send(.taskCompleted, try JSONValue.encode(response).object ?? [:])
         } catch is CancellationError {
             await completeCancellation(taskID: task.taskID, reason: cancellationReason ?? .desktopRequest)
         } catch ModelRuntimeError.cancelled {

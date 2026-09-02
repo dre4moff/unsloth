@@ -3450,10 +3450,15 @@ _TOOL_ARTIFACT_TIP = (
 
 _TOOL_COMPANION_TIP = (
     "IMPORTANT RUNTIME FACT: iPhone Companion provides real asynchronous local LLM "
-    "subagents, not a synchronous function and not conceptual parallelism. The live worker "
-    "counts and per-kind parallel capacity in the iphone_companion description are authoritative. "
+    "subagents, not a synchronous function and not conceptual parallelism. The complete parameter "
+    "schema, compatible task kinds, and queue contract are already present in the iphone_companion "
+    "tool definition on this request and are authoritative. Never inspect files, "
+    "the terminal, or provoke a validation error to discover that schema; call the tool directly. "
+    "Submit remains valid when the only compatible iPhone is busy: extra batch items and separate "
+    "submit calls stay queued on the Desktop and that iPhone processes them serially; multiple "
+    "iPhones consume independent queued items concurrently. "
     "For substantial divisible work, proactively fan out independent bounded assignments up to "
-    "that capacity, preferably as one items batch, then immediately perform the independent "
+    "the useful item count, preferably as one items batch, then immediately perform the independent "
     "Mac-side share while the phones run. action=submit returns only acceptance and job IDs "
     "before inference finishes; never claim that it returned the delegated result or blocked for it. "
     "On later model passes, action=collect takes ready work. If the Mac has exhausted all useful "
@@ -3561,7 +3566,9 @@ def _as_plain_messages(messages):
     return plain
 
 
-def _thread_has_checkpoint(thread_id, branch_messages = None) -> bool:
+def _thread_has_checkpoint(
+    thread_id, branch_messages = None, branch_message_ids = None
+) -> bool:
     """Whether an epoch was ever committed on this thread, read from what it persisted.
 
     An archive is not a checkpoint: a rolling-window thread archives too, and re-admitting
@@ -3590,21 +3597,39 @@ def _thread_has_checkpoint(thread_id, branch_messages = None) -> bool:
         # and every thread reported no checkpoint. A tools-off thread that HAD reset then
         # never reopened the loop, so the block's promise that the history is searchable
         # was false for the whole of that epoch.
-        branch = conversation_archive.branch_message_texts(
-            _as_plain_messages(branch_messages), ("assistant",)
-        )
-        if branch_messages and not branch:
-            # A branch with no reply of its own never recorded an epoch. Without this the
-            # filter below is skipped rather than applied and the scan goes thread-wide
-            # again, which editing or regenerating the FIRST user turn hits by re-sending
-            # [system, user]. `_sticky_compaction_boundary` returns 0 there.
-            return False
-        live = set(branch or ())
-        rows = [
-            message
-            for message in reversed(studio_db.list_chat_messages(str(thread_id)) or [])
-            if message.get("role") == "assistant"
-        ]
+        stored = studio_db.list_chat_messages(str(thread_id)) or []
+        exact_branch = branch_message_ids is not None
+        if exact_branch:
+            # Studio supplies stable IDs because a persisted assistant message can
+            # replay as multiple reasoning/tool wire messages whose text no longer
+            # equals the saved row. IDs also distinguish identical Retry siblings.
+            by_id = {
+                str(message.get("id")): message
+                for message in stored
+                if message.get("id") is not None
+            }
+            rows = [
+                by_id[str(message_id)]
+                for message_id in reversed(branch_message_ids or [])
+                if str(message_id) in by_id
+                and by_id[str(message_id)].get("role") == "assistant"
+            ][:1]
+            branch = None
+            live = set()
+        else:
+            # Compatibility for API clients predating branch_message_ids.
+            branch = conversation_archive.branch_message_texts(
+                _as_plain_messages(branch_messages), ("assistant",)
+            )
+            if branch_messages and not branch:
+                # A branch with no reply of its own never recorded an epoch.
+                return False
+            live = set(branch or ())
+            rows = [
+                message
+                for message in reversed(stored)
+                if message.get("role") == "assistant"
+            ]
         if branch:
             # Exact matches where any exist, substring only as the fallback: the branch
             # check is textual, so an abandoned short reply rides in on a longer live one
@@ -3678,6 +3703,7 @@ async def _select_request_tools(
         apply_full_access_tool_descriptions,
         get_enabled_mcp_tools,
         refresh_iphone_companion_tool_catalog,
+        should_force_iphone_companion_submit,
     )
 
     if not tools_on:
@@ -3722,6 +3748,19 @@ async def _select_request_tools(
         tools,
         getattr(payload, "thread_id", None),
     )
+    # A direct iPhone delegation is already a concrete one-tool plan. Requiring the
+    # local Mac model to generate update_plan first adds a whole model pass and changes
+    # the tool prefix before dispatch. Keep visible planning for ordinary multi-step
+    # work, but take the fast path for an explicit Companion action.
+    if bool(getattr(payload, "turn_planning", False)) and should_force_iphone_companion_submit(
+        _as_plain_messages(getattr(payload, "messages", None)),
+        tools,
+    ):
+        tools = [
+            tool
+            for tool in tools
+            if (tool.get("function") or {}).get("name") != "update_plan"
+        ]
     # Built-ins only, so this runs before the MCP append: an MCP tool's
     # description is the server's to write, and Full access says nothing about
     # how that server runs.
@@ -14743,7 +14782,9 @@ async def openai_chat_completions(
             # And an epoch actually happened here: a rolling-window thread archives
             # identically, and there the loop would open for a repair that cannot happen.
             and _thread_has_checkpoint(
-                getattr(payload, "thread_id", None), getattr(payload, "messages", None)
+                getattr(payload, "thread_id", None),
+                getattr(payload, "messages", None),
+                getattr(payload, "branch_message_ids", None),
             )
         ):
             use_tools = True
@@ -14874,6 +14915,7 @@ async def openai_chat_completions(
                     else 300,
                     session_id = payload.session_id,
                     thread_id = payload.thread_id,
+                    branch_message_ids = payload.branch_message_ids,
                     rag_scope = _companion_execution_scope(payload),
                     disable_parallel_tool_use = payload.parallel_tool_calls is False,
                     # Bypass Permissions takes precedence over the confirm gate:
@@ -14883,7 +14925,13 @@ async def openai_chat_completions(
                     permission_mode = payload.permission_mode,
                     perf_callback = _gguf_perf_callback,
                     context_overflow = _rolling_context_policy(payload),
-                    turn_planning = bool(payload.turn_planning),
+                    turn_planning = bool(
+                        payload.turn_planning
+                        and any(
+                            (tool.get("function") or {}).get("name") == "update_plan"
+                            for tool in tools_to_use
+                        )
+                    ),
                 )
 
             _tool_admission_mode = "chat_tool_stream" if payload.stream else "chat_tool_nonstream"
@@ -15584,6 +15632,7 @@ async def openai_chat_completions(
                 perf_callback = _gguf_perf_callback,
                 context_overflow = _rolling_context_policy(payload),
                 thread_id = payload.thread_id,
+                branch_message_ids = payload.branch_message_ids,
                 # These requests suppress the tool loop AND are excluded from the checkpoint
                 # repair above, so search_conversation is offered neither now nor on the
                 # next identical turn. The epoch gate cannot see that from the process
@@ -16369,7 +16418,9 @@ async def openai_chat_completions(
         and _checkpoint_needs_search()
         and _thread_has_conversation_archive(getattr(payload, "thread_id", None))
         and _thread_has_checkpoint(
-            getattr(payload, "thread_id", None), getattr(payload, "messages", None)
+            getattr(payload, "thread_id", None),
+            getattr(payload, "messages", None),
+            getattr(payload, "branch_message_ids", None),
         )
     ):
         _sf_use_tools = True
@@ -16494,6 +16545,7 @@ async def openai_chat_completions(
                 else 300,
                 session_id = payload.session_id,
                 thread_id = payload.thread_id,
+                branch_message_ids = payload.branch_message_ids,
                 rag_scope = _companion_execution_scope(payload),
                 # Bypass Permissions takes precedence over the confirm gate:
                 # never prompt while bypassing.
@@ -16505,7 +16557,13 @@ async def openai_chat_completions(
                 reasoning_prefilled = _sf_reasoning_prefilled,
                 context_overflow = _rolling_context_policy(payload),
                 supports_tools = bool(_sf_features.get("supports_tools", False)),
-                turn_planning = bool(payload.turn_planning),
+                turn_planning = bool(
+                    payload.turn_planning
+                    and any(
+                        (tool.get("function") or {}).get("name") == "update_plan"
+                        for tool in _sf_tools_to_use
+                    )
+                ),
             )
 
         _sf_tool_sentinel = object()
@@ -17021,6 +17079,7 @@ async def openai_chat_completions(
                     context_overflow = _rolling_context_policy(payload),
                     max_tokens = effective_max_tokens or 2048,
                     thread_id = payload.thread_id,
+                    branch_message_ids = payload.branch_message_ids,
                     cancel_event = cancel_event,
                     enable_thinking = base_kwargs.get("enable_thinking"),
                     reasoning_effort = base_kwargs.get("reasoning_effort"),

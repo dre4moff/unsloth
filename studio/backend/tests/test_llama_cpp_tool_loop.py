@@ -2098,11 +2098,22 @@ def test_visible_plan_is_internal_in_the_gguf_loop(monkeypatch, tmp_path):
     assert calls == [("web_search", {"query": "once"})]
     assert events[0]["type"] == "turn_plan"
     assert any(event.get("type") == "turn_plan" and event.get("revision") == 1 for event in events)
-    assert not any(
-        event.get("type") in {"tool_start", "tool_end"}
-        and event.get("tool_name") == "update_plan"
+    # update_plan remains an internal control action, but it must now close its
+    # transient tool status explicitly so a reloaded UI cannot retain a spinner.
+    plan_tool_events = [
+        event.get("type")
         for event in events
-    )
+        if event.get("type") in {"tool_start", "tool_end"}
+        and event.get("tool_name") == "update_plan"
+    ]
+    assert plan_tool_events == ["tool_start", "tool_end"]
+    expected_names = ["update_plan", "web_search"]
+    assert [tool["function"]["name"] for tool in payloads[0]["tools"]] == expected_names
+    assert [tool["function"]["name"] for tool in payloads[1]["tools"]] == expected_names
+    assert [tool["function"]["name"] for tool in payloads[2]["tools"]] == expected_names
+    assert payloads[0]["tool_choice"]["function"]["name"] == "update_plan"
+    assert payloads[1]["tool_choice"] == "auto"
+    assert payloads[2]["tool_choice"] == "auto"
 
 
 def test_render_html_success_does_not_reprompt_render_html_intent(monkeypatch):

@@ -1763,6 +1763,7 @@ class InferenceOrchestrator:
         context_overflow: Optional[str] = None,
         max_tokens: Optional[int] = None,
         thread_id: Optional[str] = None,
+        branch_message_ids: Optional[list[str]] = None,
         cancel_event = None,
         enable_thinking: Optional[bool] = None,
         reasoning_effort: Optional[str] = None,
@@ -1856,7 +1857,9 @@ class InferenceOrchestrator:
                 ),
                 reserve_tokens = _conversation_recall_reserve(thread_id),
                 sticky_dropped = (
-                    _sticky_compaction_boundary(thread_id, request_branch)
+                    _sticky_compaction_boundary(
+                        thread_id, request_branch, branch_message_ids
+                    )
                     if sticky_dropped is None
                     else max(0, int(sticky_dropped))
                 ),
@@ -2030,6 +2033,7 @@ class InferenceOrchestrator:
         tool_call_timeout: int = 300,
         session_id: Optional[str] = None,
         thread_id: Optional[str] = None,
+        branch_message_ids: Optional[list[str]] = None,
         rag_scope: Optional[dict] = None,
         confirm_tool_calls: bool = False,
         bypass_permissions: bool = False,
@@ -2055,7 +2059,13 @@ class InferenceOrchestrator:
 
         max_new_tokens = max_tokens if max_tokens and max_tokens > 0 else 2048
 
-        def _single_turn(conv: list, *, active_tools: Optional[list[dict]] = None):
+        def _single_turn(
+            conv: list,
+            *,
+            active_tools: Optional[list[dict]] = None,
+            max_tokens_override: Optional[int] = None,
+            disable_thinking: bool = False,
+        ):
             # ``conv`` already carries any system message. ``active_tools`` lets
             # run_safetensors_tool_loop drop one-shot tools (e.g. render_html) from
             # later same-response prompts.
@@ -2068,13 +2078,13 @@ class InferenceOrchestrator:
                 top_p = top_p,
                 top_k = top_k,
                 min_p = min_p,
-                max_new_tokens = max_new_tokens,
+                max_new_tokens = min(max_new_tokens, max_tokens_override) if max_tokens_override else max_new_tokens,
                 repetition_penalty = repetition_penalty,
                 cancel_event = cancel_event,
                 tools = turn_tools,
-                enable_thinking = enable_thinking,
-                reasoning_effort = reasoning_effort,
-                preserve_thinking = preserve_thinking,
+                enable_thinking = False if disable_thinking else enable_thinking,
+                reasoning_effort = "none" if disable_thinking else reasoning_effort,
+                preserve_thinking = False if disable_thinking else preserve_thinking,
                 # Self-limiting: after a tool call the conversation ends on a tool
                 # result, so later turns render as ordinary new turns.
                 continue_final_message = continue_final_message,
@@ -2136,6 +2146,7 @@ class InferenceOrchestrator:
                 context_overflow = context_overflow,
                 max_tokens = max_new_tokens,
                 thread_id = thread_id,
+                branch_message_ids = branch_message_ids,
                 cancel_event = cancel_event,
                 enable_thinking = enable_thinking,
                 reasoning_effort = reasoning_effort,

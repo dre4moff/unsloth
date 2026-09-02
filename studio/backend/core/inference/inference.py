@@ -959,6 +959,7 @@ class InferenceBackend:
         tool_call_timeout: int = 300,
         session_id: Optional[str] = None,
         thread_id: Optional[str] = None,
+        branch_message_ids: Optional[list[str]] = None,
         rag_scope: Optional[dict] = None,
         presence_penalty: float = 0.0,
         reasoning_prefilled: bool = False,
@@ -978,7 +979,13 @@ class InferenceBackend:
         from core.inference.safetensors_agentic import run_safetensors_tool_loop
         from core.inference.tools import execute_tool
 
-        def _single_turn(conv: list, *, active_tools: Optional[list[dict]] = None):
+        def _single_turn(
+            conv: list,
+            *,
+            active_tools: Optional[list[dict]] = None,
+            max_tokens_override: Optional[int] = None,
+            disable_thinking: bool = False,
+        ):
             # conv already has the system message -- avoid double-prepend.
             # `active_tools` is supplied by run_safetensors_tool_loop so one-shot
             # tools such as render_html can be removed from later same-response prompts.
@@ -990,13 +997,13 @@ class InferenceBackend:
                 top_p = top_p,
                 top_k = top_k,
                 min_p = min_p,
-                max_new_tokens = max_new_tokens,
+                max_new_tokens = min(max_new_tokens, max_tokens_override) if max_tokens_override else max_new_tokens,
                 repetition_penalty = repetition_penalty,
                 cancel_event = cancel_event,
                 tools = turn_tools,
-                enable_thinking = enable_thinking,
-                reasoning_effort = reasoning_effort,
-                preserve_thinking = preserve_thinking,
+                enable_thinking = False if disable_thinking else enable_thinking,
+                reasoning_effort = "none" if disable_thinking else reasoning_effort,
+                preserve_thinking = False if disable_thinking else preserve_thinking,
                 # Self-limiting: after a tool call the conversation ends on a tool
                 # result, so later turns render as ordinary new turns.
                 continue_final_message = continue_final_message,

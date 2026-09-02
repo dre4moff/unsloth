@@ -278,6 +278,7 @@ import {
   FastForwardIcon,
   GlobeIcon,
   HeadphonesIcon,
+  ListChecksIcon,
   MoreHorizontalIcon,
   PlusIcon,
   RefreshCwIcon,
@@ -1969,7 +1970,7 @@ const ThreadComposerDock: FC<{
       // Stop can abort before a terminal plan event arrives. In that case the
       // last streamed metadata still says "active", so never leave a stale
       // objective or animated step above the now-idle composer.
-      if (cancelled || (!thread.isRunning && plan.status !== "completed")) {
+      if (cancelled || !thread.isRunning) {
         return null;
       }
       return plan;
@@ -5423,6 +5424,12 @@ const ComposerToolsMenu: FC<{
   const navigate = useNavigate();
   const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
   const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
+  const turnPlanningEnabled = useChatRuntimeStore(
+    (s) => s.turnPlanningEnabled,
+  );
+  const setTurnPlanningEnabled = useChatRuntimeStore(
+    (s) => s.setTurnPlanningEnabled,
+  );
   const codeToolsEnabled = useChatRuntimeStore((s) => s.codeToolsEnabled);
   const setCodeToolsEnabled = useChatRuntimeStore((s) => s.setCodeToolsEnabled);
   const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
@@ -5485,6 +5492,7 @@ const ComposerToolsMenu: FC<{
     modelLoaded && !(supportsTools || supportsBuiltinWebSearch);
   const codeDisabled =
     modelLoaded && !(supportsTools || supportsBuiltinCodeExecution);
+  const planDisabled = modelLoaded && !supportsTools;
   const imageDisabled = !modelLoaded;
   // Like Search/Code: disabled only when a loaded model lacks tool support.
   const mcpDisabled = modelLoaded && !supportsTools;
@@ -5842,6 +5850,25 @@ const ComposerToolsMenu: FC<{
           />
           Code
           {codeToolsEnabled && !codeDisabled ? (
+            <HugeiconsIcon
+              icon={Tick02Icon}
+              strokeWidth={2}
+              className="ml-auto"
+            />
+          ) : null}
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          disabled={planDisabled}
+          className={
+            turnPlanningEnabled && !planDisabled
+              ? "text-primary font-medium"
+              : undefined
+          }
+          onSelect={() => setTurnPlanningEnabled(!turnPlanningEnabled)}
+        >
+          <ListChecksIcon />
+          Plan
+          {turnPlanningEnabled && !planDisabled ? (
             <HugeiconsIcon
               icon={Tick02Icon}
               strokeWidth={2}

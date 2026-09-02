@@ -9872,16 +9872,20 @@ IPHONE_COMPANION_TOOL = {
         "name": "iphone_companion",
         "description": (
             "Manage real concurrent local LLM subagents on the user's paired iPhone Companion pool. "
+            "This definition is the complete live schema: use it directly and never inspect files, "
+            "the terminal, or a deliberate error to discover the parameters. "
             "action=submit returns only Desktop acceptance plus a job ID, before phone inference "
             "finishes; it never returns the delegated answer. The iPhone job then runs independently "
-            "while the main model continues its own Mac-side branch. Use action=status or "
+            "while the main model continues its own Mac-side branch. submit remains valid when every "
+            "compatible iPhone is busy: jobs are queued, and one iPhone processes them serially as it "
+            "becomes free while multiple iPhones may consume the queue concurrently. Use action=status or "
             "action=collect later without waiting, or action=wait only as the final join barrier after "
             "all useful independent Mac work is exhausted. Never describe this runtime as synchronous "
             "or its parallelism as conceptual: both would be false. Never busy-poll. "
             "This is not limited to context compression: use kind=subagent for a self-contained "
             "reasoning, analysis, drafting, review, planning, or transformation subtask, passing "
             "all context it needs. The Mac remains the orchestrator and fallback: choose an explicit "
-            "maximum_tokens budget for every delegation based on the expected deliverable, critically "
+            "maximum_tokens budget from 8192 to 16384 for every delegation, critically "
             "evaluate the returned result and retain responsibility for the final response. "
             "A free-form subagent response is returned in result.text and preserves the requested "
             "output format; pass result_schema only when a structured JSON object is actually needed. Never "
@@ -9899,7 +9903,8 @@ IPHONE_COMPANION_TOOL = {
                     "type": "string",
                     "enum": ["submit", "status", "collect", "wait"],
                     "description": (
-                        "submit starts work asynchronously; status checks without waiting; collect returns "
+                        "REQUIRED. On the first delegation call use exactly submit. submit starts work "
+                        "asynchronously; status checks without waiting; collect returns "
                         "completed results without waiting; wait joins one or more running jobs only after "
                         "the Mac has finished work that can overlap. Use collect or wait with no job_id to "
                         "take every ready result for this chat."
@@ -9927,10 +9932,11 @@ IPHONE_COMPANION_TOOL = {
                 "text": {
                     "type": "string",
                     "description": (
-                        "Complete context and source material the isolated subagent needs. For a context-dependent "
+                        "Context and source material only, not the objective. Put the assignment itself in instruction. "
+                        "For a context-dependent "
                         "subagent task, pass the relevant visible conversation state instead of asking the iPhone "
-                        "about its own internal context. If omitted for subagent, Desktop supplies a bounded recent "
-                        "visible conversation fallback. Omit normally only for a media-only task."
+                        "about its own internal context. For a self-contained subagent assignment with no source material, "
+                        "omit text and pass instruction only."
                     ),
                 },
                 "items": {
@@ -9938,8 +9944,15 @@ IPHONE_COMPANION_TOOL = {
                     "minItems": 1,
                     "maxItems": 16,
                     "description": (
-                        "Independent text items for parallel worker-pool fan-out. Use up to the live "
-                        "capacity reported in this tool description; never split one generation or KV cache."
+                        "Independent text items for worker-pool fan-out and queueing. Up to the live "
+                        "capacity runs concurrently; extra items remain queued and run as phones become free. "
+                        "This also applies across separate submit calls, so a busy single iPhone is a serial "
+                        "worker queue rather than a reason to reject the next task. "
+                        "Every array element MUST be an object "
+                        "with id and text, not a string. For each item, text is treated as the objective when "
+                        "instruction is omitted; otherwise text is source context and instruction is the objective. "
+                        "Each object becomes one separately tracked iPhone "
+                        "subtask; never split one generation or KV cache."
                     ),
                     "items": {
                         "type": "object",
@@ -9953,18 +9966,17 @@ IPHONE_COMPANION_TOOL = {
                 },
                 "instruction": {
                     "type": "string",
-                    "description": "The delegated objective, acceptance criteria, and constraints. Required when kind=subagent has no text.",
+                    "description": "The delegated objective to execute, including acceptance criteria and constraints. Use this for every subagent assignment; text is only its optional source context.",
                 },
                 "maximum_tokens": {
                     "type": "integer",
-                    "minimum": 256,
+                    "minimum": 8192,
                     "maximum": 16384,
                     "description": (
-                        "Output budget chosen by the main Mac model. Use roughly 512-2048 for short answers, "
-                        "4096 for normal substantial work, 8192 for long deliverables, and up to 16384 only when "
-                        "the result genuinely needs it. Desktop automatically clamps this request to the selected "
-                        "iPhone's advertised context capacity; a generation that hits the cap is rejected so the "
-                        "Mac can fall back instead of using truncated text."
+                        "Output ceiling chosen by the main Mac model. Use 8192 for ordinary work and up to 16384 "
+                        "when the deliverable genuinely needs it. The iPhone stops naturally on EOS and enforces "
+                        "its physical context capacity. A generation that "
+                        "fills the available context is rejected so the Mac can fall back instead of using truncated text."
                     ),
                 },
                 "use_latest_attachment": {
@@ -10009,6 +10021,7 @@ def _companion_orchestration_snapshot(thread_id: str | None) -> dict[str, object
             "readyWorkerCount": 0,
             "busyWorkerCount": 0,
             "capacityByKind": {},
+            "idleCapacityByKind": {},
             "mailbox": {"pending": 0, "ready": 0, "collected": 0},
         }
 
@@ -10017,10 +10030,13 @@ def refresh_iphone_companion_tool_catalog(
     tools: list[dict],
     thread_id: str | None,
 ) -> list[dict]:
-    """Expose the live phone-worker pool on every model pass.
+    """Expose compatible work without putting volatile state in the tool prefix.
 
-    This function always rebuilds the Companion schema from its canonical base,
-    so repeated tool-loop refreshes never accumulate stale runtime descriptions.
+    llama.cpp caches the rendered tools near the beginning of the prompt. Worker
+    counts and mailbox state change after every dispatch; embedding them here made
+    each short follow-up invalidate a long KV prefix. The schema therefore changes
+    only when capabilities appear or disappear. Live counts travel in a compact
+    suffix notice instead.
     """
     if not any((tool.get("function") or {}).get("name") == "iphone_companion" for tool in tools):
         return tools
@@ -10051,7 +10067,6 @@ def refresh_iphone_companion_tool_catalog(
     properties = (
         {
             **base_properties,
-            "action": {**base_properties["action"], "enum": actions},
             "kind": {**base_properties["kind"], "enum": allowed},
         }
         if allowed
@@ -10060,22 +10075,6 @@ def refresh_iphone_companion_tool_catalog(
             "job_id": base_properties["job_id"],
             "wait_seconds": base_properties["wait_seconds"],
         }
-    )
-    capacity_text = ", ".join(
-        f"{kind}={capacity_by_kind[kind]}" for kind in sorted(capacity_by_kind)
-    ) or "none currently idle"
-    runtime_description = (
-        " LIVE RUNTIME POOL (authoritative): "
-        f"{int(snapshot.get('connectedWorkerCount') or 0)} connected, "
-        f"{int(snapshot.get('eligibleWorkerCount') or 0)} eligible, "
-        f"{int(snapshot.get('readyWorkerCount') or 0)} idle and "
-        f"{int(snapshot.get('busyWorkerCount') or 0)} busy under "
-        f"{snapshot.get('mode') or 'automatic'} routing. "
-        f"Current idle parallel capacity by kind: {capacity_text}. "
-        f"This chat mailbox has {int(mailbox.get('pending') or 0)} running and "
-        f"{int(mailbox.get('ready') or 0)} completed uncollected job(s). "
-        "Fan out independent items up to the capacity for their kind, continue the Mac share "
-        "immediately after submit, then collect or join only when the delegated output is needed."
     )
     refreshed: list[dict] = []
     for tool in tools:
@@ -10088,12 +10087,96 @@ def refresh_iphone_companion_tool_catalog(
                 **tool,
                 "function": {
                     **base_function,
-                    "description": str(base_function["description"]) + runtime_description,
-                    "parameters": {**base_parameters, "properties": properties},
+                    "parameters": {
+                        **base_parameters,
+                        "properties": properties,
+                        "required": list(base_parameters["required"]),
+                    },
                 },
             }
         )
     return refreshed
+
+
+_COMPANION_NAME_RE = re.compile(
+    # ``compaion`` is the common one-letter typo seen in natural requests.
+    r"(?i)\b(?:iphone[\s_-]*compan?ion|compan?ion[\s_-]*iphone)\b"
+)
+_COMPANION_ACTION_RE = re.compile(
+    r"(?i)\b(?:"
+    r"usa(?:re)?|utilizza(?:re)?|impiega(?:re)?|prova(?:re)?|testa(?:re)?|"
+    r"riprova(?:re)?|rifacciamo|ripet(?:i|ere)|"
+    r"delega(?:re)?|assegna(?:re)?|avvia(?:re)?|lancia(?:re)?|"
+    r"fai\s+lavorare|metti\s+al\s+lavoro|"
+    r"use|try|test|delegate|assign|dispatch|start|launch|fan[\s-]*out|"
+    r"split|paralleliz(?:e|za|zare)|run"
+    r")\b"
+)
+_COMPANION_EXPLANATION_RE = re.compile(
+    r"(?i)^\s*(?:cos['’]?è|che\s+cos['’]?è|come\s+funziona|spiega(?:mi)?|"
+    r"what\s+is|how\s+does|explain)\b"
+)
+
+
+def _latest_visible_user_text(messages: list[dict] | None) -> str:
+    for message in reversed(messages or []):
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            return content.strip()
+        if isinstance(content, list):
+            parts: list[str] = []
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                value = part.get("text") or part.get("content")
+                if isinstance(value, str) and value.strip():
+                    parts.append(value.strip())
+            return "\n".join(parts)
+    return ""
+
+
+def should_force_iphone_companion_submit(
+    messages: list[dict] | None,
+    tools: list[dict] | None,
+) -> bool:
+    """Whether an explicit user delegation should enter the real async path now.
+
+    This is deliberately narrower than generic tool-intent detection: naming the
+    feature in an explanatory question must remain answerable in prose. A force is
+    admitted only when the live schema itself currently permits ``submit``.
+    """
+    text = _latest_visible_user_text(messages)
+    if (
+        not text
+        or _COMPANION_EXPLANATION_RE.search(text)
+        or not _COMPANION_NAME_RE.search(text)
+        or not _COMPANION_ACTION_RE.search(text)
+    ):
+        return False
+    for tool in tools or []:
+        function = tool.get("function") if isinstance(tool, dict) else None
+        if not isinstance(function, dict) or function.get("name") != "iphone_companion":
+            continue
+        parameters = function.get("parameters") or {}
+        properties = parameters.get("properties") or {}
+        action = properties.get("action") or {}
+        return "submit" in (action.get("enum") or [])
+    return False
+
+
+def iphone_companion_submit_nudge() -> str:
+    return (
+        "[Studio orchestration requirement] Call iphone_companion now; do not describe or "
+        "rehearse the call and do not inspect files or the terminal for its parameters: the complete "
+        "live schema is already attached to this request. Use action=submit, an allowed kind "
+        "(normally subagent), an explicit "
+        "maximum_tokens budget between 8192 and 16384. "
+        "Put the objective to execute in instruction; use text only "
+        "for source context. For a batch, use items made of objects with id, text, and optional instruction. "
+        "Submission is asynchronous and returns before iPhone inference."
+    )
 
 
 def iphone_companion_runtime_notice(thread_id: str | None) -> str:
@@ -10539,7 +10622,7 @@ def _execute_iphone_companion(
     media_task = kind in _COMPANION_MEDIA_KINDS
     text = str((arguments or {}).get("text") or "").strip()
     instruction = str((arguments or {}).get("instruction") or "").strip()
-    if kind == "subagent" and not text:
+    if kind == "subagent" and not text and not instruction:
         text = _visible_companion_context(conversation_branch)
     raw_items = (arguments or {}).get("items")
     items: list[dict[str, str]] = []
@@ -10561,15 +10644,15 @@ def _execute_iphone_companion(
         return "iPhone Companion error: task kind is required. Continue on the Mac."
     if media_task and items:
         return "iPhone Companion error: parallel items are for independent text tasks only. Continue on the Mac."
-    if not media_task and not text and not items:
+    if not media_task and not text and not instruction and not items:
         return "iPhone Companion error: this text task has no source material. Continue on the Mac."
     if (arguments or {}).get("maximum_tokens") is None:
         return "iPhone Companion error: maximum_tokens is required when action=submit. Continue on the Mac."
 
     try:
-        maximum_tokens = max(256, min(16_384, int((arguments or {}).get("maximum_tokens") or 4_096)))
+        maximum_tokens = max(8_192, min(16_384, int((arguments or {}).get("maximum_tokens") or 8_192)))
     except (TypeError, ValueError):
-        maximum_tokens = 4_096
+        maximum_tokens = 8_192
     try:
         timeout_seconds = max(10.0, min(3600.0, float((arguments or {}).get("timeout_seconds") or 180)))
     except (TypeError, ValueError):

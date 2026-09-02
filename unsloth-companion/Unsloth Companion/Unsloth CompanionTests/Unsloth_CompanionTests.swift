@@ -268,6 +268,40 @@ struct ProtocolAndStorageTests {
         #expect(!FileManager.default.fileExists(atPath: tasksRoot.appending(path: task.taskID.uuidString).path))
     }
 
+    @Test func subagentPromptAbortsRunawaySelfCorrection() async throws {
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let task = CompanionTask(
+            taskID: UUID(), parentTaskID: nil, shardIndex: nil, shardCount: nil,
+            idempotencyKey: "short-final-answer-test", kind: .subagent, priority: 50,
+            timeoutSeconds: 30, leaseSeconds: 30, mediaPolicy: .semanticOnly,
+            input: [
+                "instruction": .string("Scrivi una fiaba originale in italiano di 8-12 frasi con una morale semplice."),
+                "maximumTokens": .number(512)
+            ],
+            resultSchema: [:]
+        )
+        let prepared = try await TaskPipelineActor().prepare(
+            task: task,
+            taskDirectory: root,
+            allowRawMedia: false
+        )
+        #expect(prepared.prompt.contains("TASK:"))
+        #expect(!prepared.prompt.contains("Final deliverable"))
+        let runaway = """
+        C'era una volta una volpe gentile. Un giorno incontrò un passero ferito.
+        Self-Correction: I will now generate the story based on your instruction.
+        Final attempt: this is not what was asked. Final output generation follows now.
+        """
+        #expect(prepared.shouldAbortGeneration(runaway))
+        guard let validationError = prepared.validationError(for: runaway),
+              case .runawayMetaOutput = validationError else {
+            Issue.record("The repetitive meta-response was accepted")
+            return
+        }
+    }
+
     @Test func explicitCancellationEmitsOneTerminalMessageAndCleansTask() async throws {
         let root = temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }

@@ -45,7 +45,7 @@ FRAMEWORK="$APP/Frameworks/llama.framework"
 # distribuzione, per non incorporare percorsi della macchina di compilazione.
 DEVELOPER_DIR="$DEVELOPER_DIR_PATH" xcrun strip -S -x "$EXECUTABLE"
 
-[[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist")" == "3" ]]
+[[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist")" == "8" ]]
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$APP/Info.plist")" == "18.6" ]]
 [[ "$(lipo -archs "$EXECUTABLE")" == "arm64" ]]
 [[ "$(lipo -archs "$FRAMEWORK/llama")" == "arm64" ]]

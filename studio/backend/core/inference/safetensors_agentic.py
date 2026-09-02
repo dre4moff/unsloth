@@ -454,14 +454,23 @@ def _accepts_output_callback(func: Callable[..., str]) -> bool:
     return _accepts_kwarg(func, "output_callback")
 
 
-def _call_single_turn(single_turn, conversation: list, active_tools: list[dict]):
+def _call_single_turn(
+    single_turn,
+    conversation: list,
+    active_tools: list[dict],
+    *,
+    max_tokens_override: int | None = None,
+    disable_thinking: bool = False,
+):
     """Call a single-turn generator with active tool schemas when supported."""
-    try:
-        return single_turn(conversation, active_tools = active_tools)
-    except TypeError as exc:
-        if "active_tools" not in str(exc):
-            raise
-        return single_turn(conversation)
+    kwargs = {}
+    if _accepts_kwarg(single_turn, "active_tools"):
+        kwargs["active_tools"] = active_tools
+    if max_tokens_override is not None and _accepts_kwarg(single_turn, "max_tokens_override"):
+        kwargs["max_tokens_override"] = max_tokens_override
+    if disable_thinking and _accepts_kwarg(single_turn, "disable_thinking"):
+        kwargs["disable_thinking"] = True
+    return single_turn(conversation, **kwargs)
 
 
 def run_safetensors_tool_loop(
@@ -539,7 +548,9 @@ def run_safetensors_tool_loop(
     from core.inference.tools import (
         build_rag_autoinject,
         iphone_companion_runtime_notice,
+        iphone_companion_submit_nudge,
         refresh_iphone_companion_tool_catalog,
+        should_force_iphone_companion_submit,
     )
 
     # off never prompts, so (like auto) it must not lose first-pass retrieval
@@ -631,6 +642,8 @@ def run_safetensors_tool_loop(
     _last_companion_notice = (
         iphone_companion_runtime_notice(thread_id) if _companion_enabled else ""
     )
+    _companion_force_requested = False
+    _companion_force_nudge_added = False
     for iteration in range(_max_model_passes):
         if cancel_event is not None and cancel_event.is_set():
             return
@@ -645,6 +658,17 @@ def run_safetensors_tool_loop(
                 active_tools = turn_checkpoint.active_tools(active_tools)
             if _companion_enabled:
                 active_tools = refresh_iphone_companion_tool_catalog(active_tools, thread_id)
+                if iteration == 0:
+                    _companion_force_requested = should_force_iphone_companion_submit(
+                        request_branch,
+                        active_tools,
+                    )
+                if _companion_force_requested and not _tool_succeeded("iphone_companion"):
+                    active_tools = [
+                        tool
+                        for tool in active_tools
+                        if (tool.get("function") or {}).get("name") == "iphone_companion"
+                    ]
             if not active_tools and not unrestricted_tools:
                 final_attempt_done = True
                 active_tools = []
@@ -661,6 +685,20 @@ def run_safetensors_tool_loop(
             if iteration > 0 and _current_companion_notice and _current_companion_notice != _last_companion_notice:
                 conversation.append({"role": "user", "content": _current_companion_notice})
             _last_companion_notice = _current_companion_notice
+        if _companion_force_requested and not _companion_force_nudge_added:
+            nudge = iphone_companion_submit_nudge()
+            if (
+                conversation
+                and conversation[-1].get("role") == "user"
+                and isinstance(conversation[-1].get("content"), str)
+            ):
+                conversation[-1] = {
+                    **conversation[-1],
+                    "content": f"{conversation[-1]['content']}\n\n{nudge}",
+                }
+            else:
+                conversation.append({"role": "user", "content": nudge})
+            _companion_force_nudge_added = True
 
         # MLX keeps its tokenizer in the inference subprocess. The orchestrator
         # supplies a request-scoped fitter that measures this exact iteration,
@@ -745,7 +783,17 @@ def run_safetensors_tool_loop(
                 return False
             return _first_detected_tool_name(content) == "render_html"
 
-        gen = _call_single_turn(single_turn, conversation, active_tools)
+        gen = _call_single_turn(
+            single_turn,
+            conversation,
+            active_tools,
+            max_tokens_override=(
+                4_096 if _companion_force_requested and not _tool_succeeded("iphone_companion") else None
+            ),
+            disable_thinking=(
+                _companion_force_requested and not _tool_succeeded("iphone_companion")
+            ),
+        )
         prev_cumulative = ""
 
         _gen_iter = iter(gen)
@@ -1319,12 +1367,14 @@ def run_safetensors_tool_loop(
                 assistant_msg.setdefault("tool_calls", []).append(decision.as_assistant_tool_call())
 
             if decision.tool_name == "update_plan" and turn_checkpoint is not None:
+                yield decision.tool_start_event()
                 result = turn_checkpoint.update_plan(decision.arguments)
                 completion = tool_controller.record_result(decision, result)
                 conversation.append(completion.tool_message())
                 post_tool_reprompts = 0
                 last_reprompt_text = ""
                 yield {"type": "turn_plan", **turn_checkpoint.plan_snapshot()}
+                yield completion.tool_end_event()
                 continue
 
             # Bypass wins here too, so a direct internal caller with both flags

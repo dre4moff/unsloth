@@ -54,6 +54,7 @@ import {
   Columns2Icon,
   GlobeIcon,
   HeadphonesIcon,
+  ListChecksIcon,
   MoreHorizontalIcon,
   PlusIcon,
   SquareIcon,
@@ -622,6 +623,12 @@ export function SharedComposer({
   );
   const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
   const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
+  const turnPlanningEnabled = useChatRuntimeStore(
+    (s) => s.turnPlanningEnabled,
+  );
+  const setTurnPlanningEnabled = useChatRuntimeStore(
+    (s) => s.setTurnPlanningEnabled,
+  );
   const codeToolsEnabled = useChatRuntimeStore((s) => s.codeToolsEnabled);
   const setCodeToolsEnabled = useChatRuntimeStore((s) => s.setCodeToolsEnabled);
   const imageToolsEnabled = useChatRuntimeStore((s) => s.imageToolsEnabled);
@@ -792,6 +799,7 @@ export function SharedComposer({
         ? true
         : !(supportsTools || supportsBuiltinCodeExecution))) ||
     imageModeDisablesCode;
+  const planDisabled = modelLoaded && !supportsTools;
   // Images pill lights only on OpenAI cloud Responses-API models and the
   // Gemini Nano Banana family. No local tool runtime fallback.
   const showImagePill = supportsBuiltinImageGeneration;
@@ -2250,6 +2258,27 @@ export function SharedComposer({
                 />
                 Code
                 {codeToolsEnabled && !codeDisabled ? (
+                  <HugeiconsIcon
+                    icon={Tick02Icon}
+                    strokeWidth={2}
+                    className="ml-auto"
+                  />
+                ) : null}
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                disabled={planDisabled}
+                className={
+                  turnPlanningEnabled && !planDisabled
+                    ? "text-primary font-medium"
+                    : undefined
+                }
+                onSelect={() =>
+                  setTurnPlanningEnabled(!turnPlanningEnabled)
+                }
+              >
+                <ListChecksIcon />
+                Plan
+                {turnPlanningEnabled && !planDisabled ? (
                   <HugeiconsIcon
                     icon={Tick02Icon}
                     strokeWidth={2}

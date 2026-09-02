@@ -86,6 +86,8 @@ import { PLUS_MENU_PINS_STORAGE_KEY } from "./plus-menu-prefs-store";
 
 export const CHAT_REASONING_ENABLED_KEY = "unsloth_chat_reasoning_enabled";
 export const CHAT_TOOLS_ENABLED_KEY = "unsloth_chat_tools_enabled";
+export const CHAT_TURN_PLANNING_ENABLED_KEY =
+  "unsloth_chat_turn_planning_enabled";
 export const CHAT_CODE_TOOLS_ENABLED_KEY = "unsloth_chat_code_tools_enabled";
 export const CHAT_IMAGE_TOOLS_ENABLED_KEY = "unsloth_chat_image_tools_enabled";
 export const CHAT_DEEP_RESEARCH_ENABLED_KEY =
@@ -2477,6 +2479,7 @@ type ChatRuntimeStore = {
    */
   supportsBuiltinWebFetch: boolean;
   toolsEnabled: boolean;
+  turnPlanningEnabled: boolean;
   codeToolsEnabled: boolean;
   imageToolsEnabled: boolean;
   deepResearchEnabled: boolean;
@@ -2804,6 +2807,7 @@ type ChatRuntimeStore = {
   setReasoningEffort: (effort: ReasoningEffort) => void;
   setPreserveThinking: (value: boolean) => void;
   setToolsEnabled: (enabled: boolean, options?: { persist?: boolean }) => void;
+  setTurnPlanningEnabled: (enabled: boolean) => void;
   setCodeToolsEnabled: (enabled: boolean) => void;
   setImageToolsEnabled: (enabled: boolean) => void;
   setDeepResearchEnabled: (enabled: boolean) => void;
@@ -3648,6 +3652,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   supportsBuiltinImageGeneration: false,
   supportsBuiltinWebFetch: false,
   toolsEnabled: loadBool(CHAT_TOOLS_ENABLED_KEY, false),
+  turnPlanningEnabled: loadBool(CHAT_TURN_PLANNING_ENABLED_KEY, true),
   codeToolsEnabled: loadBool(CHAT_CODE_TOOLS_ENABLED_KEY, false),
   imageToolsEnabled: loadBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, false),
   deepResearchEnabled: loadBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false),
@@ -4564,6 +4569,14 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         ...(toolsEnabled
           ? { toolsEnabled, deepResearchEnabled: false }
           : { toolsEnabled }),
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
+    }),
+  setTurnPlanningEnabled: (turnPlanningEnabled) =>
+    set((state) => {
+      saveBool(CHAT_TURN_PLANNING_ENABLED_KEY, turnPlanningEnabled);
+      return {
+        turnPlanningEnabled,
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
     }),

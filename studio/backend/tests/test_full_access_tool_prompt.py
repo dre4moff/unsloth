@@ -263,6 +263,40 @@ def test_full_access_selection_swaps_the_schemas(payload_kwargs):
     assert _named(tools, "web_search") is _named(ALL_TOOLS, "web_search")
 
 
+def test_explicit_iphone_delegation_skips_the_extra_visible_plan_pass(monkeypatch):
+    monkeypatch.setattr(
+        tools,
+        "_companion_orchestration_snapshot",
+        lambda _thread_id: {
+            "capacityByKind": {"subagent": 1},
+            "mailbox": {"pending": 0, "ready": 0},
+        },
+    )
+    payload = ChatCompletionRequest(
+        model = "test-model",
+        messages = [
+            {
+                "role": "user",
+                "content": "Usa iPhone Companion per scrivere questa fiaba.",
+            }
+        ],
+        enable_tools = True,
+        enabled_tools = ["iphone_companion"],
+        turn_planning = True,
+        stream = True,
+    )
+
+    selected = asyncio.run(
+        _select_request_tools(payload, tools_on = True, mcp_allowed = False)
+    )
+
+    assert [tool["function"]["name"] for tool in selected] == ["iphone_companion"]
+    assert "one iPhone processes them serially" in _desc(selected[0])
+    nudge = _build_tool_action_nudge(tools = selected, model_name = "test-model")
+    assert "only compatible iPhone is busy" in nudge
+    assert "separate submit calls stay queued" in nudge
+
+
 # ── Nudge ─────────────────────────────────────────────────────────────
 
 _CODE_TOOLS = [PYTHON_TOOL, TERMINAL_TOOL]

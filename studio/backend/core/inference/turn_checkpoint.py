@@ -134,15 +134,29 @@ def _looks_error(result: Any) -> bool:
 
 
 def _replace_block(messages: list[dict], block: str) -> list[dict]:
+    """Place the changing turn ledger as late as possible in the prompt.
+
+    Rewriting the system message after every tool action invalidated llama.cpp's entire
+    prefix cache. The newest user message is protected by every context fitter, so it is
+    equally durable while preserving the stable system, history and tool-schema prefix.
+    """
     out = list(messages)
-    for index, message in enumerate(out):
-        if message.get("role") not in ("system", "developer"):
+    for index in range(len(out) - 1, -1, -1):
+        message = out[index]
+        if message.get("role") != "user":
             continue
         text = _text_of_content(message.get("content"))
         text = _BLOCK.sub("", text).rstrip()
         joined = f"{text}\n\n{block}" if text else block
         out[index] = {**message, "content": joined}
         return out
+    # Tool-only/API continuations may have no user turn. Keep the old safe fallback.
+    for index, message in enumerate(out):
+        if message.get("role") in ("system", "developer"):
+            text = _BLOCK.sub("", _text_of_content(message.get("content"))).rstrip()
+            joined = f"{text}\n\n{block}" if text else block
+            out[index] = {**message, "content": joined}
+            return out
     return [{"role": "system", "content": block}, *out]
 
 

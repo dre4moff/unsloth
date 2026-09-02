@@ -19,6 +19,7 @@ import { cn } from "@/lib/utils";
 import {
   type ToolCallMessagePartComponent,
   type ToolCallMessagePartStatus,
+  useAuiState,
 } from "@assistant-ui/react";
 import {
   AlertCircleIcon,
@@ -127,7 +128,16 @@ function ToolFallbackTrigger({
   status?: ToolCallMessagePartStatus;
   icon?: ElementType;
 }) {
-  const statusType = status?.type ?? "complete";
+  const messageIsRunning = useAuiState(
+    ({ message }) => message.status?.type === "running",
+  );
+  // Old persisted update_plan calls may lack the terminal event even though their
+  // assistant message is complete. Never keep an impossible spinner alive on reload;
+  // live turns are closed immediately by the backend's tool_end event.
+  const statusType =
+    toolName === "update_plan" && status?.type === "running" && !messageIsRunning
+      ? "complete"
+      : (status?.type ?? "complete");
   const isRunning = statusType === "running";
   const isCancelled =
     status?.type === "incomplete" && status.reason === "cancelled";
