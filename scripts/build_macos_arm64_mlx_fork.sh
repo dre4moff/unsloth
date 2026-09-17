@@ -5,8 +5,8 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 release_dir="$repo_root/release"
-app_version="0.1.800-mlx.29"
-backend_version="2026.8.19+mlxcompaction8.companion20.kaggletpu9"
+app_version="0.1.800-mlx.30"
+backend_version="2026.8.19+mlxcompaction8.companion20.kaggletpu9.release30"
 rust_toolchain="1.89.0"
 wheel_name="unsloth-${backend_version}-py3-none-any.whl"
 resource_dir="$repo_root/studio/src-tauri/resources/backend"
@@ -17,12 +17,27 @@ if [ "$(uname -m)" != "arm64" ]; then
     exit 1
 fi
 
-for required in python3 uv npm rustup shasum unzip rg lipo vtool plutil codesign hdiutil; do
+for required in python3 uv npm rustup shasum unzip rg lipo vtool plutil codesign hdiutil xcrun; do
     if ! command -v "$required" >/dev/null 2>&1; then
         echo "Missing required build tool: $required" >&2
         exit 1
     fi
 done
+
+# rust-lld 1.89 cannot parse the arm64e.x1 target introduced by the Xcode 27
+# macOS SDK. Prefer the installed 26.5 Command Line Tools SDK in that case;
+# the deployment target remains macOS 12. Callers can override this explicitly.
+macos_sdk="${UNSLOTH_MACOS_SDKROOT:-$(xcrun --sdk macosx --show-sdk-path)}"
+clt_compatible_sdk="/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk"
+if grep -Fq 'arm64e.x1-macos' "$macos_sdk/usr/lib/libc.tbd" \
+    && [ -d "$clt_compatible_sdk" ]; then
+    macos_sdk="$clt_compatible_sdk"
+fi
+if [ ! -d "$macos_sdk" ]; then
+    echo "macOS SDK does not exist: $macos_sdk" >&2
+    exit 1
+fi
+echo "Using macOS SDK: $macos_sdk"
 
 python3 -m py_compile \
     "$repo_root/studio/backend/core/companion/manager.py" \
@@ -36,6 +51,34 @@ python3 -m py_compile \
     "$repo_root/studio/backend/core/inference/tools.py" \
     "$repo_root/studio/backend/models/inference.py" \
     "$repo_root/studio/backend/routes/inference.py"
+
+# Release 30 is the first public artifact that deliberately attests the complete
+# context-meter/restore/MLX-compaction stack together with Kaggle and Companion.
+if ! grep -Fq 'Processed this pass' \
+    "$repo_root/studio/frontend/src/features/chat/components/context-usage-bar.tsx"; then
+    echo "Frontend is missing the separate processed-token row." >&2
+    exit 1
+fi
+if ! grep -Fq 'Context Length' \
+    "$repo_root/studio/frontend/src/features/chat/components/context-usage-bar.tsx"; then
+    echo "Frontend is missing Context Length near-limit guidance." >&2
+    exit 1
+fi
+if ! grep -Fq 'restorableContextUsage(' \
+    "$repo_root/studio/frontend/src/features/chat/utils/refresh-context-usage.ts"; then
+    echo "Frontend is missing saved context-usage restoration." >&2
+    exit 1
+fi
+if ! grep -Fq 'if (hadQueued && !published) void refreshContextUsage(queued);' \
+    "$repo_root/studio/frontend/src/features/chat/utils/refresh-context-usage.ts"; then
+    echo "Frontend is missing the post-status/in-flight context-usage retry." >&2
+    exit 1
+fi
+if ! grep -Fq 'activeModel?.isGguf === true || activeModel?.isMlx === true' \
+    "$repo_root/studio/frontend/src/features/chat/api/chat-adapter.ts"; then
+    echo "Frontend is missing MLX automatic context-compaction opt-in." >&2
+    exit 1
+fi
 
 if ! grep -Fq "version = \"$app_version\"" "$repo_root/studio/src-tauri/Cargo.toml"; then
     echo "Cargo app version does not match $app_version" >&2
@@ -229,6 +272,7 @@ echo "Building the same-identity app and DMG..."
 (
     cd "$repo_root/studio"
     export MACOSX_DEPLOYMENT_TARGET=12.0
+    export SDKROOT="$macos_sdk"
     export RUSTUP_TOOLCHAIN="$rust_toolchain"
     export PATH="$rust_lld_dir:$PATH"
     export RUSTC_WRAPPER="$rustc_wrapper"
