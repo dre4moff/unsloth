@@ -23,6 +23,9 @@ from typing import Iterator, Literal, Mapping, Optional
 CACHE_HOME_SETTING_KEY = "hugging_face_cache_home"
 CACHE_HISTORY_SETTING_KEY = "hugging_face_cache_history"
 MAX_CACHE_HISTORY = 16
+MODEL_STORAGE_HOMES_KEY = "model_storage_homes"
+MODEL_STORAGE_LOCATIONS_KEY = "model_storage_locations"
+MODEL_STORAGE_REDIRECTS_KEY = "model_storage_redirects"
 
 CacheSource = Literal["default", "studio", "environment"]
 
@@ -345,6 +348,78 @@ def set_hf_cache_home(cache_home: Optional[str]) -> HuggingFaceCachePaths:
     return get_hf_cache_paths()
 
 
+def remember_model_storage_home(
+    home: Path, repo_id: Optional[str] = None, repo_path: Optional[Path] = None,
+    previous_path: Optional[Path] = None
+) -> None:
+    """Keep relocated models discoverable without changing new-download settings.
+
+    Unlike recent cache history, these roots must never be evicted by later
+    folder changes. They contain the user's only copy of a moved model.
+    """
+    from storage.studio_db import get_app_setting, upsert_app_settings
+    with _settings_lock:
+        homes = get_app_setting(MODEL_STORAGE_HOMES_KEY, [])
+        homes = [value for value in homes if isinstance(value, str)] if isinstance(homes, list) else []
+        value = str(home.resolve())
+        if value not in homes:
+            homes.append(value)
+        updates = {MODEL_STORAGE_HOMES_KEY: homes}
+        if repo_id:
+            locations = get_app_setting(MODEL_STORAGE_LOCATIONS_KEY, {})
+            locations = dict(locations) if isinstance(locations, dict) else {}
+            locations[repo_id.casefold()] = str(repo_path or home / "hub" / ("models--" + repo_id.replace("/", "--")))
+            updates[MODEL_STORAGE_LOCATIONS_KEY] = locations
+        if previous_path is not None and repo_path is not None:
+            redirects = get_app_setting(MODEL_STORAGE_REDIRECTS_KEY, {})
+            redirects = dict(redirects) if isinstance(redirects, dict) else {}
+            old, new = str(previous_path), str(repo_path)
+            # Collapse prior moves so old chats still resolve after moving again.
+            redirects = {key: new if target == old else target for key, target in redirects.items()}
+            redirects[old] = new
+            updates[MODEL_STORAGE_REDIRECTS_KEY] = redirects
+        upsert_app_settings(updates)
+
+
+def relocated_model_path(model_id: str) -> Optional[Path]:
+    """Resolve moved repo IDs locally; an unplugged disk must not redownload GBs."""
+    from storage.studio_db import get_app_setting
+    locations = get_app_setting(MODEL_STORAGE_LOCATIONS_KEY, {})
+    raw = locations.get(model_id.casefold()) if isinstance(locations, dict) else None
+    if not isinstance(raw, str):
+        redirects = get_app_setting(MODEL_STORAGE_REDIRECTS_KEY, {})
+        if not isinstance(redirects, dict) or not Path(model_id).is_absolute():
+            return None
+        requested = Path(model_id)
+        for source, destination in redirects.items():
+            if not isinstance(source, str) or not isinstance(destination, str):
+                continue
+            try:
+                suffix = requested.relative_to(source)
+            except ValueError:
+                continue
+            resolved = Path(destination) / suffix
+            if resolved.exists():
+                return resolved
+            if requested.exists():
+                return None  # original retained after an interrupted commit
+            raise ValueError("The disk containing this model is unavailable. Reconnect it before loading the model.")
+        return None
+    repo = Path(raw)
+    if not repo.is_dir():
+        # The registration is persisted before commit. A failed commit may
+        # still have the original, which remains a valid local fallback.
+        from hub.utils.hf_cache_state import iter_repo_cache_dirs
+        if any(path.is_dir() for path in iter_repo_cache_dirs("model", model_id)):
+            return None
+        raise ValueError("The disk containing this model is unavailable. Reconnect it before loading the model.")
+    from hub.utils.hf_cache_state import ref_snapshot_dir, latest_snapshot_dir
+    snapshot = ref_snapshot_dir(repo) or latest_snapshot_dir(repo)
+    if snapshot is None:
+        raise ValueError("The moved model has no usable snapshot. Reconnect its disk or check its files.")
+    return snapshot
+
+
 def known_hf_cache_homes() -> list[Path]:
     paths = get_hf_cache_paths()
     stored = _stored_cache_home()
@@ -356,6 +431,13 @@ def known_hf_cache_homes() -> list[Path]:
     if stored is not None:
         candidates.append(stored)
     candidates.extend([*_stored_history(), _default_cache_home()])
+    try:
+        from storage.studio_db import get_app_setting
+        relocated = get_app_setting(MODEL_STORAGE_HOMES_KEY, [])
+    except Exception:
+        relocated = []
+    if isinstance(relocated, list):
+        candidates.extend(Path(value) for value in relocated if isinstance(value, str) and value.strip())
     out: list[Path] = []
     seen: set[str] = set()
     for candidate in candidates:

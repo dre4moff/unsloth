@@ -2,6 +2,24 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export const en = {
+  modelStorage: {
+    menu: "Move to another disk…",
+    title: "Move model",
+    description: "Move {model}, including all downloaded quantizations and support files. Unload the model first. New downloads keep using your existing default folder.",
+    memory: "When the model’s weights stay resident in RAM or VRAM, a slower disk mainly increases loading time, rather than slowing every generated token.",
+    warning: "Some configurations still read from disk during use: GGUF memory mapping, on-demand tensors or experts, disk offload, and memory pressure can slow generation too. The model format alone cannot guarantee that all weights stay in memory.",
+    keepConnected: "Keep the disk connected while using the model. Copies are verified before originals are removed. You can close this window and reopen it to follow progress; keep the app open until the move finishes.",
+    choose: "Choose destination folder",
+    action: "Move model",
+    queued: "Waiting to move…",
+    checking: "Checking model and free space…",
+    copying: "Copying model…",
+    verifying: "Verifying the copy…",
+    finishing: "Finishing the move…",
+    completed: "Model moved",
+    cancelled: "Move cancelled. Original model kept.",
+    failed: "Could not finish the move.",
+  },
   picker: {
     onDevice: "On Device",
     huggingFace: "Hugging Face",
@@ -918,7 +936,7 @@ export const en = {
         diskFree: "{free} free",
         modelsFolder: "Models folder",
         modelsFolderDescription: "Where downloaded models are stored.",
-        modelsFolderHint: "Where downloaded models are stored. Change it to keep models off your system drive. Applies to new downloads only. Models you already have stay where they are.",
+        modelsFolderHint: "Where downloaded models are stored. Change it to keep models off your system drive. Applies to new downloads only. To move an existing model, open its menu and choose Move to another disk.",
         // Not rendered: extra terms the settings search matches this row on.
         modelsFolderKeywords:
           "models folder directory path location download downloads cache storage disk drive move relocate hugging face",

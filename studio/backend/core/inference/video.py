@@ -30,6 +30,8 @@ family's official base repos, or a local path the user explicitly picked.
 
 from __future__ import annotations
 
+from utils.model_storage_activity import model_file_operation
+
 import contextlib
 import inspect
 import os
@@ -3315,6 +3317,7 @@ class VideoBackend:
 
     # ── the load itself ──────────────────────────────────────────────────────
 
+    @model_file_operation
     def load_pipeline(
         self,
         repo_id: str,

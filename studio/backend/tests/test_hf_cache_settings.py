@@ -319,3 +319,48 @@ def test_diffusion_loader_calls_pin_the_cache_dir():
                 assert (
                     "cache_dir" in window or "kwargs" in window
                 ), f"{rel}:{index} calls {call} without a pinned cache_dir"
+
+
+def test_relocated_model_stays_discoverable_without_changing_default(settings_store, tmp_path):
+    original = hf_cache_settings.get_hf_cache_paths().cache_home
+    home = tmp_path / "external" / "Unsloth Models"
+    repo = home / "hub" / "models--Org--Model"
+    snapshot = repo / "snapshots" / "revision"
+    snapshot.mkdir(parents = True)
+    (repo / "refs").mkdir()
+    (repo / "refs" / "main").write_text("revision")
+    hf_cache_settings.remember_model_storage_home(home, "org/model", repo)
+    assert hf_cache_settings.get_hf_cache_paths().cache_home == original
+    assert home / "hub" in hf_cache_settings.known_hf_hub_caches()
+    assert hf_cache_settings.relocated_model_path("ORG/MODEL") == snapshot
+    settings_store[hf_cache_settings.CACHE_HISTORY_SETTING_KEY] = []
+    assert home / "hub" in hf_cache_settings.known_hf_hub_caches()
+
+
+def test_unplugged_model_fails_with_reconnect_message(settings_store, tmp_path, monkeypatch):
+    home = tmp_path / "unplugged"
+    hf_cache_settings.remember_model_storage_home(home, "org/model")
+    monkeypatch.setattr("hub.utils.hf_cache_state.iter_repo_cache_dirs", lambda *args: iter([]))
+    with pytest.raises(ValueError, match = "Reconnect"):
+        hf_cache_settings.relocated_model_path("org/model")
+
+
+def test_failed_move_registration_allows_original_copy(settings_store, tmp_path, monkeypatch):
+    home = tmp_path / "external"
+    original = tmp_path / "original"
+    original.mkdir()
+    hf_cache_settings.remember_model_storage_home(home, "org/model")
+    monkeypatch.setattr("hub.utils.hf_cache_state.iter_repo_cache_dirs", lambda *args: iter([original]))
+    assert hf_cache_settings.relocated_model_path("org/model") is None
+
+
+def test_old_chat_paths_follow_multiple_moves(settings_store, tmp_path):
+    old = tmp_path / "old" / "hub" / "models--org--model"
+    first = tmp_path / "first" / "hub" / old.name
+    final = tmp_path / "final" / "hub" / old.name
+    snapshot = final / "snapshots" / "revision"
+    snapshot.mkdir(parents = True)
+    hf_cache_settings.remember_model_storage_home(first.parent.parent, "org/model", first, old)
+    hf_cache_settings.remember_model_storage_home(final.parent.parent, "org/model", final, first)
+    assert hf_cache_settings.relocated_model_path(str(old / "snapshots/revision")) == snapshot
+    assert hf_cache_settings.relocated_model_path(str(first / "snapshots/revision")) == snapshot

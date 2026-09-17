@@ -18,6 +18,8 @@ bar. GPU-handoff policy lives in the arbiter the routes call, not here.
 
 from __future__ import annotations
 
+from utils.model_storage_activity import model_file_operation
+
 import functools
 import inspect
 import json
@@ -3125,6 +3127,7 @@ class DiffusionBackend:
 
     # ── Synchronous load / generate / unload ───────────────────────────────
 
+    @model_file_operation
     def load_pipeline(
         self,
         repo_id: str,

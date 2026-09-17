@@ -8934,8 +8934,17 @@ async def _load_model_impl(
             )
         )
 
-        # Keep the inventory ref public while loading the materialized artifact.
+        # A relocated repo must load from its disk, never silently re-download
+        # into the default cache when that disk is unplugged.
+        from utils.hf_cache_settings import relocated_model_path
+        try:
+            relocated = await asyncio.to_thread(relocated_model_path, model_identifier)
+        except ValueError as exc:
+            raise HTTPException(status_code = 409, detail = str(exc)) from exc
+        # Preserve the repo identity for per-model settings and OpenAI clients.
         public_model_identifier = _public_model_identifier(request.model_path, model_identifier)
+        if relocated is not None:
+            model_identifier = str(relocated)
         # Version switching is handled by the subprocess-based inference
         # backend -- no ensure_transformers_version() needed here.
 

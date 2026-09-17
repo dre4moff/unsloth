@@ -33,7 +33,9 @@ import {
   Settings02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { RefreshCw } from "lucide-react";
+import { RefreshCw, HardDrive } from "lucide-react";
+import { useT } from "@/i18n";
+import { ModelMoveDialog } from "./model-move-dialog";
 import {
   type ReactNode,
   useCallback,
@@ -104,6 +106,8 @@ export function ModelRowMenu({
   update?: ModelRowMenuUpdate;
   del?: ModelRowMenuDelete;
 }) {
+  const t = useT();
+  const [moveOpen, setMoveOpen] = useState(false);
   const deviceType = usePlatformStore((s) => s.deviceType);
   const revealLabel =
     deviceType === "mac" ? "Reveal in Finder" : "Reveal in Folder";
@@ -254,6 +258,18 @@ export function ModelRowMenu({
               <span>{revealLabel}</span>
             </DropdownMenuItem>
           )}
+          {cachePath && (
+            <DropdownMenuItem
+              disabled={del?.disabled || update?.disabled}
+              onSelect={(event) => {
+                event.stopPropagation();
+                setMoveOpen(true);
+              }}
+            >
+              <HardDrive className="size-icon" />
+              <span>{t("modelStorage.menu")}</span>
+            </DropdownMenuItem>
+          )}
           {update && (
             <DropdownMenuItem
               disabled={update.disabled}
@@ -288,6 +304,14 @@ export function ModelRowMenu({
           )}
         </DropdownMenuContent>
       </DropdownMenu>
+
+      {cachePath && (
+        <ModelMoveDialog
+          repoId={cachePath.repoId}
+          open={moveOpen}
+          onOpenChange={setMoveOpen}
+        />
+      )}
 
       {del && (
         <DeleteConfirmDialog

@@ -520,8 +520,9 @@ def _hf_cache_roots() -> list:
             roots.append(expanded)
 
     try:
-        from utils.hf_cache_settings import get_hf_cache_paths
-        _add(get_hf_cache_paths().hub_cache)
+        from utils.hf_cache_settings import known_hf_hub_caches
+        for cache in known_hf_hub_caches():
+            _add(cache)
     except Exception:
         pass
 

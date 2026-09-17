@@ -2,6 +2,24 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export const it = {
+  modelStorage: {
+    menu: "Sposta su un altro disco…",
+    title: "Sposta modello",
+    description: "Sposta {model}, incluse tutte le quantizzazioni scaricate e i file di supporto. Prima scarica il modello dalla memoria. I nuovi download continueranno a usare la cartella predefinita.",
+    memory: "Quando i pesi del modello restano in RAM o VRAM, un disco più lento aumenta soprattutto il tempo di caricamento, senza rallentare necessariamente ogni token generato.",
+    warning: "Alcune configurazioni leggono dal disco anche durante l’uso: memoria mappata GGUF, tensori o esperti caricati su richiesta, offload su disco e pressione sulla memoria possono rallentare anche la generazione. Il solo formato del modello non garantisce che tutti i pesi restino in memoria.",
+    keepConnected: "Mantieni il disco collegato durante l’uso. La copia viene verificata prima di rimuovere gli originali. Puoi chiudere questa finestra e riaprirla per seguire l’avanzamento; lascia aperta l’app fino al termine dello spostamento.",
+    choose: "Scegli cartella di destinazione",
+    action: "Sposta modello",
+    queued: "In attesa dello spostamento…",
+    checking: "Verifica del modello e dello spazio libero…",
+    copying: "Copia del modello…",
+    verifying: "Verifica della copia…",
+    finishing: "Completamento dello spostamento…",
+    completed: "Modello spostato",
+    cancelled: "Spostamento annullato. Modello originale conservato.",
+    failed: "Impossibile completare lo spostamento.",
+  },
   common: {
     cancel: "Annulla",
     close: "Chiudi",
@@ -914,7 +932,7 @@ export const it = {
         diskFree: "Disponibili: {free}",
         modelsFolder: "Cartella dei modelli",
         modelsFolderDescription: "Dove vengono salvati i modelli scaricati.",
-        modelsFolderHint: "Dove vengono salvati i modelli scaricati. Cambialo per tenere i modelli fuori dall'unità di sistema. Vale solo per i nuovi download: i modelli che hai già restano dove sono.",
+        modelsFolderHint: "La modifica vale per i nuovi download. Per spostare un modello esistente, apri il suo menu e scegli Sposta su un altro disco.",
         // Non visualizzato: termini extra su cui la ricerca delle impostazioni trova questa riga.
         modelsFolderKeywords:
           "cartella modelli directory percorso posizione download scaricati cache archiviazione disco unità spostare sposta hugging face models folder path storage",

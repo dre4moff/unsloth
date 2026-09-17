@@ -24,6 +24,8 @@ does not drag the heavy GPU stack into the process.
 
 from __future__ import annotations
 
+from utils.model_storage_activity import model_file_operation
+
 import contextlib
 import logging
 import os
@@ -1162,6 +1164,7 @@ class SdCppDiffusionBackend:
 
     # ── Background load + progress ─────────────────────────────────────────
 
+    @model_file_operation
     def begin_load(
         self,
         repo_id: str,

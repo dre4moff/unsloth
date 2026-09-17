@@ -17,6 +17,8 @@ runs a scripted target on a thread.
 
 from __future__ import annotations
 
+from utils.model_storage_activity import model_file_operation
+
 import contextlib
 import json
 import math
@@ -469,6 +471,7 @@ class DiffusionTrainingService:
                 return True
             return self._proc is not None and self._proc.is_alive()
 
+    @model_file_operation
     def reserve(self) -> None:
         """Mark a diffusion-training start as in flight so the image/video load guards (which
         read is_active) refuse a concurrent load BEFORE the route frees resident GPU models.
@@ -564,6 +567,7 @@ class DiffusionTrainingService:
             with self._lock:
                 self._gpu_admissions = max(0, self._gpu_admissions - 1)
 
+    @model_file_operation
     def start(self, config: dict) -> str:
         """Validate ``config``, spawn the trainer, and start pumping its events.
 

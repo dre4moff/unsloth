@@ -8,8 +8,10 @@ from __future__ import annotations
 from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, Query
+from pydantic import BaseModel
 
-from auth.authentication import allow_ambient_hf_token, get_current_subject
+from auth.authentication import allow_ambient_hf_token, get_current_subject, authenticated_via_api_key
+from routes.provider_credentials import require_ui_session
 from hub.dependencies import get_hf_token
 from hub.schemas.downloads import (
     ActiveDownloadsResponse,
@@ -254,3 +256,36 @@ async def delete_cached_model(
     return await deletion.delete_cached_model_response(
         repo_id, variant, hf_token, cache_path, only_if_orphan
     )
+
+
+class MoveCachedModelRequest(BaseModel):
+    repo_id: str
+    folder: str
+
+
+@router.post("/move-cached", status_code = 202)
+async def move_cached_model(
+    body: MoveCachedModelRequest,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
+    require_ui_session(via_api_key)
+    from hub.services.models.relocation import start_move
+    return await start_move(body.repo_id, body.folder, current_subject)
+
+
+@router.get("/move-cached")
+def model_move_status(repo_id: str = Query(...), current_subject: str = Depends(get_current_subject)):
+    from hub.services.models.relocation import status
+    return status(repo_id, current_subject)
+
+
+@router.post("/move-cached/cancel")
+def cancel_model_move(
+    repo_id: str = Query(...),
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
+    require_ui_session(via_api_key)
+    from hub.services.models.relocation import cancel_move
+    return cancel_move(repo_id, current_subject)

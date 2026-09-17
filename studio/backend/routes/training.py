@@ -1665,6 +1665,9 @@ async def start_training(
                 )
             return success
 
+        from utils.model_storage_activity import model_file_operation
+
+        @model_file_operation
         def _run_backend_start() -> bool:
             try:
                 # Keep the diffusion admission in the worker thread across the whole spawn: a disconnected
