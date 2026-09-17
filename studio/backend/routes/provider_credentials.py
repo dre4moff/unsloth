@@ -85,3 +85,31 @@ def resolve_provider_api_key_or_400(
                 "try refreshing the page."
             ),
         ) from exc
+
+
+def decrypt_request_secret_or_400(
+    encrypted_value: str | None,
+    *,
+    label: str,
+) -> str:
+    """Decrypt one UI-supplied installation secret without consulting saved keys."""
+
+    if not encrypted_value:
+        return ""
+    try:
+        from core.inference.key_exchange import decrypt_api_key
+
+        return decrypt_api_key(encrypted_value)
+    except Exception as exc:
+        logger.warning(
+            "provider.secret_decrypt_failed",
+            secret_label=label,
+            error_type=type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Failed to decrypt {label}. The server public key may have changed — "
+                "try refreshing the page."
+            ),
+        ) from exc

@@ -10,6 +10,35 @@ from pydantic import BaseModel, Field
 MAX_JSON_SAFE_INTEGER = 9_007_199_254_740_991
 
 
+class ProviderCapabilities(BaseModel):
+    """Capabilities of one saved OpenAI-compatible connection."""
+
+    supports_streaming: bool = True
+    supports_tool_calling: bool = True
+    supports_reasoning: bool = False
+    supports_vision: bool = False
+    supports_images: bool = False
+    context_length: Optional[int] = Field(None, strict=True, ge=1024, le=MAX_JSON_SAFE_INTEGER)
+    api_mode: Literal["chat_completions", "responses", "anthropic_messages"] = "chat_completions"
+
+
+class KaggleTPUManagedConfig(BaseModel):
+    """Launcher settings owned by the optional Kaggle TPU integration."""
+
+    lab_path: Optional[str] = Field(
+        None,
+        description="Legacy development override for an external kaggle-tpu-lab checkout",
+    )
+    auto_start: bool = False
+    auto_stop: bool = False
+    keepalive_minutes: int = Field(480, strict=True, ge=1, le=540)
+    text_only: bool = False
+    fast_start: bool = False
+    max_num_seqs: int = Field(4, strict=True, ge=1, le=64)
+    mtp_tokens: int = Field(3, strict=True, ge=0, le=3)
+    reasoning_effort_default: Literal["xhigh", "medium", "low"] = "xhigh"
+
+
 # ── Registry (static provider info) ───────────────────────────────
 
 
@@ -33,6 +62,14 @@ class ProviderRegistryEntry(BaseModel):
     supports_tool_calling: bool = Field(
         False, description = "Whether this provider supports tool/function calling"
     )
+    supports_reasoning: bool = Field(
+        False, description="Whether this provider exposes reasoning controls"
+    )
+    supports_images: bool = Field(False, description="Whether this provider accepts image content")
+    context_length: Optional[int] = Field(
+        None, description="Default model context length when known"
+    )
+    api_mode: Literal["chat_completions", "responses", "anthropic_messages"] = "chat_completions"
     supports_studio_tools: bool = Field(
         False,
         description = "Whether Studio runs its own tool loop (search/code/MCP/RAG) against this provider",
@@ -78,10 +115,22 @@ class ProviderCreate(BaseModel):
         le = MAX_JSON_SAFE_INTEGER,
         description = "Optional maximum Max Tokens cap for this connection",
     )
+    capabilities: Optional[ProviderCapabilities] = Field(
+        None,
+        description="Connection-specific capability overrides",
+    )
+    managed_config: Optional[KaggleTPUManagedConfig] = Field(
+        None,
+        description="Kaggle TPU launcher settings (kaggle_tpu only)",
+    )
 
     encrypted_api_key: Optional[str] = Field(
         None,
         description = "Optional RSA-encrypted API key to persist for this connection",
+    )
+    encrypted_kaggle_api_token: Optional[str] = Field(
+        None,
+        description="Optional RSA-encrypted Kaggle API token for managed Kaggle TPU launch",
     )
 
 
@@ -103,6 +152,14 @@ class ProviderUpdate(BaseModel):
         le = MAX_JSON_SAFE_INTEGER,
         description = "Optional maximum Max Tokens cap for this connection",
     )
+    capabilities: Optional[ProviderCapabilities] = Field(
+        None,
+        description="Replacement connection capability metadata",
+    )
+    managed_config: Optional[KaggleTPUManagedConfig] = Field(
+        None,
+        description="Replacement Kaggle TPU launcher settings",
+    )
 
     encrypted_api_key: Optional[str] = Field(
         None,
@@ -111,6 +168,14 @@ class ProviderUpdate(BaseModel):
     clear_api_key: bool = Field(
         False,
         description = "Explicitly remove the saved API key",
+    )
+    encrypted_kaggle_api_token: Optional[str] = Field(
+        None,
+        description="Optional RSA-encrypted replacement Kaggle API token",
+    )
+    clear_kaggle_api_token: bool = Field(
+        False,
+        description="Explicitly remove the saved Kaggle API token",
     )
 
 
@@ -134,6 +199,10 @@ class ProviderResponse(BaseModel):
     is_enabled: bool = Field(True, description = "Whether this provider is enabled")
 
     has_api_key: bool = Field(False, description = "Whether this caller has a saved API key")
+    has_kaggle_api_token: bool = Field(
+        False,
+        description="Whether this Kaggle TPU connection has a saved Kaggle API token",
+    )
 
     auth_kind: Literal["api_key", "chatgpt_oauth"] = "api_key"
     auth_status: Literal["disconnected", "connected", "reauthorization_required"] = "disconnected"
@@ -149,8 +218,10 @@ class ProviderResponse(BaseModel):
         None,
         description = "Configured maximum Max Tokens cap for this connection",
     )
-    created_at: str = Field(..., description = "ISO 8601 creation timestamp")
-    updated_at: str = Field(..., description = "ISO 8601 last-update timestamp")
+    capabilities: ProviderCapabilities = Field(default_factory=ProviderCapabilities)
+    managed_config: Optional[KaggleTPUManagedConfig] = None
+    created_at: str = Field(..., description="ISO 8601 creation timestamp")
+    updated_at: str = Field(..., description="ISO 8601 last-update timestamp")
 
 
 # ── Model listing ─────────────────────────────────────────────────
@@ -213,3 +284,24 @@ class ProviderTestResult(BaseModel):
     models_count: Optional[int] = Field(
         None, description = "Number of models found (if test succeeded)"
     )
+
+
+class KaggleTPULifecycleStatus(BaseModel):
+    """Sanitized launcher state. Credentials are deliberately never returned."""
+
+    provider_id: str
+    state: Literal[
+        "STOPPED",
+        "STARTING",
+        "PROVISIONING",
+        "LOADING",
+        "READY",
+        "DISCONNECTED",
+        "ERROR",
+        "STOPPING",
+    ] = "STOPPED"
+    message: str = ""
+    base_url: Optional[str] = None
+    model: Optional[str] = None
+    context_length: Optional[int] = None
+    updated_at: str

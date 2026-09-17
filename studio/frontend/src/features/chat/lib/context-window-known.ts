@@ -9,6 +9,8 @@ export type KnownContextWindowInput = {
   // a load in flight still carries the outgoing model's window
   modelLoading: boolean;
   isExternalModel: boolean;
+  // saved capability for a remote connection; null when unknown
+  externalContextLength?: number | null;
   // what /api/inference/status holds; undefined before the first read
   residentCheckpoint: string | null | undefined;
 };
@@ -18,9 +20,13 @@ export function hasKnownContextWindow({
   ggufContextLength,
   modelLoading,
   isExternalModel,
+  externalContextLength,
   residentCheckpoint,
 }: KnownContextWindowInput): boolean {
-  if (modelLoading || isExternalModel) return false;
+  if (modelLoading) return false;
+  if (isExternalModel) {
+    return externalContextLength != null && externalContextLength > 0;
+  }
   if (ggufContextLength == null || ggufContextLength <= 0) return false;
   // matches chatModelLoaded: undefined is "status not read yet", not "evicted"
   return residentCheckpoint !== null;

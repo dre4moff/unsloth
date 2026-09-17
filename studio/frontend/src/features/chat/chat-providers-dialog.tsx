@@ -40,11 +40,17 @@ import { ApiProviderLogo } from "./api-provider-logo";
 
 import { OpenAICodexConnect } from "./openai-codex-connect";
 import {
+  type KaggleTPULifecycleStatus,
   type ProviderRegistryEntry,
+  conservativeDiscoveredContextLength,
   createProviderConfig,
   deleteProviderConfig,
+  getKaggleTPUStatus,
   listProviderModels,
   listProviderRegistry,
+  reconnectKaggleTPU,
+  startKaggleTPU,
+  stopKaggleTPU,
   testProviderConnection,
   updateProviderConfig,
 } from "./api/providers-api";
@@ -135,6 +141,8 @@ function shouldAppendOpenAiVersionPath(providerType: string): boolean {
     providerType === "ollama" ||
     providerType === "llama_cpp" ||
     providerType === "vllm" ||
+    providerType === "openai_compatible" ||
+    providerType === "kaggle_tpu" ||
     providerType === LEGACY_CUSTOM_PROVIDER_TYPE
   );
 }
@@ -177,6 +185,9 @@ export function ChatProvidersSettings({
     null,
   );
   const [registry, setRegistry] = useState<ProviderRegistryEntry[]>([]);
+  const [registryMetadata, setRegistryMetadata] = useState<
+    ProviderRegistryEntry[]
+  >([]);
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [selectedModelIds, setSelectedModelIds] = useState<string[]>([]);
   const [syncingProviders, setSyncingProviders] = useState(false);
@@ -189,6 +200,21 @@ export function ChatProvidersSettings({
     CUSTOM_PROVIDER_DISPLAY_NAME,
   );
   const [isReasoningModel, setIsReasoningModel] = useState(false);
+  const [supportsToolCalling, setSupportsToolCalling] = useState(true);
+  const [supportsVision, setSupportsVision] = useState(false);
+  const [contextLengthDraft, setContextLengthDraft] = useState("");
+  const [kaggleApiToken, setKaggleApiToken] = useState("");
+  const [showKaggleApiToken, setShowKaggleApiToken] = useState(false);
+  const [clearKaggleApiTokenRequested, setClearKaggleApiTokenRequested] =
+    useState(false);
+  const [kaggleAutoStart, setKaggleAutoStart] = useState(false);
+  const [kaggleAutoStop, setKaggleAutoStop] = useState(false);
+  const [kaggleTextOnly, setKaggleTextOnly] = useState(false);
+  const [kaggleFastStart, setKaggleFastStart] = useState(false);
+  const [kaggleKeepaliveDraft, setKaggleKeepaliveDraft] = useState("480");
+  const [kaggleStatus, setKaggleStatus] =
+    useState<KaggleTPULifecycleStatus | null>(null);
+  const [kaggleActionPending, setKaggleActionPending] = useState(false);
   const reduceMotion = useReducedMotion();
   const connectionsEnabled = useExternalProvidersStore(
     (s) => s.connectionsEnabled,
@@ -197,6 +223,9 @@ export function ChatProvidersSettings({
     (s) => s.setConnectionsEnabled,
   );
   const isCustomProvider = isCustomProviderType(providerType);
+  const isOpenAICompatible = providerType === "openai_compatible";
+  const isKaggleTPU = providerType === "kaggle_tpu";
+  const showsConnectionCapabilities = isOpenAICompatible || isKaggleTPU;
   // a connection being created has no stored type yet, so only the UI type can decide
   const supportsMaxOutputTokens = supportsProviderMaxOutputTokens(
     providerType,
@@ -216,8 +245,9 @@ export function ChatProvidersSettings({
     ) === true;
 
   const registryByType = useMemo(
-    () => new Map(registry.map((entry) => [entry.provider_type, entry])),
-    [registry],
+    () =>
+      new Map(registryMetadata.map((entry) => [entry.provider_type, entry])),
+    [registryMetadata],
   );
   const selectedProviderContract = registryByType.get(
     toExternalBackendProviderType(providerType),
@@ -228,7 +258,7 @@ export function ChatProvidersSettings({
   const modelIdsEditable =
     selectedProviderContract?.model_ids_editable !== false;
   const showApiKeyField =
-    !usesOAuth && !customPresetSkipsApiKeyField(providerType);
+    !usesOAuth && !isKaggleTPU && !customPresetSkipsApiKeyField(providerType);
   const isCuratedModelList = useMemo(() => {
     return registryByType.get(providerType)?.model_list_mode === "curated";
   }, [registryByType, providerType]);
@@ -262,6 +292,11 @@ export function ChatProvidersSettings({
   const editingProviderHasSavedKey = Boolean(
     editingProviderId &&
       providers.find((provider) => provider.id === editingProviderId)?.hasApiKey,
+  );
+  const editingProviderHasSavedKaggleToken = Boolean(
+    editingProviderId &&
+      providers.find((provider) => provider.id === editingProviderId)
+        ?.hasKaggleApiToken,
   );
   const missingModelCatalogApiKey =
     !isCustomProvider &&
@@ -323,9 +358,19 @@ export function ChatProvidersSettings({
     const seedDefaults = entry.model_list_mode === "curated";
     setAvailableModels(seedDefaults ? [...entry.default_models] : []);
     setSelectedModelIds([]);
-    setManualModelIds("");
+    setManualModelIds(
+      providerType === "kaggle_tpu" ? entry.default_models.join("\n") : "",
+    );
     setModelSearchQuery("");
     setBaseUrlDraft("");
+    setSupportsToolCalling(entry.supports_tool_calling !== false);
+    setIsReasoningModel(entry.supports_reasoning === true);
+    setSupportsVision(entry.supports_vision === true);
+    setContextLengthDraft(
+      typeof entry.context_length === "number"
+        ? entry.context_length.toString()
+        : "",
+    );
   }, [providerType, editingProviderId, registryByType]);
 
   const totalModels = useMemo(
@@ -355,6 +400,7 @@ export function ChatProvidersSettings({
         // surfaces them through CUSTOM_PROVIDER_PRESETS instead.
         const selectableRegistry = registryRows.filter((entry) => !entry.hidden);
         setRegistry(selectableRegistry);
+        setRegistryMetadata(registryRows);
         setProviderType((current) => {
           if (
             current &&
@@ -416,6 +462,92 @@ export function ChatProvidersSettings({
     };
   }, [onProvidersChange]);
 
+  useEffect(() => {
+    if (
+      page !== "form" ||
+      !editingProviderId ||
+      providerType !== "kaggle_tpu"
+    ) {
+      setKaggleStatus(null);
+      return;
+    }
+    let active = true;
+    const refreshStatus = async () => {
+      try {
+        const status = await getKaggleTPUStatus(editingProviderId);
+        if (!active) return;
+        setKaggleStatus(status);
+        if (status.state === "READY" && status.base_url) {
+          setBaseUrlDraft(status.base_url);
+          if (status.model) setManualModelIds(status.model);
+          if (status.context_length) {
+            setContextLengthDraft(status.context_length.toString());
+          }
+          onProvidersChange(
+            providersRef.current.map((provider) =>
+              provider.id === editingProviderId
+                ? {
+                    ...provider,
+                    baseUrl: status.base_url ?? provider.baseUrl,
+                    models: status.model ? [status.model] : provider.models,
+                    availableModels: status.model
+                      ? [status.model]
+                      : provider.availableModels,
+                    capabilities: {
+                      ...(provider.capabilities ?? {
+                        supports_streaming: true,
+                        supports_tool_calling: true,
+                        supports_reasoning: true,
+                        supports_vision: true,
+                        supports_images: true,
+                        api_mode: "chat_completions" as const,
+                      }),
+                      context_length:
+                        status.context_length ??
+                        provider.capabilities?.context_length,
+                    },
+                  }
+                : provider,
+            ),
+          );
+        }
+      } catch {
+        if (active) setKaggleStatus(null);
+      }
+    };
+    void refreshStatus();
+    const timer = window.setInterval(() => void refreshStatus(), 5000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [editingProviderId, onProvidersChange, page, providerType]);
+
+  async function runKaggleAction(action: "start" | "reconnect" | "stop") {
+    if (!editingProviderId) return;
+    setKaggleActionPending(true);
+    try {
+      const status =
+        action === "start"
+          ? await startKaggleTPU(editingProviderId)
+          : action === "reconnect"
+            ? await reconnectKaggleTPU(editingProviderId)
+            : await stopKaggleTPU(editingProviderId);
+      setKaggleStatus(status);
+      if (status.state === "ERROR" || status.state === "DISCONNECTED") {
+        toast.error(status.message || `Kaggle TPU: ${status.state}`);
+      } else {
+        toast.success(status.message || `Kaggle TPU: ${status.state}`);
+      }
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Kaggle TPU action failed.",
+      );
+    } finally {
+      setKaggleActionPending(false);
+    }
+  }
+
   function resetForm() {
     setEditingProviderId(null);
     setApiKey("");
@@ -431,6 +563,18 @@ export function ChatProvidersSettings({
     setModelSearchQuery("");
     setCustomProviderName(customProviderDisplayName(providerType));
     setIsReasoningModel(false);
+    setSupportsToolCalling(true);
+    setSupportsVision(false);
+    setContextLengthDraft("");
+    setKaggleApiToken("");
+    setShowKaggleApiToken(false);
+    setClearKaggleApiTokenRequested(false);
+    setKaggleAutoStart(false);
+    setKaggleAutoStop(false);
+    setKaggleTextOnly(false);
+    setKaggleFastStart(false);
+    setKaggleKeepaliveDraft("480");
+    setKaggleStatus(null);
   }
 
   function openAddProvider() {
@@ -438,6 +582,19 @@ export function ChatProvidersSettings({
     const entry = providerType ? registryByType.get(providerType) : null;
     if (entry?.model_list_mode === "curated") {
       setAvailableModels([...entry.default_models]);
+    }
+    if (entry) {
+      setSupportsToolCalling(entry.supports_tool_calling !== false);
+      setIsReasoningModel(entry.supports_reasoning === true);
+      setSupportsVision(entry.supports_vision === true);
+      setContextLengthDraft(
+        typeof entry.context_length === "number"
+          ? entry.context_length.toString()
+          : "",
+      );
+      if (providerType === "kaggle_tpu") {
+        setManualModelIds(entry.default_models.join("\n"));
+      }
     }
     autoOpenedAddFormRef.current = true;
     setPage("form");
@@ -529,6 +686,66 @@ export function ChatProvidersSettings({
     return value;
   }
 
+  function parseIntegerField(
+    input: string,
+    label: string,
+    minimum: number,
+    maximum: number,
+  ): number {
+    const trimmed = input.trim();
+    if (!/^\d+$/.test(trimmed)) {
+      throw new Error(`${label} must be an integer.`);
+    }
+    const value = Number(trimmed);
+    if (!Number.isSafeInteger(value) || value < minimum || value > maximum) {
+      throw new Error(
+        `${label} must be between ${minimum.toLocaleString()} and ${maximum.toLocaleString()}.`,
+      );
+    }
+    return value;
+  }
+
+  function buildConnectionCapabilities() {
+    if (!showsConnectionCapabilities) return undefined;
+    const contextLength = contextLengthDraft.trim()
+      ? parseIntegerField(
+          contextLengthDraft,
+          "Context length",
+          1024,
+          Number.MAX_SAFE_INTEGER,
+        )
+      : null;
+    return {
+      supports_streaming: true,
+      supports_tool_calling: supportsToolCalling,
+      supports_reasoning: isKaggleTPU || isReasoningModel,
+      supports_vision: !kaggleTextOnly && supportsVision,
+      supports_images: !kaggleTextOnly && supportsVision,
+      context_length: contextLength,
+      api_mode: "chat_completions" as const,
+    };
+  }
+
+  function buildKaggleManagedConfig() {
+    if (!isKaggleTPU) return undefined;
+    return {
+      lab_path: null,
+      auto_start: kaggleAutoStart,
+      auto_stop: kaggleAutoStop,
+      keepalive_minutes: parseIntegerField(
+        kaggleKeepaliveDraft,
+        "Keepalive",
+        1,
+        540,
+      ),
+      text_only: kaggleTextOnly,
+      fast_start: kaggleFastStart,
+      max_num_seqs: 4,
+      mtp_tokens: 3,
+      reasoning_effort_default: "xhigh" as const,
+    };
+  }
+
   async function loadModels() {
     if (!providerType) {
       toast.error("Choose a connection first.");
@@ -564,6 +781,10 @@ export function ChatProvidersSettings({
         apiKey: apiKey.trim(),
         baseUrl,
       });
+      const discoveredContextLength = conservativeDiscoveredContextLength(models);
+      if (!contextLengthDraft.trim() && discoveredContextLength) {
+        setContextLengthDraft(discoveredContextLength.toString());
+      }
       const registryDefaults = supportsRemoteModelCatalog(providerType)
         ? []
         : (registryByType.get(providerType)?.default_models ?? []);
@@ -677,10 +898,15 @@ export function ChatProvidersSettings({
       : (selectedRegistryEntry?.display_name ?? providerType);
     if (
       !isCustomProvider &&
+      !isKaggleTPU &&
       selectedRegistryEntry?.auth_kind !== "chatgpt_oauth" &&
       !apiKey.trim()
     ) {
       toast.error("API key is required.");
+      return;
+    }
+    if (isKaggleTPU && !kaggleApiToken.trim()) {
+      toast.error("Kaggle API token is required.");
       return;
     }
     const curated = selectedRegistryEntry?.model_list_mode === "curated";
@@ -727,7 +953,7 @@ export function ChatProvidersSettings({
     try {
       const baseUrl = parseBaseUrlForProvider(
         baseUrlDraft,
-        isCustomProvider,
+        isCustomProvider && !isKaggleTPU,
         providerType,
       );
       const maxOutputTokens = supportsMaxOutputTokens
@@ -742,7 +968,10 @@ export function ChatProvidersSettings({
           ? []
           : pruneProviderModelIds(providerType, availableModels),
         maxOutputTokens,
+        capabilities: buildConnectionCapabilities(),
+        managedConfig: buildKaggleManagedConfig(),
         apiKey: apiKey.trim(),
+        kaggleApiToken: isKaggleTPU ? kaggleApiToken.trim() : undefined,
 
       });
       const createdAt = Number.isFinite(Date.parse(created.created_at))
@@ -766,8 +995,11 @@ export function ChatProvidersSettings({
           ? []
           : pruneProviderModelIds(providerType, availableModels),
         maxOutputTokens: created.max_output_tokens ?? undefined,
+        capabilities: created.capabilities,
+        managedConfig: created.managed_config,
 
         hasApiKey: created.has_api_key,
+        hasKaggleApiToken: created.has_kaggle_api_token,
 
         authKind: created.auth_kind,
         authStatus: created.auth_status,
@@ -781,10 +1013,27 @@ export function ChatProvidersSettings({
         ...providers.filter((p) => p.id !== created.id),
         provider,
       ]);
-      resetForm();
-      autoOpenedAddFormRef.current = true;
-      setPage("list");
-      toast.success("Connection added.");
+      if (isKaggleTPU) {
+        // Persist and display the connection before starting a network action.
+        // A failed start can then be retried without creating duplicate rows.
+        await editProvider(provider);
+        setKaggleActionPending(true);
+        try {
+          const status = await startKaggleTPU(created.id);
+          setKaggleStatus(status);
+          if (status.state === "ERROR") toast.error(status.message);
+          else toast.success("Connection saved. Kaggle TPU is starting; progress is shown below.");
+        } catch (error) {
+          toast.error(`Connection saved. ${error instanceof Error ? error.message : "Start failed; retry Start."}`);
+        } finally {
+          setKaggleActionPending(false);
+        }
+      } else {
+        resetForm();
+        autoOpenedAddFormRef.current = true;
+        setPage("list");
+        toast.success("Connection added.");
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
       toast.error(`Failed to add connection: ${message}`);
@@ -812,6 +1061,11 @@ export function ChatProvidersSettings({
       apiKey,
       clearApiKeyRequested,
     );
+    const kaggleCredentialEdit = resolveProviderCredentialEdit(
+      Boolean(existing.hasKaggleApiToken),
+      kaggleApiToken,
+      clearKaggleApiTokenRequested,
+    );
     const editingContract = registryByType.get(
       toExternalBackendProviderType(existing.providerType),
     );
@@ -819,9 +1073,17 @@ export function ChatProvidersSettings({
     if (
       !isEditingCustomProvider &&
       !isEditingOAuthProvider &&
+      existing.providerType !== "kaggle_tpu" &&
       credentialEdit.action === "missing"
     ) {
       toast.error("API key is required.");
+      return;
+    }
+    if (
+      existing.providerType === "kaggle_tpu" &&
+      kaggleCredentialEdit.action === "missing"
+    ) {
+      toast.error("Kaggle API token is required.");
       return;
     }
     const entry = registryByType.get(existing.providerType);
@@ -872,7 +1134,7 @@ export function ChatProvidersSettings({
     try {
       const baseUrl = parseBaseUrlForProvider(
         baseUrlDraft,
-        isEditingCustomProvider,
+        isEditingCustomProvider && existing.providerType !== "kaggle_tpu",
         existing.providerType,
       );
       const maxOutputTokens = supportsMaxOutputTokens
@@ -889,10 +1151,17 @@ export function ChatProvidersSettings({
           ? []
           : pruneProviderModelIds(existing.providerType, availableModels),
         maxOutputTokens,
+        capabilities: buildConnectionCapabilities(),
+        managedConfig: buildKaggleManagedConfig(),
         ...(credentialEdit.action === "replace"
           ? { apiKey: credentialEdit.apiKey }
           : credentialEdit.action === "clear"
             ? { clearApiKey: true }
+            : {}),
+        ...(kaggleCredentialEdit.action === "replace"
+          ? { kaggleApiToken: kaggleCredentialEdit.apiKey }
+          : kaggleCredentialEdit.action === "clear"
+            ? { clearKaggleApiToken: true }
             : {}),
       });
 
@@ -918,8 +1187,11 @@ export function ChatProvidersSettings({
                   ? []
                   : pruneProviderModelIds(existing.providerType, availableModels),
                 maxOutputTokens: updated.max_output_tokens ?? undefined,
+                capabilities: updated.capabilities,
+                managedConfig: updated.managed_config,
 
                 hasApiKey: updated.has_api_key,
+                hasKaggleApiToken: updated.has_kaggle_api_token,
                 isReasoningModel: supportsProviderReasoningToggle(
                   existing.providerType,
                 )
@@ -971,8 +1243,28 @@ export function ChatProvidersSettings({
     setModelSearchQuery("");
     setIsReasoningModel(
       supportsProviderReasoningToggle(provider.providerType)
-        ? provider.isReasoningModel === true
+        ? (provider.capabilities?.supports_reasoning ??
+            provider.isReasoningModel === true)
         : false,
+    );
+    setSupportsToolCalling(
+      provider.capabilities?.supports_tool_calling ?? true,
+    );
+    setSupportsVision(provider.capabilities?.supports_vision ?? false);
+    setContextLengthDraft(
+      typeof provider.capabilities?.context_length === "number"
+        ? provider.capabilities.context_length.toString()
+        : "",
+    );
+    setKaggleApiToken("");
+    setShowKaggleApiToken(false);
+    setClearKaggleApiTokenRequested(false);
+    setKaggleAutoStart(provider.managedConfig?.auto_start ?? false);
+    setKaggleAutoStop(provider.managedConfig?.auto_stop ?? false);
+    setKaggleTextOnly(provider.managedConfig?.text_only ?? false);
+    setKaggleFastStart(provider.managedConfig?.fast_start ?? false);
+    setKaggleKeepaliveDraft(
+      (provider.managedConfig?.keepalive_minutes ?? 480).toString(),
     );
     if (
       isCustomProviderType(provider.providerType) &&
@@ -1208,6 +1500,7 @@ export function ChatProvidersSettings({
                       {registry
                         .filter(
                           (entry) =>
+                            !entry.hidden &&
                             !HIDDEN_PROVIDER_TYPES.has(entry.provider_type),
                         )
                         .map((entry) => (
@@ -1341,6 +1634,274 @@ export function ChatProvidersSettings({
                     placeholder={customProviderBaseUrlPlaceholder(providerType)}
                     className="h-9 text-sm"
                   />
+                </div>
+              ) : null}
+
+              {showsConnectionCapabilities ? (
+                <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-start gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
+                  <div className="flex min-w-0 flex-col gap-0.5">
+                    <Label htmlFor="provider-context-length">
+                      Capabilities
+                    </Label>
+                    <p className="text-xs leading-snug text-muted-foreground">
+                      Used by the composer, tool loop and rolling context
+                      manager.
+                    </p>
+                  </div>
+                  <div className="space-y-3">
+                    <Input
+                      id="provider-context-length"
+                      type="text"
+                      inputMode="numeric"
+                      value={contextLengthDraft}
+                      onChange={(event) =>
+                        setContextLengthDraft(event.target.value)
+                      }
+                      placeholder={isKaggleTPU ? "262144" : "Context tokens"}
+                      className="h-9 text-sm"
+                    />
+                    <div className="flex flex-wrap gap-x-4 gap-y-2 text-sm">
+                      <label
+                        htmlFor="provider-supports-tools"
+                        className="flex items-center gap-2"
+                      >
+                        <Checkbox
+                          id="provider-supports-tools"
+                          checked={supportsToolCalling}
+                          onCheckedChange={(checked) =>
+                            setSupportsToolCalling(checked === true)
+                          }
+                        />
+                        Studio tools
+                      </label>
+                      <label
+                        htmlFor="provider-supports-reasoning"
+                        className="flex items-center gap-2"
+                      >
+                        <Checkbox
+                          id="provider-supports-reasoning"
+                          checked={isKaggleTPU || isReasoningModel}
+                          disabled={isKaggleTPU}
+                          onCheckedChange={(checked) =>
+                            setIsReasoningModel(checked === true)
+                          }
+                        />
+                        Reasoning
+                      </label>
+                      <label
+                        htmlFor="provider-supports-vision"
+                        className="flex items-center gap-2"
+                      >
+                        <Checkbox
+                          id="provider-supports-vision"
+                          checked={!kaggleTextOnly && supportsVision}
+                          disabled={isKaggleTPU && kaggleTextOnly}
+                          onCheckedChange={(checked) =>
+                            setSupportsVision(checked === true)
+                          }
+                        />
+                        Vision
+                      </label>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+
+              {isKaggleTPU ? (
+                <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-start gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
+                  <div className="flex min-w-0 flex-col gap-0.5">
+                    <Label htmlFor="kaggle-api-token">Kaggle API token</Label>
+                    <p className="text-xs leading-snug text-muted-foreground">
+                      The launcher is included with Studio. Generate a token in
+                      Kaggle Settings → API; it is stored securely on this Mac.
+                    </p>
+                  </div>
+                  <div className="space-y-3">
+                    <div className="relative min-w-0">
+                      <Input
+                        id="kaggle-api-token"
+                        type={showKaggleApiToken ? "text" : "password"}
+                        value={kaggleApiToken}
+                        onChange={(event) => {
+                          setKaggleApiToken(event.target.value);
+                          if (event.target.value.trim()) {
+                            setClearKaggleApiTokenRequested(false);
+                          }
+                        }}
+                        placeholder={
+                          editingProviderHasSavedKaggleToken
+                            ? "Leave blank to keep saved token"
+                            : "Paste Kaggle API token"
+                        }
+                        className="h-9 pr-9 text-sm"
+                      />
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setShowKaggleApiToken((visible) => !visible)
+                        }
+                        className="absolute top-1/2 right-1.5 flex size-5 -translate-y-1/2 items-center justify-center rounded text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                        aria-label={
+                          showKaggleApiToken
+                            ? "Hide Kaggle API token"
+                            : "Show Kaggle API token"
+                        }
+                        aria-pressed={showKaggleApiToken}
+                      >
+                        {showKaggleApiToken ? (
+                          <Eye className="size-3.5" />
+                        ) : (
+                          <EyeOff className="size-3.5" />
+                        )}
+                      </button>
+                    </div>
+                    {editingProviderHasSavedKaggleToken ? (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 px-2 text-xs"
+                        onClick={() => {
+                          setKaggleApiToken("");
+                          setClearKaggleApiTokenRequested(
+                            (requested) => !requested,
+                          );
+                        }}
+                      >
+                        {clearKaggleApiTokenRequested
+                          ? "Keep saved token"
+                          : "Remove saved token"}
+                      </Button>
+                    ) : null}
+                    {clearKaggleApiTokenRequested ? (
+                      <p className="text-xs text-destructive">
+                        The saved Kaggle token will be removed when you save.
+                      </p>
+                    ) : null}
+                    <div className="grid grid-cols-2 gap-2 @max-[520px]:grid-cols-1">
+                      <label
+                        htmlFor="kaggle-auto-start"
+                        className="flex items-center gap-2 text-sm"
+                      >
+                        <Checkbox
+                          id="kaggle-auto-start"
+                          checked={kaggleAutoStart}
+                          onCheckedChange={(checked) =>
+                            setKaggleAutoStart(checked === true)
+                          }
+                        />
+                        Auto-start when Studio opens
+                      </label>
+                      <label
+                        htmlFor="kaggle-auto-stop"
+                        className="flex items-center gap-2 text-sm"
+                      >
+                        <Checkbox
+                          id="kaggle-auto-stop"
+                          checked={kaggleAutoStop}
+                          onCheckedChange={(checked) =>
+                            setKaggleAutoStop(checked === true)
+                          }
+                        />
+                        Auto-stop with Studio
+                      </label>
+                      <label
+                        htmlFor="kaggle-text-only"
+                        className="flex items-center gap-2 text-sm"
+                      >
+                        <Checkbox
+                          id="kaggle-text-only"
+                          checked={kaggleTextOnly}
+                          onCheckedChange={(checked) =>
+                            setKaggleTextOnly(checked === true)
+                          }
+                        />
+                        Text only
+                      </label>
+                      <label
+                        htmlFor="kaggle-fast-start"
+                        className="flex items-center gap-2 text-sm"
+                      >
+                        <Checkbox
+                          id="kaggle-fast-start"
+                          checked={kaggleFastStart}
+                          onCheckedChange={(checked) =>
+                            setKaggleFastStart(checked === true)
+                          }
+                        />
+                        Fast start
+                      </label>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Label
+                        htmlFor="kaggle-keepalive"
+                        className="shrink-0 text-xs"
+                      >
+                        Keepalive (minutes)
+                      </Label>
+                      <Input
+                        id="kaggle-keepalive"
+                        type="text"
+                        inputMode="numeric"
+                        value={kaggleKeepaliveDraft}
+                        onChange={(event) =>
+                          setKaggleKeepaliveDraft(event.target.value)
+                        }
+                        className="h-8 max-w-28 text-sm"
+                      />
+                    </div>
+                    {editingProviderId ? (
+                      <div className="rounded-[8px] border border-border/70 bg-background/45 p-3">
+                        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                          <div>
+                            <p className="text-xs font-medium">
+                              {kaggleStatus?.state ?? "DISCONNECTED"}
+                            </p>
+                            <p className="text-xs text-muted-foreground">
+                              {kaggleStatus?.message ??
+                                "Status not available yet."}
+                            </p>
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            <Button
+                              type="button"
+                              size="sm"
+                              className="h-7"
+                              disabled={kaggleActionPending || ["STARTING", "PROVISIONING", "LOADING", "READY", "STOPPING"].includes(kaggleStatus?.state ?? "")}
+                              onClick={() => void runKaggleAction("start")}
+                            >
+                              Start
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="h-7"
+                              disabled={kaggleActionPending || ["STARTING", "PROVISIONING", "LOADING", "STOPPING"].includes(kaggleStatus?.state ?? "")}
+                              onClick={() => void runKaggleAction("reconnect")}
+                            >
+                              Reconnect
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="h-7"
+                              disabled={kaggleActionPending}
+                              onClick={() => void runKaggleAction("stop")}
+                            >
+                              Stop
+                            </Button>
+                          </div>
+                        </div>
+                        {kaggleStatus?.base_url ? (
+                          <p className="break-all font-mono text-[11px] text-muted-foreground">
+                            {kaggleStatus.base_url}
+                          </p>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </div>
                 </div>
               ) : null}
 

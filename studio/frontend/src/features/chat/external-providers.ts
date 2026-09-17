@@ -2,8 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type {
+  KaggleTPUManagedConfig,
   ProviderAuthKind,
   ProviderAuthStatus,
+  ProviderCapabilities as ProviderConnectionCapabilities,
 } from "./api/providers-api";
 
 export interface ExternalProviderConfig {
@@ -26,9 +28,15 @@ export interface ExternalProviderConfig {
   backendProviderType?: string;
   /** Optional Max Tokens cap for this connection, replacing the undocumented-model fallback. */
   maxOutputTokens?: number;
+  /** Backend-enforced capabilities for this exact connection. */
+  capabilities?: ProviderConnectionCapabilities;
+  /** Optional lifecycle settings for kaggle-tpu-lab. */
+  managedConfig?: KaggleTPUManagedConfig | null;
 
   /** Whether the backend has an installation-saved key. */
   hasApiKey?: boolean;
+  /** Whether a managed Kaggle TPU connection has a saved Kaggle API token. */
+  hasKaggleApiToken?: boolean;
 
   /** Sanitized backend-owned authorization state; never contains OAuth material. */
   authKind?: ProviderAuthKind;
@@ -90,7 +98,7 @@ export function isPromptCacheTtl(value: unknown): value is "5m" | "1h" {
 
 // Provider types exposing the connection-level "reasoning model" toggle.
 // vLLM's OpenAI-compat endpoint doesn't advertise this per model.
-const REASONING_TOGGLE_PROVIDER_TYPES = new Set(["vllm"]);
+const REASONING_TOGGLE_PROVIDER_TYPES = new Set(["vllm", "openai_compatible"]);
 
 export function supportsProviderReasoningToggle(
   providerType: string | null | undefined,
@@ -208,7 +216,11 @@ export function pruneProviderModelCapabilities(knownProviderTypes: Iterable<stri
 export function providerModelSupportsVision(
   providerType: string | null | undefined,
   modelId: string | null | undefined,
+  connectionSupportsVision?: boolean,
 ): boolean | null {
+  if (typeof connectionSupportsVision === "boolean") {
+    return connectionSupportsVision;
+  }
 
   hydrateProviderModelCapabilities();
   if (providerType && modelId) {
@@ -227,7 +239,11 @@ export const PROVIDER_CAPABILITY_WILDCARD = "*";
 export function providerModelSupportsStudioTools(
   providerType: string | null | undefined,
   modelId: string | null | undefined,
+  connectionSupportsToolCalling?: boolean,
 ): boolean | null {
+  if (typeof connectionSupportsToolCalling === "boolean") {
+    return connectionSupportsToolCalling;
+  }
   if (!providerType) return null;
   hydrateProviderModelCapabilities();
   const capabilities = REGISTRY_MODEL_CAPABILITIES.get(providerType);
@@ -255,7 +271,11 @@ export function externalModelSupportsStudioTools(
   );
   if (!provider) return false;
   return (
-    providerModelSupportsStudioTools(provider.providerType, selection.modelId) === true
+    providerModelSupportsStudioTools(
+      provider.providerType,
+      selection.modelId,
+      provider.capabilities?.supports_tool_calling,
+    ) === true
   );
 }
 
@@ -298,6 +318,18 @@ export function supportsProviderMaxOutputTokens(
 }
 
 export const CUSTOM_PROVIDER_PRESETS = [
+  {
+    providerType: "openai_compatible",
+    displayName: "OpenAI Compatible",
+    baseUrlPlaceholder: "https://my-model-server.example/v1",
+    modelIdsPlaceholder: "model-id",
+  },
+  {
+    providerType: "kaggle_tpu",
+    displayName: "Kaggle TPU",
+    baseUrlPlaceholder: "https://generated-tunnel.trycloudflare.com/v1",
+    modelIdsPlaceholder: "qwen3.8-27b",
+  },
   {
     providerType: "llama_cpp",
     displayName: "llama.cpp",
@@ -361,6 +393,8 @@ const REMOTE_MODEL_CATALOG_CUSTOM_PROVIDER_TYPES = new Set([
   "ollama",
   "vllm",
   "llama_cpp",
+  "openai_compatible",
+  "kaggle_tpu",
 ]);
 
 export function supportsRemoteModelCatalog(
@@ -437,6 +471,8 @@ export function toExternalBackendProviderType(
   if (providerType === "vllm") return "vllm";
   if (providerType === "ollama") return "ollama";
   if (providerType === "llama_cpp") return "llama_cpp";
+  if (providerType === "openai_compatible") return "openai_compatible";
+  if (providerType === "kaggle_tpu") return "kaggle_tpu";
   // Generic custom servers are OpenAI-compatible, but should still use the
   // chat-completions backend path instead of OpenAI's Responses API route.
   if (providerType === LEGACY_CUSTOM_PROVIDER_TYPE) {

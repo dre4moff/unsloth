@@ -27,6 +27,7 @@ export function useRagToolDisabled(): boolean {
     providerModelSupportsStudioTools(
       externalProvider?.providerType,
       externalSelection.modelId,
+      externalProvider?.capabilities?.supports_tool_calling,
     ) !== true;
   return modelLoaded && (externalWithoutStudioTools || !supportsTools);
 }

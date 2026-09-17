@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 HF_TOKEN_KIND = "hf_token"
 HF_TOKEN_SCOPE = "default"
 PROVIDER_API_KEY_KIND = "provider_api_key"
+KAGGLE_API_TOKEN_KIND = "kaggle_api_token"
 
 OPENAI_CODEX_OAUTH_KIND = "openai_codex_oauth"
 
@@ -225,6 +226,18 @@ def save_provider_api_key_if_absent(provider_id: str, api_key: str) -> bool:
 
 def delete_provider_api_key(provider_id: str) -> bool:
     return delete_secret(PROVIDER_API_KEY_KIND, provider_id)
+
+
+def get_kaggle_api_token(provider_id: str) -> Optional[str]:
+    return get_secret(KAGGLE_API_TOKEN_KIND, provider_id)
+
+
+def save_kaggle_api_token(provider_id: str, token: str) -> None:
+    upsert_secret(KAGGLE_API_TOKEN_KIND, provider_id, token)
+
+
+def delete_kaggle_api_token(provider_id: str) -> bool:
+    return delete_secret(KAGGLE_API_TOKEN_KIND, provider_id)
 
 
 def resolve_provider_api_key(provider_id: Optional[str], encrypted_api_key: Optional[str]) -> str:

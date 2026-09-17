@@ -659,6 +659,8 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
   // vLLM/Ollama/llama.cpp users often want top_k/min_p/repetition controls, so
   // be permissive.
   custom: ALL_SUPPORTED,
+  openai_compatible: ALL_SUPPORTED,
+  kaggle_tpu: ALL_SUPPORTED,
   vllm: ALL_SUPPORTED,
   ollama: ALL_SUPPORTED,
   llama_cpp: ALL_SUPPORTED,
@@ -984,6 +986,8 @@ function resolveMistralReasoningCapabilities(modelId: string): ExternalReasoning
 export interface ExternalReasoningResolveOptions {
   /** vLLM connection flagged as a reasoning model in provider config. */
   isReasoningProvider?: boolean;
+  /** Explicit capability reported by the saved connection. */
+  supportsReasoning?: boolean;
   /** Provider base URL; used to detect custom Gemini OAI-compat gateways. */
   baseUrl?: string | null;
 }
@@ -993,7 +997,27 @@ function resolveConnectionLevelReasoning(
   normalizedProvider: string,
   options: ExternalReasoningResolveOptions | undefined,
 ): ExternalReasoningCapabilities | null {
-  if (normalizedProvider === "vllm" && options?.isReasoningProvider) {
+  if (normalizedProvider === "kaggle_tpu") {
+    return withReasoningEffortStyle({
+      supportsReasoning: true,
+      supportsReasoningOff: true,
+      reasoningEffortLevels: ["none", "low", "medium", "xhigh"] as const,
+    });
+  }
+  if (
+    normalizedProvider === "openai_compatible" &&
+    options?.supportsReasoning
+  ) {
+    return withEnableThinkingStyle({
+      supportsReasoning: true,
+      supportsReasoningOff: true,
+    });
+  }
+  if (
+    (normalizedProvider === "vllm" ||
+      normalizedProvider === "openai_compatible") &&
+    options?.isReasoningProvider
+  ) {
     return withEnableThinkingStyle({
       supportsReasoning: true,
       supportsReasoningOff: true,

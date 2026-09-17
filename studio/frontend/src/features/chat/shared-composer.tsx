@@ -679,6 +679,7 @@ export function SharedComposer({
     externalSupportsVision: providerModelSupportsVision(
       selectedExternalProvider?.providerType,
       externalSelection?.modelId,
+      selectedExternalProvider?.capabilities?.supports_vision,
     ),
     externalModelLabel: externalSelection?.modelId ?? null,
     loadedIsMultimodal,
@@ -706,6 +707,8 @@ export function SharedComposer({
           {
             isReasoningProvider:
               selectedExternalProvider?.isReasoningModel === true,
+            supportsReasoning:
+              selectedExternalProvider?.capabilities?.supports_reasoning,
             baseUrl: selectedExternalProvider?.baseUrl ?? null,
           },
         )
@@ -810,6 +813,7 @@ export function SharedComposer({
     providerModelSupportsStudioTools(
       selectedExternalProvider?.providerType,
       externalSelection?.modelId,
+      selectedExternalProvider?.capabilities?.supports_tool_calling,
     ) === true;
   const ragDisabled =
     modelLoaded && ((!externalUsesStudioTools && isExternalModel) || !supportsTools);

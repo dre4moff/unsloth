@@ -749,6 +749,9 @@ async def lifespan(app: FastAPI):
     )
     from core.companion import companion_manager
     await companion_manager.start()
+    from core.inference.kaggle_tpu import kaggle_tpu_manager
+
+    kaggle_restore_task = asyncio.create_task(kaggle_tpu_manager.restore_auto_start())
     yield
 
     # Before any shutdown await: a warm finishing during one would still read the lifespan as current.
@@ -764,6 +767,11 @@ async def lifespan(app: FastAPI):
     from core.inference.openai_codex_auth import shutdown_flows
 
     await shutdown_flows()
+    from core.inference.kaggle_tpu import kaggle_tpu_manager
+
+    kaggle_restore_task.cancel()
+    await asyncio.gather(kaggle_restore_task, return_exceptions=True)
+    await kaggle_tpu_manager.shutdown()
     try:
         from core.rag.folder_sync import stop_auto_sync
         stop_auto_sync()

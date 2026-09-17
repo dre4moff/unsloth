@@ -38,6 +38,8 @@ export interface ExternalModelOption extends ModelOption {
   providerName: string;
   /** Registry key (e.g. openai, gemini) for provider branding. */
   providerType: string;
+  /** Saved remote context window, when the connection declares one. */
+  contextLength?: number | null;
 }
 
 export interface ModelSelectorChangeMeta {

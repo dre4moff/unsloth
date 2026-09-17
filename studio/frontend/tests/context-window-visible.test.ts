@@ -38,6 +38,17 @@ test("an API model shows no window even with a stale length in the store", () =>
   );
 });
 
+test("a remote connection with an explicit context window is known", () => {
+  assert.equal(
+    hasKnownContextWindow({
+      ...base,
+      isExternalModel: true,
+      externalContextLength: 262144,
+    }),
+    true,
+  );
+});
+
 test("a non-GGUF local model has no window either", () => {
   assert.equal(
     hasKnownContextWindow({ ...base, ggufContextLength: null }),

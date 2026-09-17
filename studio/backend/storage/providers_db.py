@@ -4,8 +4,8 @@
 """SQLite storage for external LLM provider configurations.
 
 Same pattern as studio_db.py (module-level functions, raw sqlite3, WAL,
-per-function connections). API keys are NOT stored here: they live only in
-the browser (localStorage) and are sent encrypted per-request.
+per-function connections). API keys are NOT stored here: they live in the
+installation credential store.
 
 Enabled model selections and discovered catalog IDs are stored server-side so
 remote Studio clients see the same connection state (#7281).
@@ -47,6 +47,22 @@ def _decode_models_json(raw: Optional[str]) -> list[str]:
     return [str(model).strip() for model in parsed if str(model).strip()]
 
 
+def _encode_object_json(value: Optional[dict]) -> Optional[str]:
+    if value is None:
+        return None
+    return json.dumps(value, separators=(",", ":"), sort_keys=True)
+
+
+def _decode_object_json(raw: Optional[str]) -> Optional[dict]:
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
 def _row_models(row: sqlite3.Row) -> tuple[list[str], list[str]]:
     return (
         _decode_models_json(row["models_json"] if "models_json" in row.keys() else None),
@@ -81,6 +97,11 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
     if "max_output_tokens" not in existing_cols:
         conn.execute("ALTER TABLE llm_providers ADD COLUMN max_output_tokens INTEGER")
+    if "capabilities_json" not in existing_cols:
+        conn.execute("ALTER TABLE llm_providers ADD COLUMN capabilities_json TEXT")
+    if "managed_config_json" not in existing_cols:
+        conn.execute("ALTER TABLE llm_providers ADD COLUMN managed_config_json TEXT")
+    conn.commit()
 
 
 def get_connection() -> sqlite3.Connection:
@@ -110,6 +131,8 @@ def create_provider(
     models: Optional[list[str]] = None,
     available_models: Optional[list[str]] = None,
     max_output_tokens: Optional[int] = None,
+    capabilities: Optional[dict] = None,
+    managed_config: Optional[dict] = None,
 ) -> None:
     """Insert a new provider configuration."""
     now = datetime.now(timezone.utc).isoformat()
@@ -120,9 +143,10 @@ def create_provider(
             INSERT INTO llm_providers (
                 id, provider_type, display_name, base_url,
                 models_json, available_models_json, max_output_tokens,
+                capabilities_json, managed_config_json,
                 created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 id,
@@ -132,6 +156,8 @@ def create_provider(
                 _encode_models_json(models),
                 _encode_models_json(available_models),
                 max_output_tokens,
+                _encode_object_json(capabilities),
+                _encode_object_json(managed_config),
                 now,
                 now,
             ),
@@ -149,6 +175,8 @@ def update_provider(
     models: Optional[list[str]] = None,
     available_models: Optional[list[str]] = None,
     max_output_tokens: int | None | object = _UNSET,
+    capabilities: dict | None | object = _UNSET,
+    managed_config: dict | None | object = _UNSET,
 ) -> bool:
     """Update fields on an existing provider. Returns True if a row was updated."""
     updates = []
@@ -171,6 +199,12 @@ def update_provider(
     if max_output_tokens is not _UNSET:
         updates.append("max_output_tokens = ?")
         params.append(max_output_tokens)
+    if capabilities is not _UNSET:
+        updates.append("capabilities_json = ?")
+        params.append(_encode_object_json(capabilities))
+    if managed_config is not _UNSET:
+        updates.append("managed_config_json = ?")
+        params.append(_encode_object_json(managed_config))
     if not updates:
         return False
     updates.append("updated_at = ?")
@@ -211,6 +245,8 @@ def get_provider(id: str) -> Optional[dict]:
         models, available_models = _row_models(row)
         data["models"] = models
         data["available_models"] = available_models
+        data["capabilities"] = _decode_object_json(data.get("capabilities_json"))
+        data["managed_config"] = _decode_object_json(data.get("managed_config_json"))
         return data
     finally:
         conn.close()
@@ -227,6 +263,8 @@ def list_providers() -> list[dict]:
             models, available_models = _row_models(row)
             data["models"] = models
             data["available_models"] = available_models
+            data["capabilities"] = _decode_object_json(data.get("capabilities_json"))
+            data["managed_config"] = _decode_object_json(data.get("managed_config_json"))
             providers.append(data)
         return providers
     finally:

@@ -4896,6 +4896,8 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
           {
             isReasoningProvider:
               selectedExternalProvider?.isReasoningModel === true,
+            supportsReasoning:
+              selectedExternalProvider?.capabilities?.supports_reasoning,
             // Lets the resolver detect custom Gemini OAI-compat gateways.
             baseUrl: selectedExternalProvider?.baseUrl ?? null,
           },
@@ -5503,6 +5505,7 @@ const ComposerToolsMenu: FC<{
       providerModelSupportsStudioTools(
         selectedExternalProvider?.providerType,
         externalSelection?.modelId,
+        selectedExternalProvider?.capabilities?.supports_tool_calling,
       ) !== true) ||
     incognito;
   // Three most recently updated projects for the quick-access submenu.

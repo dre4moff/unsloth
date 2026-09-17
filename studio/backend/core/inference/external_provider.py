@@ -34,7 +34,9 @@ from core.inference.sse_control_frames import sanitize_provider_sse_line
 # self-hosted vLLM or llama.cpp registers without its preset. Unknown endpoint means assume
 # a template applies: sweeping a hosted API costs a space in delimiter-like text, not
 # sweeping a local one costs a forged turn.
-_TEMPLATE_APPLYING_PROVIDERS = frozenset({"vllm", "llama_cpp", "ollama", "custom"})
+_TEMPLATE_APPLYING_PROVIDERS = frozenset(
+    {"vllm", "llama_cpp", "ollama", "custom", "openai_compatible", "kaggle_tpu"}
+)
 
 # The subset documenting "continue_final_message" + "add_generation_prompt" on
 # /v1/chat/completions.
@@ -46,7 +48,7 @@ _CONTINUATION_FLAG_PROVIDERS = frozenset({"vllm", "llama_cpp"})
 # "custom" is any user-supplied base_url and a strict endpoint 400s on an unknown field.
 # "openai" is absent because it never reaches this body: it routes to /v1/responses,
 # which reports usage on its own.
-_USAGE_STREAM_OPTION_PROVIDERS = frozenset({"vllm", "openrouter", "kimi"})
+_USAGE_STREAM_OPTION_PROVIDERS = frozenset({"vllm", "openrouter", "kimi", "kaggle_tpu"})
 
 # structlog so INFO diagnostics reach the backend's JSON log stream (the
 # stdlib root logger defaults to WARNING with no handlers). It accepts the
@@ -812,6 +814,37 @@ _SERVER_SIDE_BUILTIN_TOOL_NAMES = frozenset(
     {"web_search", "web_fetch", "code_execution", "image_generation"}
 )
 
+# A Cloudflare quick-tunnel hostname is part of the managed connection secret:
+# knowing it removes most of the search space before the bearer token. Keep
+# user-managed OpenAI-compatible targets out of logs for the same reason.
+_PRIVATE_ENDPOINT_PROVIDERS = frozenset({"openai_compatible", "kaggle_tpu"})
+
+
+def _provider_url_for_log(provider_type: str, url: str) -> str:
+    if provider_type in _PRIVATE_ENDPOINT_PROVIDERS:
+        return "<redacted-user-endpoint>"
+    return url
+
+
+def _provider_transport_error(provider_type: str, kind: str) -> str:
+    if provider_type == "kaggle_tpu":
+        if kind == "timeout":
+            return (
+                "Kaggle TPU timed out. The model or Cloudflare tunnel may still be "
+                "starting; retry shortly or use Reconnect."
+            )
+        return (
+            "Kaggle TPU backend unavailable. Check that the Kaggle session and "
+            "Cloudflare tunnel are active, then use Reconnect."
+        )
+    if provider_type == "openai_compatible":
+        if kind == "timeout":
+            return "The remote OpenAI-compatible server timed out. Retry shortly."
+        return "The remote OpenAI-compatible server is unavailable. Check the endpoint and retry."
+    if kind == "timeout":
+        return f"Timeout waiting for {provider_type} response"
+    return f"Error communicating with {provider_type}"
+
 
 def _stamp_server_tool_marker(payload: dict[str, Any]) -> None:
     """Tag synthetic provider-side tool events so the frontend can tell them
@@ -1142,8 +1175,24 @@ class ExternalProviderClient:
                 body["thinking"] = {"type": "disabled"}
         elif self.provider_type == "mistral":
             _apply_mistral_reasoning_controls(body, model, enable_thinking, reasoning_effort)
-        elif self.provider_type == "vllm" and enable_thinking is not None:
-            # vLLM gates thinking via chat_template_kwargs.enable_thinking.
+        elif provider_info.get("reasoning_wire") == "qwen_chat_template":
+            # Qwen3.8/vLLM exposes effort through chat_template_kwargs and a
+            # separate top-level off switch. This is profile metadata rather
+            # than a model-id branch, so the generic provider stays reusable.
+            if enable_thinking is False or reasoning_effort == "none":
+                body["enable_thinking"] = False
+                body["chat_template_kwargs"] = {"enable_thinking": False}
+            elif reasoning_effort in ("low", "medium", "xhigh"):
+                tpl_kw = body.get("chat_template_kwargs")
+                if not isinstance(tpl_kw, dict):
+                    tpl_kw = {}
+                tpl_kw["reasoning_effort"] = reasoning_effort
+                body["chat_template_kwargs"] = tpl_kw
+        elif (
+            provider_info.get("reasoning_wire") == "enable_thinking" and enable_thinking is not None
+        ):
+            # Generic Qwen/vLLM-style switch, enabled only when the connection
+            # explicitly advertises reasoning support.
             tpl_kw = body.get("chat_template_kwargs")
             if not isinstance(tpl_kw, dict):
                 tpl_kw = {}
@@ -1207,7 +1256,7 @@ class ExternalProviderClient:
         url = f"{self.base_url}/chat/completions"
         logger.info(
             "Proxying chat completion to %s (provider=%s, model=%s)",
-            url,
+            _provider_url_for_log(self.provider_type, url),
             self.provider_type,
             model,
         )
@@ -1362,6 +1411,18 @@ class ExternalProviderClient:
                                     # failure as an SSE error event.
                                     if "error" in parsed:
                                         event_counts["error"] = event_counts.get("error", 0) + 1
+                                        if self.provider_type in ("openai_compatible", "kaggle_tpu"):
+                                            # A 200 stream can still carry a proxy error
+                                            # containing its URL, token or traceback.
+                                            logger.warning("%s SSE error event", self.provider_type)
+                                            yield _error_sse_line(
+                                                502,
+                                                _friendly_provider_error_text(
+                                                    self.provider_type, 502, "", model=model
+                                                ),
+                                                self.provider_type,
+                                            )
+                                            continue
                                         logger.warning(
                                             "%s SSE error event: %s",
                                             self.provider_type,
@@ -1429,24 +1490,36 @@ class ExternalProviderClient:
                     await lines_gen.aclose()
 
         except httpx.ConnectError as exc:
-            logger.error("Connection error to %s: %s", self.provider_type, exc)
+            logger.error(
+                "External provider connection failed (provider=%s, error_type=%s)",
+                self.provider_type,
+                type(exc).__name__,
+            )
             yield _error_sse_line(
                 502,
-                f"Failed to connect to {self.provider_type}: {exc}",
+                _provider_transport_error(self.provider_type, "connect"),
                 self.provider_type,
             )
         except httpx.ReadTimeout as exc:
-            logger.error("Read timeout from %s: %s", self.provider_type, exc)
+            logger.error(
+                "External provider read timed out (provider=%s, error_type=%s)",
+                self.provider_type,
+                type(exc).__name__,
+            )
             yield _error_sse_line(
                 504,
-                f"Timeout waiting for {self.provider_type} response",
+                _provider_transport_error(self.provider_type, "timeout"),
                 self.provider_type,
             )
         except httpx.HTTPError as exc:
-            logger.error("HTTP error from %s: %s", self.provider_type, exc)
+            logger.error(
+                "External provider transport failed (provider=%s, error_type=%s)",
+                self.provider_type,
+                type(exc).__name__,
+            )
             yield _error_sse_line(
                 502,
-                f"Error communicating with {self.provider_type}: {exc}",
+                _provider_transport_error(self.provider_type, "http"),
                 self.provider_type,
             )
 
@@ -6307,7 +6380,11 @@ class ExternalProviderClient:
                 models = self._parse_gemini_models(data)
             return models
         except httpx.HTTPError as exc:
-            logger.error("Failed to list models from %s: %s", self.provider_type, exc)
+            logger.error(
+                "Failed to list provider models (provider=%s, error_type=%s)",
+                self.provider_type,
+                type(exc).__name__,
+            )
             raise
 
     @staticmethod
@@ -6506,6 +6583,34 @@ def _friendly_provider_error_text(
     model: str | None = None,
 ) -> str:
     """Rewrite common provider errors into actionable Unsloth copy."""
+    if provider_type == "kaggle_tpu":
+        if status_code in (401, 403):
+            return "Kaggle TPU authentication failed. Reconnect to refresh the generated API key."
+        if status_code == 404 and model:
+            return (
+                f"Model '{model}' is not available on the Kaggle TPU endpoint. "
+                "Reconnect and refresh the model list."
+            )
+        if status_code == 429:
+            return "Kaggle TPU is busy or rate-limited. Wait briefly, then retry."
+        if status_code == 408 or 500 <= status_code < 600:
+            return (
+                "Kaggle TPU backend unavailable. Check that the Kaggle session and "
+                "Cloudflare tunnel are active, then use Reconnect."
+            )
+    if provider_type == "openai_compatible":
+        if status_code in (401, 403):
+            return "Remote server authentication failed. Check the saved API key."
+        if status_code == 404:
+            return (
+                f"Model '{model}' is not available on the remote server."
+                if model
+                else "The remote OpenAI-compatible endpoint was not found. Check that the Base URL includes /v1."
+            )
+        if status_code == 429:
+            return "The remote OpenAI-compatible server is rate-limited. Wait briefly, then retry."
+        if status_code == 408 or 500 <= status_code < 600:
+            return "The remote OpenAI-compatible server is unavailable. Check the endpoint and retry."
     if status_code == 404 and model:
         lowered = raw_message.lower()
         if "not found" in lowered or "not_found" in lowered:

@@ -60,8 +60,11 @@ from core.inference.audio_errors import (
     AudioGenerationCancelledError,
 )
 from core.inference.context_window import (
+    estimate_messages_tokens_dense as _estimate_messages_tokens_dense,
     estimate_message_tokens as _estimate_message_tokens,
     estimate_messages_tokens as _estimate_messages_tokens,
+    fit_rolling_context as _fit_rolling_context,
+    messages_have_media as _messages_have_media,
     truncate_oldest_messages as _truncate_oldest_messages,
 )
 from core.inference.orchestrator import (
@@ -686,6 +689,48 @@ def _context_truncated_sse_chunk(completion_id: str, model_name: str, truncation
         "context_truncated": truncation,
     }
     return f"data: {json.dumps(data)}\n\n"
+
+
+def _estimate_external_prompt_tokens(
+    messages: list[dict], tools: Optional[list[dict]] = None
+) -> int:
+    """Conservative provider-independent estimate for remote rolling context.
+
+    Image data URLs are transport bytes, not prompt tokens. Replace them with a
+    marker and reserve a fixed visual-token allowance so a large attachment does
+    not evict the entire textual conversation merely because it is base64 encoded.
+    """
+    estimated_messages = messages
+    image_count = 0
+    if _messages_have_media(messages):
+        estimated_messages = []
+        for message in messages:
+            copied = dict(message)
+            content = message.get("content")
+            if isinstance(content, list):
+                copied_parts = []
+                for part in content:
+                    if not isinstance(part, dict):
+                        copied_parts.append(part)
+                        continue
+                    if part.get("type") in ("image_url", "input_image"):
+                        image_count += 1
+                        copied_parts.append(
+                            {
+                                "type": part.get("type"),
+                                "image_url": {"url": "<remote-image>"},
+                            }
+                        )
+                    else:
+                        copied_parts.append(part)
+                copied["content"] = copied_parts
+            estimated_messages.append(copied)
+    total = _estimate_messages_tokens_dense(estimated_messages) + image_count * 2048
+    if tools:
+        total += _estimate_messages_tokens_dense(
+            [{"role": "system", "content": json.dumps(tools, ensure_ascii=False)}]
+        )
+    return total
 
 
 def _turn_plan_sse_chunk(completion_id: str, model_name: str, plan: dict) -> str:
@@ -2433,6 +2478,7 @@ from core.inference.passthrough_healing import (
 )
 from core.inference.providers import (
     HOSTED_TOOL_NAMES,
+    effective_provider_capabilities,
     get_base_url,
     get_provider_info,
     hosted_only_tools,
@@ -13032,6 +13078,23 @@ async def _proxy_to_external_provider(
             detail = "Either provider_id or provider_type is required for external provider routing.",
         )
 
+    provider_capabilities = effective_provider_capabilities(
+        provider_type,
+        saved_provider_snapshot.get("capabilities") if saved_provider_snapshot else None,
+    )
+    if (
+        provider_type == "kaggle_tpu"
+        and saved_provider_snapshot
+        and (saved_provider_snapshot.get("managed_config") or {}).get("text_only")
+    ):
+        provider_capabilities["supports_vision"] = False
+        provider_capabilities["supports_images"] = False
+    if payload.stream is True and not provider_capabilities["supports_streaming"]:
+        raise HTTPException(
+            status_code=400,
+            detail="This provider connection does not declare streaming support.",
+        )
+
     # Studio's tools run on this host, so any provider whose wire format can
     # carry a tool schema out and a result back can use them. The capability is
     # declared per provider type in the registry, not hardcoded here.
@@ -13044,7 +13107,11 @@ async def _proxy_to_external_provider(
         # Model-aware: Gemini's image models drop the function catalog inside the
         # native translator, so entering the loop for them would advertise tools
         # the model is never shown and finish as if none were selected.
-        provider_model_runs_local_tools(provider_type, payload.external_model or payload.model)
+        provider_model_runs_local_tools(
+            provider_type,
+            payload.external_model or payload.model,
+            provider_capabilities,
+        )
         and payload.stream is True
         and _explicit_studio_tool_loop_requested(payload)
         # A selection of purely hosted names is the provider's tool envelope, not
@@ -13095,6 +13162,18 @@ async def _proxy_to_external_provider(
             status_code = 400,
             detail = f"Unknown provider type: {provider_type}",
         )
+    if provider_type == "kaggle_tpu" and saved_provider_snapshot is not None and payload.provider_id:
+        from core.inference.kaggle_tpu import kaggle_tpu_manager
+
+        kaggle_status = await kaggle_tpu_manager.status(payload.provider_id)
+        if kaggle_status["state"] != "READY":
+            managed = saved_provider_snapshot.get("managed_config") or {}
+            if managed.get("auto_start") and kaggle_status["state"] in ("STOPPED", "DISCONNECTED"):
+                kaggle_status = await kaggle_tpu_manager.start(payload.provider_id)
+            raise HTTPException(status_code=409, detail=(
+                f"Kaggle TPU: {kaggle_status.get('message') or kaggle_status['state']}. "
+                "Open Settings > Connections to Start or Reconnect."
+            ))
     if not base_url:
         base_url = get_base_url(provider_type)
     if not base_url:
@@ -13392,7 +13471,13 @@ async def _proxy_to_external_provider(
     if saved_provider_snapshot is not None:
         async with provider_config_guard(payload.provider_id):
             current = await asyncio.to_thread(providers_db.get_provider, payload.provider_id)
-            routing_fields = ("provider_type", "base_url", "is_enabled")
+            routing_fields = (
+                "provider_type",
+                "base_url",
+                "is_enabled",
+                "capabilities",
+                "managed_config",
+            )
             if current is None or any(
                 current.get(field) != saved_provider_snapshot.get(field) for field in routing_fields
             ):
@@ -13432,11 +13517,8 @@ async def _proxy_to_external_provider(
             detail = "external_model is required when using an external provider.",
         )
 
-    # Build messages, preserving multimodal content for vision providers
-    from core.inference.providers import get_provider_info as _get_provider_info
-
-    _pinfo = _get_provider_info(provider_type) or {}
-    _supports_vision = _pinfo.get("supports_vision", False)
+    # Build messages, preserving multimodal content for vision providers.
+    _supports_vision = bool(provider_capabilities.get("supports_vision"))
     chat_messages = _build_external_messages(
         payload.messages,
         _supports_vision,
@@ -13446,13 +13528,13 @@ async def _proxy_to_external_provider(
     monitor_id = None
     if not getattr(request.state, "skip_api_monitor", False):
         monitor_id = api_monitor.start(
-            endpoint = request.url.path,
-            via_api_key = _request_used_api_key(request),
-            method = request.method,
-            model = model,
-            prompt = _monitor_prompt_from_messages(payload.messages),
-            context_length = None,
-            subject = current_subject,
+            endpoint=request.url.path,
+            via_api_key=_request_used_api_key(request),
+            method=request.method,
+            model=model,
+            prompt=_monitor_prompt_from_messages(payload.messages),
+            context_length=_positive_int_or_none(provider_capabilities.get("context_length")),
+            subject=current_subject,
         )
 
     client = ExternalProviderClient(
@@ -13492,6 +13574,44 @@ async def _proxy_to_external_provider(
         if _external_nudge:
             chat_messages = _append_to_system_message(chat_messages, _external_nudge)
 
+    remote_context_truncation: Optional[dict] = None
+    remote_context_length = _positive_int_or_none(provider_capabilities.get("context_length"))
+    remote_fitter = None
+    remote_context_events = []
+    if remote_context_length and _rolling_context_policy(payload) == "truncate_oldest":
+        context_tools = (
+            external_studio_tools
+            if run_studio_tool_loop
+            else [
+                tool.model_dump(exclude_none=True) if hasattr(tool, "model_dump") else tool
+                for tool in (payload.tools or [])
+            ]
+        )
+        from core.inference.remote_context import RemoteContextFitter
+        remote_fitter = RemoteContextFitter(
+            chat_messages, thread_id=payload.thread_id,
+            branch_message_ids=payload.branch_message_ids,
+            context_length=remote_context_length, max_tokens=_effective_max_tokens(payload),
+            count_tokens=_estimate_external_prompt_tokens,
+            tools_enabled=run_studio_tool_loop and payload.tool_choice != "none",
+        )
+        chat_messages, remote_context_truncation, remote_context_events = remote_fitter.fit(chat_messages, context_tools)
+
+    def prepare_remote_messages(messages, tools):
+        fitted, truncation, recall_events = remote_fitter.fit(messages, tools)
+        events = ["data: " + json.dumps(event) for event in recall_events]
+        if truncation is not None:
+            events.append(_context_truncated_sse_chunk(
+                f"chatcmpl-{uuid.uuid4().hex[:12]}", model, truncation
+            ).strip())
+        fits = not truncation or truncation.get("fits") is not False
+        if not fits:
+            events.append("data: " + json.dumps(openai_error_body(
+                "The tool results exceed this remote model's configured context window.",
+                status=400, code="context_length_exceeded", param="messages",
+            )))
+        return fitted, events, fits
+
     cancel_event = threading.Event()
     cancel_keys = tuple(key for key in (payload.cancel_id, payload.session_id) if key)
 
@@ -13505,25 +13625,64 @@ async def _proxy_to_external_provider(
             await asyncio.sleep(0.1)
 
     async def _stream():
+        for event in remote_context_events:
+            yield "data: " + json.dumps(event) + "\n\n"
+        if remote_context_truncation is not None:
+            yield _context_truncated_sse_chunk(
+                f"chatcmpl-{uuid.uuid4().hex[:12]}",
+                model,
+                remote_context_truncation,
+            )
+            if remote_context_truncation.get("fits") is False:
+                yield (
+                    "data: "
+                    + json.dumps(
+                        openai_error_body(
+                            "The prompt is too large for this remote model's configured context window.",
+                            status=400,
+                            code="context_length_exceeded",
+                            param="messages",
+                        )
+                    )
+                    + "\n\n"
+                )
+                yield "data: [DONE]\n\n"
+                await client.close()
+                return
         _provider_kwargs = dict(
             temperature = payload.temperature,
             top_p = payload.top_p,
             # Honor max_completion_tokens when max_tokens is absent, so a
             # provider-routed request capped only by the newer field still gets
             # a limit instead of falling back to the provider default.
-            max_tokens = _effective_max_tokens(payload),
-            presence_penalty = payload.presence_penalty,
-            top_k = _top_k_explicit,
-            enable_thinking = payload.enable_thinking,
-            reasoning_effort = payload.reasoning_effort,
-            enable_prompt_caching = payload.enable_prompt_caching,
-            openai_code_exec_container_id = payload.openai_code_exec_container_id,
-            anthropic_code_exec_container_id = payload.anthropic_code_exec_container_id,
-            prompt_cache_ttl = payload.prompt_cache_ttl,
-            compaction_threshold = payload.compaction_threshold,
-            fast_mode = payload.fast_mode,
-            response_format = _extract_response_format(payload),
+            max_tokens=_effective_max_tokens(payload),
+            presence_penalty=payload.presence_penalty,
+            top_k=_top_k_explicit,
+            enable_thinking=(
+                payload.enable_thinking if provider_capabilities.get("supports_reasoning") else None
+            ),
+            reasoning_effort=(
+                payload.reasoning_effort
+                if provider_capabilities.get("supports_reasoning")
+                else None
+            ),
+            enable_prompt_caching=payload.enable_prompt_caching,
+            openai_code_exec_container_id=payload.openai_code_exec_container_id,
+            anthropic_code_exec_container_id=payload.anthropic_code_exec_container_id,
+            prompt_cache_ttl=payload.prompt_cache_ttl,
+            compaction_threshold=payload.compaction_threshold,
+            fast_mode=payload.fast_mode,
+            response_format=_extract_response_format(payload),
         )
+        turn_state = None
+        if run_studio_tool_loop:
+            from core.inference.turn_checkpoint import ActiveTurnCheckpoint
+            turn_state = ActiveTurnCheckpoint.start(
+                chat_messages, thread_id=payload.thread_id, session_id=payload.session_id,
+                planning_enabled=bool(payload.turn_planning and any(
+                    (t.get("function") or {}).get("name") == "update_plan" for t in external_studio_tools
+                )),
+            )
         if run_studio_tool_loop:
             # The Studio loop owns the tool surface for this turn. The caller's
             # own catalog is dropped for the same reason the Codex path drops it
@@ -13538,12 +13697,18 @@ async def _proxy_to_external_provider(
                 OAICompatTransport(
                     client,
                     model = model,
+                    prepare_messages=(
+                        prepare_remote_messages
+                        if remote_context_length and _rolling_context_policy(payload) == "truncate_oldest"
+                        else None
+                    ),
                     continue_final_message = _continue_final_message(payload),
                     enabled_tools = loop_hosted_tools or None,
                     stream = True,
                     **_provider_kwargs,
                 ),
                 run = ToolLoopRun(
+                    turn_checkpoint = turn_state,
                     messages = chat_messages,
                     session_id = payload.session_id,
                     thread_id = payload.thread_id,
@@ -13620,17 +13785,32 @@ async def _proxy_to_external_provider(
             api_monitor.finish(monitor_id, "cancelled")
             raise
         except Exception as exc:
-            logger.error("external_provider.stream_error", error = str(exc))
-            api_monitor.fail(monitor_id, _friendly_error(exc))
+            if provider_type in ("openai_compatible", "kaggle_tpu"):
+                logger.error(
+                    "external_provider.stream_error",
+                    provider_type=provider_type,
+                    error_type=type(exc).__name__,
+                )
+                friendly_error = (
+                    "Kaggle TPU stream failed. Check the session and tunnel, then use Reconnect."
+                    if provider_type == "kaggle_tpu"
+                    else "The remote OpenAI-compatible stream failed. Check the endpoint and retry."
+                )
+            else:
+                logger.error("external_provider.stream_error", error = str(exc))
+                friendly_error = _friendly_error(exc)
+            api_monitor.fail(monitor_id, friendly_error)
             # Surface the failure: a bare EOF (e.g. after a read timeout) is treated
             # by the chat client as success, saving a partial answer with no error.
             yield (
                 "data: "
-                + json.dumps({"error": {"message": _friendly_error(exc), "type": "server_error"}})
+                + json.dumps({"error": {"message": friendly_error, "type": "server_error"}})
                 + "\n\n"
             )
             yield "data: [DONE]\n\n"
         finally:
+            if turn_state is not None:
+                turn_state.finish("cancelled" if cancel_event.is_set() else "failed" if stream_failed else "completed")
             cancel_event.set()
             if disconnect_task is not None:
                 # Joined, not just cancelled. A bare cancel() leaves the task's

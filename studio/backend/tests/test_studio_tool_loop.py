@@ -1154,3 +1154,32 @@ def test_a_fragment_naming_its_call_goes_back_to_that_call(executed):
     _run(transport)
 
     assert [call["arguments"] for call in executed] == [{"query": "first"}, {"query": "second"}]
+
+
+def test_remote_turn_uses_existing_plan_and_execution_checkpoint(executed):
+    from core.inference.turn_checkpoint import ActiveTurnCheckpoint
+    plan = _tool('update_plan')
+    state = ActiveTurnCheckpoint(objective='Search then answer', planning_enabled=True)
+    transport = FakeTransport([
+        [_sse({'tool_calls': [{'index': 0, 'id': 'plan', 'function': {
+            'name': 'update_plan', 'arguments': '{"plan":[{"step":"Search","status":"in_progress"}]}'
+        }}]}, finish='tool_calls'), _DONE],
+        [_sse({'tool_calls': [{'index': 0, 'id': 'search', 'function': {
+            'name': 'web_search', 'arguments': '{"query":"test"}'
+        }}]}, finish='tool_calls'), _DONE],
+        [_sse({'content': 'Search complete.'}, finish='stop'), _DONE],
+    ])
+    async def run():
+        return [x async for x in stream_with_studio_tools(
+            transport, run=ToolLoopRun([{'role': 'user', 'content': 'Search then answer'}], turn_checkpoint=state),
+            policy=ToolLoopPolicy([plan, WEB], 5, 10, 'off', False, False, None),
+            cancel_event=threading.Event(),
+        )]
+    result = asyncio.run(run())
+    assert transport.requests[0]['tool_choice'] == {'type': 'function', 'function': {'name': 'update_plan'}}
+    assert [x['function']['name'] for x in transport.requests[0]['tools']] == ['update_plan']
+    assert [x['name'] for x in executed] == ['web_search']
+    assert state.plan_initialized
+    assert state.actions
+    assert '<active_turn_checkpoint>' in json.dumps(transport.requests[2]['messages'])
+    assert any('turn_plan' in x for x in result)

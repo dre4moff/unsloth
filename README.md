@@ -473,3 +473,14 @@ This structure helps support ongoing Unsloth development while keeping the proje
 - The Pytorch and [Torch AO](https://github.com/unslothai/unsloth/pull/3391) team for their contributions
 - NVIDIA for their [NeMo DataDesigner](https://github.com/NVIDIA-NeMo/DataDesigner) library and their contributions
 - And of course for every single person who has contributed or has used Unsloth!
+
+
+### Kaggle TPU — Qwen3.8-27B (local fork)
+
+Studio can use the OpenAI-compatible endpoint from
+[kaggle-tpu-lab](https://github.com/ARahim3/kaggle-tpu-lab). Add **Kaggle TPU**
+in Connections and enter the Kaggle API token; the bundled launcher starts the
+private notebook and discovers its endpoint. Tools, MCP, code, web search,
+conversation compaction and agent execution stay in Studio on the Mac.
+Generic servers can use **OpenAI Compatible** with a URL, key and model ID.
+See [configuration, lifecycle and validation limits](studio/KAGGLE_TPU_REMOTE_BACKEND.md).

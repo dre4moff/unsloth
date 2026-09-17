@@ -251,8 +251,11 @@ export async function syncExternalProvidersFromBackend(
         models: resolvedModels,
         availableModels: resolvedAvailableModels,
         maxOutputTokens: config.max_output_tokens ?? undefined,
+        capabilities: config.capabilities,
+        managedConfig: config.managed_config,
 
         hasApiKey: config.has_api_key,
+        hasKaggleApiToken: config.has_kaggle_api_token === true,
 
         authKind: config.auth_kind,
         authStatus: config.auth_status,
@@ -260,7 +263,8 @@ export async function syncExternalProvidersFromBackend(
           ? (existing?.enablePromptCaching ?? true)
           : undefined,
         isReasoningModel: supportsProviderReasoningToggle(uiProviderType)
-          ? existing?.isReasoningModel === true
+          ? (config.capabilities?.supports_reasoning ??
+            existing?.isReasoningModel === true)
           : undefined,
         createdAt: existing?.createdAt ?? createdAt,
         updatedAt,

@@ -5256,7 +5256,15 @@ export function HubModelPicker({
                             "bg-[#ececec] dark:bg-[var(--sidebar-accent)]",
                         )}
                       >
-                        <span className="min-w-0 truncate">{model.name}</span>
+                        <span className="min-w-0 flex-1 truncate">
+                          {model.name}
+                        </span>
+                        <span className="ml-2 shrink-0 text-[10px] text-muted-foreground">
+                          Remote
+                          {model.contextLength
+                            ? ` · ${Math.round(model.contextLength / 1000)}k context`
+                            : ""}
+                        </span>
                       </button>
                     ))}
                   </div>

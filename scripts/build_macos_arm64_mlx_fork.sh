@@ -5,8 +5,8 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 release_dir="$repo_root/release"
-app_version="0.1.800-mlx.20"
-backend_version="2026.8.19+mlxcompaction8.companion20"
+app_version="0.1.800-mlx.29"
+backend_version="2026.8.19+mlxcompaction8.companion20.kaggletpu9"
 rust_toolchain="1.89.0"
 wheel_name="unsloth-${backend_version}-py3-none-any.whl"
 resource_dir="$repo_root/studio/src-tauri/resources/backend"
@@ -27,6 +27,10 @@ done
 python3 -m py_compile \
     "$repo_root/studio/backend/core/companion/manager.py" \
     "$repo_root/studio/backend/core/inference/inference.py" \
+    "$repo_root/studio/backend/core/inference/kaggle_tpu.py" \
+    "$repo_root/studio/backend/vendor/kaggle_tpu_lab/launch.py" \
+    "$repo_root/studio/backend/vendor/kaggle_tpu_lab/studio_interactive.py" \
+    "$repo_root/studio/backend/vendor/kaggle_tpu_lab/studio_preflight.py" \
     "$repo_root/studio/backend/core/inference/llama_cpp.py" \
     "$repo_root/studio/backend/core/inference/orchestrator.py" \
     "$repo_root/studio/backend/core/inference/tools.py" \
@@ -80,6 +84,18 @@ if [ ! -f "$built_wheel" ]; then
     find "$wheel_workspace" -maxdepth 1 -type f -print >&2
     exit 1
 fi
+python3 - "$built_wheel" <<'PY'
+import sys
+import zipfile
+
+with zipfile.ZipFile(sys.argv[1]) as wheel:
+    generated = [
+        name for name in wheel.namelist()
+        if "__pycache__/" in name or name.endswith((".pyc", ".pyo", ".DS_Store"))
+    ]
+    if generated:
+        raise SystemExit(f"Backend wheel contains generated caches: {generated}")
+PY
 if ! unzip -p "$built_wheel" studio/backend/core/inference/orchestrator.py \
     | grep -Fq "def compact_chat_context"; then
     echo "Backend wheel does not contain MLX context compaction." >&2
@@ -88,6 +104,39 @@ fi
 if ! unzip -p "$built_wheel" studio/backend/requirements/studio.txt \
     | grep -Fxq "psutil==7.2.2"; then
     echo "Backend wheel does not contain the required psutil runtime pin." >&2
+    exit 1
+fi
+if ! unzip -p "$built_wheel" studio/backend/requirements/studio.txt \
+    | grep -Fq "kaggle==2.2.4"; then
+    echo "Backend wheel does not contain the Kaggle CLI runtime pin." >&2
+    exit 1
+fi
+if ! unzip -p "$built_wheel" studio/backend/requirements/studio.txt \
+    | grep -Fxq "websockets>=15.0.1"; then
+    echo "Backend wheel does not contain the interactive Kaggle websocket runtime dependency." >&2
+    exit 1
+fi
+if ! unzip -Z1 "$built_wheel" \
+    | grep -Fx 'studio/backend/core/inference/kaggle_tpu.py' >/dev/null; then
+    echo "Backend wheel does not contain the Kaggle TPU lifecycle integration." >&2
+    exit 1
+fi
+for bundled_kaggle_file in \
+    studio/backend/vendor/kaggle_tpu_lab/launch.py \
+    studio/backend/vendor/kaggle_tpu_lab/studio_bridge.py \
+    studio/backend/vendor/kaggle_tpu_lab/studio_interactive.py \
+    studio/backend/vendor/kaggle_tpu_lab/studio_preflight.py \
+    studio/backend/vendor/kaggle_tpu_lab/kernel/serve_qwen38.py \
+    studio/backend/vendor/kaggle_tpu_lab/LICENSE \
+    studio/backend/vendor/kaggle_tpu_lab/UPSTREAM; do
+    if ! unzip -Z1 "$built_wheel" | grep -Fx "$bundled_kaggle_file" >/dev/null; then
+        echo "Backend wheel is missing bundled Kaggle TPU file: $bundled_kaggle_file" >&2
+        exit 1
+    fi
+done
+if ! unzip -p "$built_wheel" studio/backend/core/inference/providers.py \
+    | grep -Fq '"kaggle_tpu": {'; then
+    echo "Backend wheel does not register the Kaggle TPU provider." >&2
     exit 1
 fi
 if ! unzip -p "$built_wheel" studio/backend/utils/_studio_release_build.py \
@@ -243,6 +292,17 @@ hdiutil verify "$dmg_path"
 
 mkdir -p "$release_dir"
 install -m 0644 "$dmg_path" "$release_dir/Unsloth_${app_version}_aarch64.dmg"
+if [ -d "$release_dir/Unsloth.app" ]; then
+    /usr/bin/trash "$release_dir/Unsloth.app"
+fi
+ditto "$app_path" "$release_dir/Unsloth.app"
+codesign --verify --deep --strict --verbose=2 "$release_dir/Unsloth.app"
+hdiutil verify "$release_dir/Unsloth_${app_version}_aarch64.dmg"
+if [ "$(plutil -extract CFBundleShortVersionString raw "$release_dir/Unsloth.app/Contents/Info.plist")" != "$app_version" ]; then
+    echo "Final app version does not match $app_version." >&2
+    exit 1
+fi
+cmp "$resource_wheel" "$release_dir/Unsloth.app/Contents/Resources/backend/$wheel_name"
 
 echo "Bundled backend SHA-256: $wheel_sha256"
 echo "App: $app_path"

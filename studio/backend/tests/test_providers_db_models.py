@@ -85,6 +85,49 @@ def test_custom_max_output_tokens_round_trip_and_clear(isolated_providers_db: Pa
     assert providers_db.get_provider("custom1")["max_output_tokens"] is None
 
 
+def test_capabilities_and_managed_launcher_round_trip(isolated_providers_db: Path):
+    capabilities = {
+        "supports_streaming": True,
+        "supports_tool_calling": True,
+        "supports_reasoning": True,
+        "supports_vision": True,
+        "supports_images": True,
+        "context_length": 262144,
+        "api_mode": "chat_completions",
+    }
+    managed = {
+        "lab_path": "/tmp/kaggle-tpu-lab",
+        "auto_start": False,
+        "auto_stop": True,
+        "keepalive_minutes": 480,
+        "text_only": False,
+        "fast_start": True,
+        "max_num_seqs": 4,
+        "mtp_tokens": 3,
+        "reasoning_effort_default": "xhigh",
+    }
+    providers_db.create_provider(
+        id="kaggle1",
+        provider_type="kaggle_tpu",
+        display_name="Kaggle TPU",
+        base_url="",
+        capabilities=capabilities,
+        managed_config=managed,
+    )
+    row = providers_db.get_provider("kaggle1")
+    assert row["capabilities"] == capabilities
+    assert row["managed_config"] == managed
+
+    assert providers_db.update_provider(
+        id="kaggle1",
+        capabilities={**capabilities, "supports_vision": False},
+        managed_config={**managed, "text_only": True},
+    )
+    updated = providers_db.get_provider("kaggle1")
+    assert updated["capabilities"]["supports_vision"] is False
+    assert updated["managed_config"]["text_only"] is True
+
+
 def test_existing_provider_rows_migrate_to_unset_override(isolated_providers_db: Path):
     conn = sqlite3.connect(isolated_providers_db)
     conn.execute(

@@ -12,6 +12,46 @@ export type ProviderAuthStatus =
   | "connected"
   | "reauthorization_required";
 
+export interface ProviderCapabilities {
+  supports_streaming: boolean;
+  supports_tool_calling: boolean;
+  supports_reasoning: boolean;
+  supports_vision: boolean;
+  supports_images: boolean;
+  context_length?: number | null;
+  api_mode: "chat_completions" | "responses" | "anthropic_messages";
+}
+
+export interface KaggleTPUManagedConfig {
+  lab_path?: string | null;
+  auto_start: boolean;
+  auto_stop: boolean;
+  keepalive_minutes: number;
+  text_only: boolean;
+  fast_start: boolean;
+  max_num_seqs: number;
+  mtp_tokens: number;
+  reasoning_effort_default: "xhigh" | "medium" | "low";
+}
+
+export interface KaggleTPULifecycleStatus {
+  provider_id: string;
+  state:
+    | "STOPPED"
+    | "STARTING"
+    | "PROVISIONING"
+    | "LOADING"
+    | "READY"
+    | "DISCONNECTED"
+    | "ERROR"
+    | "STOPPING";
+  message: string;
+  base_url?: string | null;
+  model?: string | null;
+  context_length?: number | null;
+  updated_at: string;
+}
+
 export interface ProviderRegistryEntry {
   provider_type: string;
   display_name: string;
@@ -22,6 +62,10 @@ export interface ProviderRegistryEntry {
   supports_streaming: boolean;
   supports_vision: boolean;
   supports_tool_calling: boolean;
+  supports_reasoning?: boolean;
+  supports_images?: boolean;
+  context_length?: number | null;
+  api_mode?: ProviderCapabilities["api_mode"];
   /** Studio runs its own tool loop (search/code/MCP/RAG) against this provider. */
   supports_studio_tools?: boolean;
   /** Backend-only entry, surfaced through a custom preset rather than the dropdown. */
@@ -42,12 +86,15 @@ export interface ProviderConfig {
   is_enabled: boolean;
 
   has_api_key: boolean;
+  has_kaggle_api_token?: boolean;
 
   auth_kind?: ProviderAuthKind;
   auth_status?: ProviderAuthStatus;
   models?: string[];
   available_models?: string[];
   max_output_tokens?: number | null;
+  capabilities?: ProviderCapabilities;
+  managed_config?: KaggleTPUManagedConfig | null;
   created_at: string;
   updated_at: string;
 }
@@ -57,6 +104,18 @@ export interface ProviderModelInfo {
   display_name: string;
   context_length?: number | null;
   owned_by?: string | null;
+}
+
+export function conservativeDiscoveredContextLength(
+  models: readonly ProviderModelInfo[],
+): number | null {
+  const declared = models
+    .map((model) => model.context_length)
+    .filter(
+      (value): value is number =>
+        typeof value === "number" && Number.isSafeInteger(value) && value > 0,
+    );
+  return declared.length > 0 ? Math.min(...declared) : null;
 }
 
 export interface ProviderTestResult {
@@ -155,26 +214,44 @@ export async function createProviderConfig(payload: {
   models?: string[];
   availableModels?: string[];
   maxOutputTokens?: number | null;
+  capabilities?: ProviderCapabilities | null;
+  managedConfig?: KaggleTPUManagedConfig | null;
   apiKey?: string;
+  kaggleApiToken?: string;
 }): Promise<ProviderConfig> {
-  return withApiKeyEncryptionRetry(payload.apiKey ?? "", async (encryptedApiKey) => {
-    const response = await authFetch("/api/providers/", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        provider_type: payload.providerType,
-        display_name: payload.displayName,
-        base_url: payload.baseUrl ?? null,
-        models: payload.models ?? [],
-        available_models: payload.availableModels ?? [],
-        ...(payload.maxOutputTokens === undefined
-          ? {}
-          : { max_output_tokens: payload.maxOutputTokens }),
-        encrypted_api_key: encryptedApiKey,
-      }),
-    });
-    return parseJsonOrThrow<ProviderConfig>(response);
-  });
+  return withApiKeyEncryptionRetry(
+    payload.apiKey ?? "",
+    async (encryptedApiKey) => {
+      return withApiKeyEncryptionRetry(
+        payload.kaggleApiToken ?? "",
+        async (encryptedKaggleApiToken) => {
+          const response = await authFetch("/api/providers/", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              provider_type: payload.providerType,
+              display_name: payload.displayName,
+              base_url: payload.baseUrl ?? null,
+              models: payload.models ?? [],
+              available_models: payload.availableModels ?? [],
+              ...(payload.maxOutputTokens === undefined
+                ? {}
+                : { max_output_tokens: payload.maxOutputTokens }),
+              ...(payload.capabilities === undefined
+                ? {}
+                : { capabilities: payload.capabilities }),
+              ...(payload.managedConfig === undefined
+                ? {}
+                : { managed_config: payload.managedConfig }),
+              encrypted_api_key: encryptedApiKey,
+              encrypted_kaggle_api_token: encryptedKaggleApiToken,
+            }),
+          });
+          return parseJsonOrThrow<ProviderConfig>(response);
+        },
+      );
+    },
+  );
 }
 
 export async function deleteProviderConfig(providerId: string): Promise<void> {
@@ -202,31 +279,65 @@ export async function updateProviderConfig(
     models?: string[];
     availableModels?: string[];
     maxOutputTokens?: number | null;
+    capabilities?: ProviderCapabilities | null;
+    managedConfig?: KaggleTPUManagedConfig | null;
     apiKey?: string;
     clearApiKey?: boolean;
+    kaggleApiToken?: string;
+    clearKaggleApiToken?: boolean;
   },
 ): Promise<ProviderConfig> {
-  return withApiKeyEncryptionRetry(payload.apiKey ?? "", async (encryptedApiKey) => {
-    const response = await authFetch(`/api/providers/${providerId}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        ...(payload.displayName === undefined ? {} : { display_name: payload.displayName }),
-        ...(payload.baseUrl === undefined ? {} : { base_url: payload.baseUrl }),
-        ...(payload.isEnabled === undefined ? {} : { is_enabled: payload.isEnabled }),
-        ...(payload.models === undefined ? {} : { models: payload.models }),
-        ...(payload.availableModels === undefined
-          ? {}
-          : { available_models: payload.availableModels }),
-        ...(payload.maxOutputTokens === undefined
-          ? {}
-          : { max_output_tokens: payload.maxOutputTokens }),
-        ...(payload.apiKey === undefined ? {} : { encrypted_api_key: encryptedApiKey }),
-        ...(payload.clearApiKey === undefined ? {} : { clear_api_key: payload.clearApiKey }),
-      }),
-    });
-    return parseJsonOrThrow<ProviderConfig>(response);
-  });
+  return withApiKeyEncryptionRetry(
+    payload.apiKey ?? "",
+    async (encryptedApiKey) => {
+      return withApiKeyEncryptionRetry(
+        payload.kaggleApiToken ?? "",
+        async (encryptedKaggleApiToken) => {
+          const response = await authFetch(`/api/providers/${providerId}`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              ...(payload.displayName === undefined
+                ? {}
+                : { display_name: payload.displayName }),
+              ...(payload.baseUrl === undefined
+                ? {}
+                : { base_url: payload.baseUrl }),
+              ...(payload.isEnabled === undefined
+                ? {}
+                : { is_enabled: payload.isEnabled }),
+              ...(payload.models === undefined ? {} : { models: payload.models }),
+              ...(payload.availableModels === undefined
+                ? {}
+                : { available_models: payload.availableModels }),
+              ...(payload.maxOutputTokens === undefined
+                ? {}
+                : { max_output_tokens: payload.maxOutputTokens }),
+              ...(payload.capabilities === undefined
+                ? {}
+                : { capabilities: payload.capabilities }),
+              ...(payload.managedConfig === undefined
+                ? {}
+                : { managed_config: payload.managedConfig }),
+              ...(payload.apiKey === undefined
+                ? {}
+                : { encrypted_api_key: encryptedApiKey }),
+              ...(payload.clearApiKey === undefined
+                ? {}
+                : { clear_api_key: payload.clearApiKey }),
+              ...(payload.kaggleApiToken === undefined
+                ? {}
+                : { encrypted_kaggle_api_token: encryptedKaggleApiToken }),
+              ...(payload.clearKaggleApiToken === undefined
+                ? {}
+                : { clear_kaggle_api_token: payload.clearKaggleApiToken }),
+            }),
+          });
+          return parseJsonOrThrow<ProviderConfig>(response);
+        },
+      );
+    },
+  );
 }
 
 export async function migrateProviderApiKey(
@@ -313,6 +424,34 @@ export async function listProviderModels(payload: {
   });
 }
 
+async function updateKaggleLifecycle(
+  providerId: string,
+  action: "start" | "reconnect" | "stop",
+): Promise<KaggleTPULifecycleStatus> {
+  const response = await authFetch(
+    `/api/providers/${providerId}/kaggle/${action}`,
+    { method: "POST" },
+  );
+  return parseJsonOrThrow<KaggleTPULifecycleStatus>(response);
+}
+
+export async function getKaggleTPUStatus(
+  providerId: string,
+): Promise<KaggleTPULifecycleStatus> {
+  const response = await authFetch(
+    `/api/providers/${providerId}/kaggle/status`,
+  );
+  return parseJsonOrThrow<KaggleTPULifecycleStatus>(response);
+}
+
+export const startKaggleTPU = (providerId: string) =>
+  updateKaggleLifecycle(providerId, "start");
+
+export const reconnectKaggleTPU = (providerId: string) =>
+  updateKaggleLifecycle(providerId, "reconnect");
+
+export const stopKaggleTPU = (providerId: string) =>
+  updateKaggleLifecycle(providerId, "stop");
 
 export interface CodexOAuthFlow {
   flow_id: string;

@@ -215,7 +215,10 @@ import {
 } from "./openai-containers";
 import {
   encryptProviderApiKey,
+  getKaggleTPUStatus,
+  reconnectKaggleTPU,
   isProviderKeyRotationError,
+  startKaggleTPU,
 } from "./providers-api";
 import {
   beginExternalResearchFollow,
@@ -229,6 +232,68 @@ import { cancelResearchRun, createResearchRun } from "./research-api";
 // Small models (<=9B) answer from memory instead of calling search, so "auto"
 // forces retrieval for them and leaves it to larger ones.
 const AUTOINJECT_AUTO_MAX_SIZE_B = 9;
+const KAGGLE_TPU_STATUS_POLL_MS = 5_000;
+const KAGGLE_TPU_STARTUP_TIMEOUT_MS = 45 * 60 * 1_000;
+
+function waitForDelayOrAbort(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new Error("Generation cancelled."));
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+      reject(new Error("Generation cancelled."));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+async function ensureKaggleTPUReady(
+  providerId: string,
+  signal: AbortSignal,
+  autoStart = false,
+): Promise<void> {
+  let status = await getKaggleTPUStatus(providerId);
+  if (status.state === "READY" && status.base_url) return;
+
+  const alreadyStarting =
+    status.state === "STARTING" ||
+    status.state === "PROVISIONING" ||
+    status.state === "LOADING";
+  if (!alreadyStarting && status.state === "DISCONNECTED") {
+    status = await reconnectKaggleTPU(providerId);
+  }
+  if (signal.aborted) throw new Error("Generation cancelled.");
+  if (autoStart && status.state === "STOPPED") {
+    status = await startKaggleTPU(providerId);
+  }
+
+  const deadline = Date.now() + KAGGLE_TPU_STARTUP_TIMEOUT_MS;
+  while (true) {
+    if (status.state === "READY" && status.base_url) return;
+    if (status.state === "ERROR" || status.state === "DISCONNECTED") {
+      throw new Error(status.message || "Kaggle TPU failed to start.");
+    }
+    if (status.state === "STOPPED") {
+      throw new Error(
+        status.message || "The Kaggle TPU session stopped before it became ready.",
+      );
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(
+        "Kaggle TPU startup timed out. Open Settings → Connections to inspect its status.",
+      );
+    }
+    await waitForDelayOrAbort(KAGGLE_TPU_STATUS_POLL_MS, signal);
+    status = await getKaggleTPUStatus(providerId);
+  }
+}
 
 type ThreadRecordReader = () => Promise<ThreadRecord | undefined>;
 
@@ -3862,6 +3927,7 @@ export function createOpenAIStreamAdapter(
             providerModelSupportsStudioTools(
               researchExternalProvider?.providerType,
               researchExternalSelection.modelId,
+              researchExternalProvider?.capabilities?.supports_tool_calling,
             ) !== true)
         ) {
           throw new Error(
@@ -4248,6 +4314,7 @@ export function createOpenAIStreamAdapter(
         providerModelSupportsStudioTools(
           externalProvider?.providerType,
           externalSelection?.modelId,
+          externalProvider?.capabilities?.supports_tool_calling,
         ) === true;
 
       const supportsStudioToolsForThisTurn = isExternalRequest
@@ -4279,6 +4346,12 @@ export function createOpenAIStreamAdapter(
       );
       const externalProviderUsesOAuth =
         externalProvider?.authKind === "chatgpt_oauth";
+      const externalProviderIsKaggleTPU =
+        externalProvider?.providerType === "kaggle_tpu";
+
+      if (externalProviderIsKaggleTPU && externalProvider?.id) {
+        await ensureKaggleTPUReady(externalProvider.id, abortSignal, externalProvider.managedConfig?.auto_start === true);
+      }
 
       if (
         isExternalRequest &&
@@ -4286,6 +4359,7 @@ export function createOpenAIStreamAdapter(
         !externalProvider?.hasApiKey &&
 
         !externalProviderUsesOAuth &&
+        !externalProviderIsKaggleTPU &&
         !externalProviderIsCustom &&
         !externalProviderIsGeminiCustomBase
       ) {
@@ -4592,6 +4666,7 @@ export function createOpenAIStreamAdapter(
           externalSupportsVision: providerModelSupportsVision(
             externalProvider?.providerType,
             externalSelection?.modelId,
+            externalProvider?.capabilities?.supports_vision,
           ),
           externalModelLabel: externalSelection?.modelId ?? null,
           loadedIsMultimodal: runtime.loadedIsMultimodal,
@@ -5138,6 +5213,8 @@ export function createOpenAIStreamAdapter(
                 {
                   isReasoningProvider:
                     externalProvider.isReasoningModel === true,
+                  supportsReasoning:
+                    externalProvider.capabilities?.supports_reasoning,
                   baseUrl: externalProvider.baseUrl ?? null,
                 },
               )
@@ -5455,6 +5532,9 @@ export function createOpenAIStreamAdapter(
                   }
                 : {}),
               provider_base_url: externalProvider.baseUrl || null,
+              ...(externalProvider.capabilities?.context_length
+                ? { context_overflow: "truncate_oldest" as const }
+                : {}),
               ...(openaiCodeExecContainerId
                 ? {
                     openai_code_exec_container_id: openaiCodeExecContainerId,

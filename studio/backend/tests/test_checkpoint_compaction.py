@@ -1349,6 +1349,9 @@ def test_the_reachability_probe_closes_the_connection_it_opens():
     from core.rag import conversation_archive
 
     def _open_archive_handles():
+        if not os.path.isdir("/proc/self/fd"):
+            import psutil
+            return sum("rag" in handle.path for handle in psutil.Process().open_files())
         found = 0
         for name in os.listdir("/proc/self/fd"):
             try:

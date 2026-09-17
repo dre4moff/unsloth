@@ -307,11 +307,56 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "studio_tools": True,
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
+        "reasoning_wire": "enable_thinking",
         # Force /v1/chat/completions -- vLLM's /v1/responses rebuilds messages
         # through the chat template, 400ing on strict-alternation templates
         # (Gemma 3). The chat-completions path takes messages verbatim.
         "notes": "Self-hosted vLLM server. Always routed to /v1/chat/completions.",
         # Surfaced via the frontend's CUSTOM_PROVIDER_PRESETS, not the dropdown.
+        "hidden": True,
+    },
+    "openai_compatible": {
+        "display_name": "OpenAI Compatible",
+        "base_url": "",
+        "default_models": [],
+        "supports_streaming": True,
+        "supports_vision": False,
+        "supports_images": False,
+        "supports_tool_calling": True,
+        "supports_reasoning": False,
+        "studio_tools": True,
+        "context_length": None,
+        "api_mode": "chat_completions",
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "reasoning_wire": "enable_thinking",
+        "notes": (
+            "User-supplied OpenAI-compatible endpoint. Model inference is remote; "
+            "Studio keeps the agent loop, MCP, web, code and filesystem tools local."
+        ),
+        "hidden": True,
+    },
+    "kaggle_tpu": {
+        "display_name": "Kaggle TPU",
+        "base_url": "",
+        "default_models": ["qwen3.8-27b"],
+        "supports_streaming": True,
+        "supports_vision": True,
+        "supports_images": True,
+        "supports_tool_calling": True,
+        "supports_reasoning": True,
+        "studio_tools": True,
+        "context_length": 262144,
+        "api_mode": "chat_completions",
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        # Thin Qwen/vLLM profile. The generic client remains model-agnostic.
+        "reasoning_wire": "qwen_chat_template",
+        "base_url_editable": False,
+        "notes": (
+            "Bundled managed kaggle-tpu-lab launcher plus the shared OpenAI-compatible "
+            "inference client. Kaggle receives inference requests only."
+        ),
         "hidden": True,
     },
     "custom": {
@@ -418,7 +463,29 @@ def get_base_url(provider_type: str) -> str | None:
     return info["base_url"] if info else None
 
 
-def provider_runs_local_tools(provider_type: str | None) -> bool:
+def effective_provider_capabilities(
+    provider_type: str | None,
+    overrides: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Resolve registry defaults plus one saved connection's declarations."""
+    info = PROVIDER_REGISTRY.get(provider_type or "") or {}
+    capabilities: dict[str, Any] = {
+        "supports_streaming": bool(info.get("supports_streaming", True)),
+        "supports_tool_calling": bool(info.get("supports_tool_calling", False)),
+        "supports_reasoning": bool(info.get("supports_reasoning", False)),
+        "supports_vision": bool(info.get("supports_vision", False)),
+        "supports_images": bool(info.get("supports_images", info.get("supports_vision", False))),
+        "context_length": info.get("context_length"),
+        "api_mode": info.get("api_mode", "chat_completions"),
+    }
+    if isinstance(overrides, dict):
+        capabilities.update({key: overrides[key] for key in capabilities if key in overrides})
+    return capabilities
+
+
+def provider_runs_local_tools(
+    provider_type: str | None, capabilities: dict[str, Any] | None = None
+) -> bool:
     """Whether Studio may run its own tool loop against this provider type.
 
     Studio's tools (web_search, python, terminal, MCP, knowledge-base search)
@@ -440,10 +507,18 @@ def provider_runs_local_tools(provider_type: str | None) -> bool:
     if not isinstance(provider_type, str):
         return False
     info = PROVIDER_REGISTRY.get(provider_type)
-    return bool(info and info.get("studio_tools"))
+    if not info or not info.get("studio_tools"):
+        return False
+    if isinstance(capabilities, dict):
+        return bool(capabilities.get("supports_tool_calling", True))
+    return True
 
 
-def provider_model_runs_local_tools(provider_type: str | None, model: str | None) -> bool:
+def provider_model_runs_local_tools(
+    provider_type: str | None,
+    model: str | None,
+    capabilities: dict[str, Any] | None = None,
+) -> bool:
     """``provider_runs_local_tools`` narrowed to one model.
 
     Gemini's image models are the exception the provider-wide flag cannot
@@ -453,7 +528,7 @@ def provider_model_runs_local_tools(provider_type: str | None, model: str | None
     completes the turn as if the user had selected nothing, which is worse than
     not offering them.
     """
-    if not provider_runs_local_tools(provider_type):
+    if not provider_runs_local_tools(provider_type, capabilities):
         return False
     if provider_type == "gemini" and isinstance(model, str):
         # Same test _stream_gemini applies, kept in step with it deliberately.
@@ -926,6 +1001,10 @@ def list_available_providers(include_hidden: bool = False) -> list[dict[str, Any
                 "supports_streaming": info["supports_streaming"],
                 "supports_vision": info.get("supports_vision", False),
                 "supports_tool_calling": info.get("supports_tool_calling", False),
+                "supports_reasoning": info.get("supports_reasoning", False),
+                "supports_images": info.get("supports_images", info.get("supports_vision", False)),
+                "context_length": info.get("context_length"),
+                "api_mode": info.get("api_mode", "chat_completions"),
                 "supports_studio_tools": bool(info.get("studio_tools")),
                 "hidden": bool(info.get("hidden")),
                 "model_list_mode": info.get("model_list_mode", "remote"),

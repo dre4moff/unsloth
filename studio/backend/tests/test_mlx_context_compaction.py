@@ -371,7 +371,9 @@ def test_safetensors_loop_injects_the_action_ledger_on_the_next_model_pass(
     )
 
     assert seen[0][0]["role"] == "user"
-    assert seen[1][0]["role"] == "system"
+    # The ledger lives in the newest user turn so the system/history prefix
+    # stays stable for the existing MLX/GGUF cache optimization.
+    assert seen[1][0]["role"] == "user"
     assert "CURRENT OBJECTIVE" in seen[1][0]["content"]
     assert 'search {"query": "only once"}' in seen[1][0]["content"]
     state.finish("completed")
@@ -425,11 +427,9 @@ def test_safetensors_plan_tool_is_internal_and_does_not_spend_an_action(monkeypa
 
     assert calls == [("search", {"query": "once"})]
     assert any(event.get("type") == "turn_plan" for event in events)
-    assert not any(
-        event.get("type") in ("tool_start", "tool_end")
-        and event.get("tool_name") == "update_plan"
-        for event in events
-    )
+    plan_cards = [event for event in events if event.get("tool_name") == "update_plan"]
+    assert [event["type"] for event in plan_cards] == ["tool_start", "tool_end"]
+    assert len(state.actions) == 1  # Only the actual search spends an action.
     assert any(
         event.get("type") == "tool_start" and event.get("tool_name") == "search"
         for event in events

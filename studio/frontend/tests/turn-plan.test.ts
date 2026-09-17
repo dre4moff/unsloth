@@ -17,8 +17,8 @@ const card = readFileSync(
   "utf8",
 );
 
-test("local Studio tool turns opt into visible planning", () => {
-  assert.match(adapter, /enable_tools: true,\s+turn_planning: true,/);
+test("Studio tool turns honor the visible-planning toggle", () => {
+  assert.match(adapter, /enable_tools: true,\s+turn_planning: turnPlanningEnabled,/);
 });
 
 test("streamed plans are persisted in assistant metadata", () => {
@@ -31,7 +31,7 @@ test("streamed plans are persisted in assistant metadata", () => {
 
 test("normal assistant messages render the persisted checklist", () => {
   assert.match(thread, /custom\?\.turnPlan/);
-  assert.match(thread, /<TurnPlanCard plan=\{turnPlan\}/);
+  assert.match(thread, /<TurnPlanCard\s+plan=\{turnPlan\}/);
   assert.match(card, /aria-label="Execution plan"/);
   assert.match(card, /Step \{shownStep\} \/ \{plan\.steps\.length\}/);
   assert.match(card, /item\.status === "completed"/);

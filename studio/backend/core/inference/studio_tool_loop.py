@@ -341,6 +341,7 @@ class ToolLoopRun:
     model: str | None = None
     tool_choice: Any = None
     continue_final_message: bool = False
+    turn_checkpoint: Any = None
 
 
 @dataclass(frozen = True)
@@ -835,7 +836,12 @@ async def stream_with_studio_tools(
     # a lower bound here only cuts a productive run short with no final answer.
     max_provider_turns = max(1, remaining) + 2 * MAX_ACT_REPROMPTS + 4
 
+    checkpoint = run.turn_checkpoint
+    if checkpoint is not None and checkpoint.planning_enabled:
+        yield _sse({"choices": [], "turn_plan": checkpoint.plan_snapshot()})
     while not cancel_event.is_set():
+        if checkpoint is not None:
+            conversation = checkpoint.inject(conversation)
         if provider_turns >= max_provider_turns:
             # Reached only by a model that keeps asking for tools it cannot run
             # (all disabled, or the budget is gone). Executions are already
@@ -847,6 +853,8 @@ async def stream_with_studio_tools(
         healer = StreamToolCallHealer(heal_names, tools) if heal_names else None
 
         active_tools = controller.active_tools()
+        if checkpoint is not None:
+            active_tools = checkpoint.active_tools(active_tools)
         if companion_enabled:
             active_tools = refresh_iphone_companion_tool_catalog(active_tools, thread_id)
             current_companion_notice = iphone_companion_runtime_notice(thread_id)
@@ -890,6 +898,8 @@ async def stream_with_studio_tools(
         if executed_any and turn_tool_choice not in ("auto", "none"):
             turn_tool_choice = "auto"
 
+        if checkpoint is not None and checkpoint.requires_plan_review and tools_available:
+            turn_tool_choice = {"type": "function", "function": {"name": "update_plan"}}
         generator = transport.stream(
             messages = conversation,
             tools = active_tools if tools_available else None,
@@ -898,6 +908,11 @@ async def stream_with_studio_tools(
         )
         try:
             async for line in generator:
+                if checkpoint is not None:
+                    frame = _chunk_payload(line)
+                    truncation = (frame or {}).get("context_truncated") or {}
+                    if truncation.get("fits") and truncation.get("dropped_messages"):
+                        checkpoint.record_compaction()
                 if _is_done_sentinel(line):
                     # Every turn ends with one. Relaying it mid-loop tells a
                     # spec-compliant client the response is over, and it stops before
@@ -1223,8 +1238,9 @@ async def stream_with_studio_tools(
             name = decision.tool_name
             arguments = decision.arguments
             call_id = decision.tool_call_id
+            internal_plan = checkpoint is not None and name == "update_plan"
             needs_confirmation = (
-                confirm_tool_calls and not bypass_permissions and permission_mode != "off"
+                not internal_plan and confirm_tool_calls and not bypass_permissions and permission_mode != "off"
             )
             if needs_confirmation and permission_mode == "auto":
                 needs_confirmation = is_high_risk_tool_call(name, arguments)
@@ -1300,6 +1316,8 @@ async def stream_with_studio_tools(
                 continue
 
             def _invoke(output_callback: Any, call = decision) -> str:
+                if checkpoint is not None and call.tool_name == "update_plan":
+                    return checkpoint.update_plan(call.arguments)
                 kwargs: dict[str, Any] = {
                     "cancel_event": cancel_event,
                     "timeout": None if tool_call_timeout >= 9999 else tool_call_timeout,
@@ -1381,12 +1399,17 @@ async def stream_with_studio_tools(
                 await _drain_step_task(step_task, cancel_event)
                 tool_stream.close()
 
+            if checkpoint is not None:
+                if name != "update_plan":
+                    checkpoint.record_tool(name, arguments, result)
+                if checkpoint.planning_enabled:
+                    yield _sse({"choices": [], "turn_plan": checkpoint.plan_snapshot()})
             completion = controller.record_result(decision, result)
             # Counted whether or not the tool succeeded: a failing call has
             # already done its work (and possibly its side effects), so letting
             # it run for free would put the budget past max_calls. Counted per
             # call rather than per turn, so parallel calls each spend one.
-            if not unlimited:
+            if not unlimited and not internal_plan:
                 remaining -= 1
             turn_executed_real_tool = True
             executed_any = True

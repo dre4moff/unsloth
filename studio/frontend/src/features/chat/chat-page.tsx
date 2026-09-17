@@ -2191,10 +2191,19 @@ export function ChatPage({
     () => isExternalModelId(inferenceParams.checkpoint),
     [inferenceParams.checkpoint],
   );
+  const externalContextLength = useMemo(() => {
+    const selection = parseExternalModelId(inferenceParams.checkpoint);
+    if (!selection) return null;
+    const value = externalProvidersForChat.find(
+      (provider) => provider.id === selection.providerId,
+    )?.capabilities?.context_length;
+    return typeof value === "number" && value > 0 ? value : null;
+  }, [externalProvidersForChat, inferenceParams.checkpoint]);
   const contextWindowKnown = hasKnownContextWindow({
     ggufContextLength,
     modelLoading,
     isExternalModel,
+    externalContextLength,
     residentCheckpoint,
   });
   const {
@@ -2269,6 +2278,7 @@ export function ChatPage({
       selection.modelId,
       {
         isReasoningProvider: provider?.isReasoningModel === true,
+        supportsReasoning: provider?.capabilities?.supports_reasoning,
         baseUrl: provider?.baseUrl ?? null,
       },
     );
@@ -2359,6 +2369,7 @@ export function ChatPage({
       providerModelSupportsStudioTools(
         provider?.providerType,
         selection.modelId,
+        provider?.capabilities?.supports_tool_calling,
       ) === true;
     const canSearch = supportsBuiltinWebSearch || supportsStudioToolsHere;
     // Read out of the placement rule, not off the Studio-tools flag: a model on
@@ -2825,6 +2836,8 @@ export function ChatPage({
           selectedExternal?.modelId,
           {
             isReasoningProvider: selectedProvider?.isReasoningModel === true,
+            supportsReasoning:
+              selectedProvider?.capabilities?.supports_reasoning,
             baseUrl: selectedProvider?.baseUrl ?? null,
           },
         );
@@ -2913,6 +2926,7 @@ export function ChatPage({
           providerModelSupportsStudioTools(
             selectedProvider?.providerType,
             selectedExternal?.modelId,
+            selectedProvider?.capabilities?.supports_tool_calling,
           ) === true;
         const canSearch = supportsBuiltinWebSearch || supportsStudioToolsHere;
         // Same placement rule as the selection handler above.
@@ -3229,6 +3243,7 @@ export function ChatPage({
               providerId: provider.id,
               providerName: provider.name,
               providerType: provider.providerType,
+              contextLength: provider.capabilities?.context_length,
             };
           }),
         ),
@@ -3640,8 +3655,7 @@ export function ChatPage({
             {view.mode === "single" && (contextUsage || contextWindowKnown) ? (
               <ContextUsageBar
                 used={contextUsage?.totalTokens ?? null}
-                // null on external providers; the bar handles that.
-                total={ggufContextLength}
+                total={externalContextLength ?? ggufContextLength}
                 cached={contextUsage?.cachedTokens}
                 cacheWrites={contextUsage?.cacheWriteTokens}
                 promptTokens={contextUsage?.promptTokens}

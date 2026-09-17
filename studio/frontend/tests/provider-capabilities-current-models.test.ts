@@ -20,6 +20,9 @@ const {
 const { providerModelSupportsVision, setProviderModelCapabilities } = await import(
   "../src/features/chat/external-providers.ts"
 );
+const { conservativeDiscoveredContextLength } = await import(
+  "../src/features/chat/api/providers-api.ts"
+);
 
 // Every capability table is prefix-based, so an un-widened prefix silently drops a
 // control instead of failing loudly: a model with no reasoning entry loses its
@@ -105,6 +108,41 @@ test("ChatGPT subscription vision gating follows the curated model", () => {
     false,
   );
   assert.equal(providerModelSupportsVision("openai_codex", "gpt-5.6-sol"), true);
+});
+
+test("Kaggle TPU exposes its reasoning ladder and connection vision gate", () => {
+  const caps = getExternalReasoningCapabilities("kaggle_tpu", "qwen3.8-27b", {
+    supportsReasoning: true,
+  });
+  assert.deepEqual(
+    [...caps.reasoningEffortLevels],
+    ["none", "low", "medium", "xhigh"],
+  );
+  assert.equal(
+    providerModelSupportsVision("kaggle_tpu", "qwen3.8-27b", true),
+    true,
+  );
+  assert.equal(
+    providerModelSupportsVision("kaggle_tpu", "qwen3.8-27b", false),
+    false,
+  );
+});
+
+test("model discovery adopts the safest declared context window", () => {
+  assert.equal(
+    conservativeDiscoveredContextLength([
+      { id: "large", display_name: "large", context_length: 262144 },
+      { id: "small", display_name: "small", context_length: 131072 },
+      { id: "unknown", display_name: "unknown", context_length: null },
+    ]),
+    131072,
+  );
+  assert.equal(
+    conservativeDiscoveredContextLength([
+      { id: "unknown", display_name: "unknown" },
+    ]),
+    null,
+  );
 });
 
 

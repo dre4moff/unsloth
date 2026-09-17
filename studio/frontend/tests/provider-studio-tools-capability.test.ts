@@ -62,3 +62,14 @@ test("a known provider answers even before a model is chosen", () => {
   // there would grey the pills out until the user picked a model.
   assert.equal(providerModelSupportsStudioTools("ollama", null), true);
 });
+
+test("a saved OpenAI-compatible connection can explicitly gate Studio tools", () => {
+  assert.equal(
+    providerModelSupportsStudioTools("openai_compatible", "remote", false),
+    false,
+  );
+  assert.equal(
+    providerModelSupportsStudioTools("openai_compatible", "remote", true),
+    true,
+  );
+});

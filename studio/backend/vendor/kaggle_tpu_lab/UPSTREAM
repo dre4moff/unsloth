@@ -1,0 +1,52 @@
+Source: https://github.com/ARahim3/kaggle-tpu-lab
+Commit: 10897e5799c0d911d5c81b4f2f932619f02620bd
+License: MIT (see LICENSE)
+
+Vendored for Unsloth Studio's managed Kaggle TPU connection so end users do
+not need to clone or install the launcher separately.
+
+Local Studio changes (mlx.23): invoke the same-interpreter Kaggle CLI; private
+per-connection state and kernel names; --json progress; official Kaggle log
+fallback; validated reconnect; bounded subprocesses and propagated stop errors.
+The TPU serving kernel and embedded MTP patch remain upstream's implementation.
+studio_bridge.py is a local MIT-licensed launcher adapter, covered by LICENSE.
+
+Local Studio changes (mlx.24): explicit TpuV5E8 allocation; a separate
+studio_preflight.py is embedded by the launcher around guarded source markers
+to reject CPU-only VMs before installation and verify eight JAX TPU devices
+before vLLM starts. The upstream kernel file and its MTP patch are unchanged.
+One automatic retry is allowed only after a retryable preflight failure and
+confirmed terminal session. Run markers reject previous-version Kaggle logs.
+Failure diagnosis preserves the actual step/root cause and excludes harmless
+GCE metadata warnings; compile progress reports elapsed minutes.
+
+Local Studio changes (mlx.25): status/log read timeouts no longer terminate
+the watcher; transient status failures retry up to five reads before detaching
+without stopping/restarting the notebook. Queue updates show elapsed minutes
+and distinguish allocation from model installation. Terminal Kaggle errors
+before boot are identified separately. Notification payloads are validated.
+
+Local Studio changes (mlx.26): Studio no longer requests its TPU by committing
+the serving notebook with `kernels push`. A small private CPU-only notebook is
+created once to own the dataset mounts, then Kaggle's public create-session API
+opens an interactive session and the unchanged prepared upstream kernel runs
+through its authenticated Jupyter websocket. The interactive API's documented
+machine-shape identifier is `Tpu1VmV38`; the in-VM preflight remains the source
+of truth and requires eight real TPU devices. Stop cancels kernelSessionId and
+preserves the private bootstrap for the next Start. Jupyter URLs/tokens are
+never written to Studio state. The non-Studio CLI keeps the upstream batch path.
+
+Local Studio changes (mlx.27): interactive TPU allocation no longer has a
+Studio-side wall-clock timeout. Kaggle can keep a CreateKernelSession request
+pending for longer than 15 minutes even with a valid account/token; Studio now
+keeps reporting PROVISIONING on that same operation until Kaggle completes it or
+the user presses Stop. Explicit finite timeouts remain available to tests and
+callers that request one. No extra TPU session is submitted automatically.
+
+Local Studio changes (mlx.28): while CreateKernelSession remains pending,
+Studio also queries Kaggle's kernel-session worker status. QUEUED now reports
+elapsed queue minutes (and TPU quota remaining when the quota endpoint provides
+it); RUNNING reports that hardware was assigned and Jupyter is initializing.
+Terminal worker errors/cancellation are surfaced instead of leaving a stale
+allocation message. Reconnect uses the same read-only worker-state check and
+never submits a duplicate session.

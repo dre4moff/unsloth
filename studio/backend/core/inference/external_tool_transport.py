@@ -17,7 +17,7 @@ import asyncio
 import contextlib
 import threading
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 from core.inference.external_provider import ExternalProviderClient
@@ -56,14 +56,16 @@ class OAICompatTransport:
         *,
         model: str,
         continue_final_message: bool | None = None,
+        prepare_messages: Callable | None = None,
         **request_kwargs: Any,
     ) -> None:
         self._client = client
         self._model = model
         self._continue_final_message = continue_final_message
+        self._prepare_messages = prepare_messages
         self._request_kwargs = request_kwargs
 
-    def stream(
+    async def stream(
         self,
         *,
         messages: list[dict[str, Any]],
@@ -81,7 +83,16 @@ class OAICompatTransport:
         continue_final_message = bool(self._continue_final_message) and bool(
             messages and isinstance(messages[-1], dict) and messages[-1].get("role") == "assistant"
         )
-        return self._cancellable(
+        if self._prepare_messages is not None:
+            fitted, events, fits = self._prepare_messages(messages, tools)
+            # Keep the loop's conversation compacted too; otherwise each result
+            # resurrects the history just evicted from the previous request.
+            messages[:] = fitted
+            for event in events:
+                yield event
+            if not fits:
+                return
+        async with contextlib.aclosing(self._cancellable(
             self._client.stream_chat_completion(
                 messages = messages,
                 model = self._model,
@@ -91,7 +102,9 @@ class OAICompatTransport:
                 **self._request_kwargs,
             ),
             cancel_event,
-        )
+        )) as stream:
+            async for line in stream:
+                yield line
 
     @staticmethod
     async def _cancellable(
