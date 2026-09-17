@@ -5,8 +5,8 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 release_dir="$repo_root/release"
-app_version="0.1.800-mlx.30"
-backend_version="2026.8.19+mlxcompaction8.companion20.kaggletpu9.release30"
+app_version="0.1.800-mlx.31"
+backend_version="2026.8.19+mlxcompaction8.companion20.kaggletpu9.release31"
 rust_toolchain="1.89.0"
 wheel_name="unsloth-${backend_version}-py3-none-any.whl"
 resource_dir="$repo_root/studio/src-tauri/resources/backend"
@@ -252,6 +252,22 @@ done < <(find "$resource_dir" -maxdepth 1 -type f -name 'unsloth-*.whl' -print)
 rm -f -- "$resource_wheel"
 install -m 0644 "$built_wheel" "$resource_wheel"
 wheel_sha256="$(shasum -a 256 "$resource_wheel" | awk '{print $1}')"
+
+# Attest the external-model-storage implementation in the packaged backend.
+python3 - "$resource_wheel" <<'PYVERIFY'
+import sys
+import zipfile
+with zipfile.ZipFile(sys.argv[1]) as wheel:
+    checks = {
+        "studio/backend/hub/services/models/relocation.py": "def move_repository(",
+        "studio/backend/utils/model_storage_activity.py": "def relocation_reservation(",
+        "studio/backend/utils/hf_cache_settings.py": "def relocated_model_path(",
+        "studio/backend/hub/routes/inventory.py": '@router.post("/move-cached",',
+    }
+    for path, marker in checks.items():
+        if marker not in wheel.read(path).decode():
+            raise SystemExit(f"External model storage missing from wheel: {path}")
+PYVERIFY
 
 echo "Preparing the Apple Silicon Rust target..."
 rustup target add --toolchain "$rust_toolchain" aarch64-apple-darwin
