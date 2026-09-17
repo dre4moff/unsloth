@@ -138,10 +138,30 @@ def test_no_space_keeps_source(model, monkeypatch):
 def test_escaping_link_is_rejected(model, monkeypatch, tmp_path):
     secret = tmp_path / "secret"
     secret.write_text("private")
-    (model[0] / "escape").symlink_to(secret)
+    (model[0] / "blobs" / "escape").symlink_to(secret)
     with pytest.raises(ValueError, match = "outside"):
         run(model, monkeypatch)
     assert secret.read_text() == "private"
+
+
+@pytest.mark.parametrize("cross", [False, True])
+def test_shared_hub_blob_is_materialized_on_move(model, monkeypatch, cross):
+    source, dest = model
+    shared = source.parent / "blobs" / "aa" / "shared-weight"
+    shared.parent.mkdir(parents = True)
+    shared.write_bytes(b"shared" * 4096)
+    repo_blob = source / "blobs" / "weights"
+    repo_blob.unlink()
+    repo_blob.symlink_to(shared)
+
+    run(model, monkeypatch, cross = cross)
+
+    moved_blob = dest / "blobs" / "weights"
+    assert moved_blob.read_bytes() == b"shared" * 4096
+    assert moved_blob.is_file() and not moved_blob.is_symlink()
+    assert (dest / "snapshots/revision/model.gguf").is_symlink()
+    assert (dest / "snapshots/revision/model.gguf").read_bytes() == b"shared" * 4096
+    assert shared.read_bytes() == b"shared" * 4096
 
 
 def test_exfat_materializes_links(model, monkeypatch):

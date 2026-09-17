@@ -35,16 +35,58 @@ def _check_cancel(cancel: threading.Event) -> None:
 
 
 def _manifest(root: Path) -> dict:
-    """Reject special files and escaping links; never copy unrelated user data."""
+    """Reject special files and escaping links; never copy unrelated user data.
+
+    Studio may deduplicate completed Hugging Face blobs into ``<hub>/blobs``
+    and leave ``<repo>/blobs/<etag>`` as a symlink to that shared store. Those
+    links are part of the model even though their bytes live just outside the
+    repository directory, so record them for materialization during a move.
+    """
     result = {}
+    shared_blobs = root.parent / "blobs"
+    try:
+        shared_info = shared_blobs.lstat()
+        shared_root = (
+            shared_blobs.resolve(strict = True)
+            if stat.S_ISDIR(shared_info.st_mode) and not stat.S_ISLNK(shared_info.st_mode)
+            else None
+        )
+    except (FileNotFoundError, OSError, RuntimeError):
+        shared_root = None
     for path in sorted(root.rglob("*")):
         info = path.lstat()
         relative = path.relative_to(root)
         if stat.S_ISLNK(info.st_mode):
+            link_value = os.readlink(path)
+            declared = Path(link_value)
+            if not declared.is_absolute():
+                declared = path.parent / declared
+            declared = Path(os.path.abspath(os.path.normpath(os.fspath(declared))))
             resolved = path.resolve(strict = True)
-            if not resolved.is_relative_to(root) or not resolved.is_file():
+            if declared.is_relative_to(root) and resolved.is_file():
+                result[str(relative)] = (
+                    "link",
+                    link_value,
+                    str(declared.relative_to(root)),
+                )
+            elif (
+                relative.parts
+                and relative.parts[0] == "blobs"
+                and shared_root is not None
+                and resolved.is_relative_to(shared_root)
+                and resolved.is_file()
+            ):
+                target_info = resolved.stat()
+                result[str(relative)] = (
+                    "shared_blob",
+                    link_value,
+                    str(resolved),
+                    target_info.st_size,
+                    target_info.st_mtime_ns,
+                    target_info.st_ino,
+                )
+            else:
                 raise ValueError("The model contains a link outside its repository or to a folder.")
-            result[str(relative)] = ("link", os.readlink(path), str(resolved.relative_to(root)))
         elif stat.S_ISREG(info.st_mode):
             if path.name.endswith(".incomplete"):
                 raise ValueError("Complete or remove the partial model download before moving it.")
@@ -98,13 +140,19 @@ def move_repository(
     if destination.exists() or destination.is_symlink():
         raise ValueError("This destination already contains the model. Choose another folder.")
     manifest = _manifest(source)
-    total = sum(value[1] for value in manifest.values() if value[0] == "file")
+    total = sum(
+        value[1] if value[0] == "file" else value[3]
+        for value in manifest.values()
+        if value[0] in {"file", "shared_blob"}
+    )
     update(phase = "checking", total_bytes = total, completed_bytes = 0)
     _check_cancel(cancel)
     guard()
     # Rename on one filesystem is instantaneous and preserves links and metadata.
     if _same_filesystem(source, destination.parent) and not any(
-        value[0] == "link" and os.path.isabs(value[1]) for value in manifest.values()
+        value[0] == "shared_blob"
+        or (value[0] == "link" and os.path.isabs(value[1]))
+        for value in manifest.values()
     ):
         update(phase = "finishing")
         publish()
@@ -148,7 +196,9 @@ def move_repository(
             target.parent.mkdir(parents = True, exist_ok = True)
             if value[0] == "dir":
                 target.mkdir(exist_ok = True)
-            elif value[0] == "file" or (value[0] == "link" and not supports_links):
+            elif value[0] in {"file", "shared_blob"} or (
+                value[0] == "link" and not supports_links
+            ):
                 digest = hashlib.sha256()
                 with (source / name).open("rb") as reader, target.open("xb") as writer:
                     while chunk := reader.read(_CHUNK):
