@@ -5,8 +5,8 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 release_dir="$repo_root/release"
-app_version="0.1.800-mlx.31"
-backend_version="2026.8.19+mlxcompaction8.companion20.kaggletpu9.release31"
+app_version="0.1.800-mlx.32"
+backend_version="2026.8.19+mlxcompaction8.companion20.kaggletpu9.release32"
 rust_toolchain="1.89.0"
 wheel_name="unsloth-${backend_version}-py3-none-any.whl"
 resource_dir="$repo_root/studio/src-tauri/resources/backend"
@@ -259,7 +259,7 @@ import sys
 import zipfile
 with zipfile.ZipFile(sys.argv[1]) as wheel:
     checks = {
-        "studio/backend/hub/services/models/relocation.py": "def move_repository(",
+        "studio/backend/hub/services/models/relocation.py": '"shared_blob"',
         "studio/backend/utils/model_storage_activity.py": "def relocation_reservation(",
         "studio/backend/utils/hf_cache_settings.py": "def relocated_model_path(",
         "studio/backend/hub/routes/inventory.py": '@router.post("/move-cached",',
