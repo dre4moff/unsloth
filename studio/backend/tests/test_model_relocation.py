@@ -40,13 +40,19 @@ def run(
     *,
     cross = True,
     publish = lambda: None,
+    finalize = lambda: None,
     update = lambda **kw: None,
     cancel = None,
     guard = lambda: None,
 ):
     monkeypatch.setattr(move, "_same_filesystem", lambda *_: not cross)
     return move.move_repository(
-        *model, cancel = cancel or threading.Event(), update = update, publish = publish, guard = guard
+        *model,
+        cancel = cancel or threading.Event(),
+        update = update,
+        publish = publish,
+        finalize = finalize,
+        guard = guard,
     )
 
 
@@ -66,6 +72,31 @@ def test_cross_disk_verifies_preserves_links_and_removes_source(model, monkeypat
     assert published == [True]
     assert "verifying" in [u.get("phase") for u in updates]
     assert not list(dest.parent.glob(".unsloth-*"))
+
+
+def test_finalize_runs_after_verified_destination_is_published(model, monkeypatch):
+    source, destination = model
+    finalized = []
+
+    def finalize():
+        assert destination.is_dir()
+        assert source.is_dir()
+        finalized.append(True)
+
+    run(model, monkeypatch, finalize = finalize)
+    assert finalized == [True]
+    assert destination.is_dir()
+    assert not source.exists()
+
+
+def test_failed_verification_never_finalizes_restore_metadata(model, monkeypatch):
+    finalized = []
+    monkeypatch.setattr(move, "_digest", lambda *args, **kwargs: "not-the-copy-digest")
+    with pytest.raises(OSError, match = "verification failed"):
+        run(model, monkeypatch, finalize = lambda: finalized.append(True))
+    assert finalized == []
+    assert model[0].is_dir()
+    assert not model[1].exists()
 
 
 def test_same_disk_rename_does_not_copy(model, monkeypatch):
@@ -382,6 +413,42 @@ async def test_background_job_publishes_and_releases_repo(model, monkeypatch):
     assert not model[0].exists()
     assert published and reservations == ["org/model"]
     assert releases == [("org/model", owner_ref[0])]
+
+
+@_async_test
+async def test_restore_with_disconnected_disk_fails_before_changing_metadata(tmp_path, monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+    from hub.services.models import downloads
+    from hub.utils import hf_cache_state
+    from utils import hf_cache_settings
+
+    missing = tmp_path / "external" / "Unsloth Models" / "hub" / "models--org--model"
+
+    monkeypatch.setattr(
+        downloads,
+        "registry",
+        SimpleNamespace(
+            claim_repository_owner = lambda *args: (True, "owned"),
+            release_repository_owner = lambda *args: None,
+        ),
+    )
+    monkeypatch.setattr(move, "_jobs", {})
+    monkeypatch.setattr(move, "_assert_unloaded", lambda _: None)
+    monkeypatch.setattr(hf_cache_state, "iter_repo_cache_dirs", lambda *args: iter([]))
+    monkeypatch.setattr(hf_cache_settings, "relocated_model_repo_path", lambda _: missing)
+    monkeypatch.setattr(
+        hf_cache_settings,
+        "finish_model_storage_restore",
+        lambda *args: pytest.fail("restore metadata changed while the source disk was missing"),
+    )
+
+    result = await move.start_restore("org/model", "owner")
+    assert result["phase"] == "queued"
+    await asyncio.gather(*list(move._tasks))
+    result = move.status("org/model", "owner", "restore")
+    assert result["phase"] == "failed"
+    assert "Reconnect the disk" in result["error"]
 
 
 @_async_test

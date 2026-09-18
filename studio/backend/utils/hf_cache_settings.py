@@ -381,12 +381,137 @@ def remember_model_storage_home(
         upsert_app_settings(updates)
 
 
+def relocated_model_repo_path(model_id: str) -> Optional[Path]:
+    """Return the registered repository root for a model moved out of the default cache."""
+    from storage.studio_db import get_app_setting
+
+    locations = get_app_setting(MODEL_STORAGE_LOCATIONS_KEY, {})
+    raw = locations.get(model_id.casefold()) if isinstance(locations, dict) else None
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    try:
+        return _canonical(raw)
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def is_model_relocated(model_id: str) -> bool:
+    """Whether a moved-model registration currently points to an available repository."""
+    repo = relocated_model_repo_path(model_id)
+    return repo is not None and repo.is_dir()
+
+
+def model_storage_restore_destination(model_id: str, current_path: Path) -> Path:
+    """Recover the pre-move repository path, falling back to the active local Hub cache."""
+    from storage.studio_db import get_app_setting
+
+    current = _canonical(current_path)
+    redirects = get_app_setting(MODEL_STORAGE_REDIRECTS_KEY, {})
+    homes = get_app_setting(MODEL_STORAGE_HOMES_KEY, [])
+    external_homes: list[Path] = []
+    if isinstance(homes, list):
+        for raw in homes:
+            if not isinstance(raw, str) or not raw.strip():
+                continue
+            try:
+                external_homes.append(_canonical(raw))
+            except (OSError, RuntimeError, ValueError):
+                continue
+
+    prior: list[Path] = []
+    if isinstance(redirects, dict):
+        for source, target in redirects.items():
+            if not isinstance(source, str) or not isinstance(target, str):
+                continue
+            try:
+                if _canonical(target) != current:
+                    continue
+                candidate = _canonical(source)
+            except (OSError, RuntimeError, ValueError):
+                continue
+            if (
+                candidate == current
+                or candidate.name != current.name
+                or candidate.parent.name != "hub"
+            ):
+                continue
+            prior.append(candidate)
+            candidate_home = candidate.parent.parent
+            if candidate_home not in external_homes:
+                return candidate
+
+    fallback = _canonical(get_hf_cache_paths().hub_cache / current.name)
+    if fallback != current:
+        return fallback
+    if prior:
+        return prior[0]
+    raise ValueError("The model's original cache location could not be determined.")
+
+
+def finish_model_storage_restore(
+    model_id: str,
+    restored_path: Path,
+    previous_path: Path,
+) -> None:
+    """Publish a verified restore and retire its external-location registration."""
+    from storage.studio_db import get_app_setting, upsert_app_settings
+
+    restored = _canonical(restored_path)
+    previous = _canonical(previous_path)
+    with _settings_lock:
+        locations = get_app_setting(MODEL_STORAGE_LOCATIONS_KEY, {})
+        locations = dict(locations) if isinstance(locations, dict) else {}
+        locations.pop(model_id.casefold(), None)
+
+        redirects = get_app_setting(MODEL_STORAGE_REDIRECTS_KEY, {})
+        redirects = dict(redirects) if isinstance(redirects, dict) else {}
+        old, new = str(previous), str(restored)
+        redirects = {key: new if target == old else target for key, target in redirects.items()}
+        redirects.pop(new, None)  # The original path must not redirect to itself.
+        if old != new:
+            redirects[old] = new
+
+        homes = get_app_setting(MODEL_STORAGE_HOMES_KEY, [])
+        homes = [value for value in homes if isinstance(value, str)] if isinstance(homes, list) else []
+        old_home = previous.parent.parent if previous.parent.name == "hub" else None
+        if old_home is not None:
+            remaining = []
+            for raw in locations.values():
+                if not isinstance(raw, str):
+                    continue
+                try:
+                    remaining.append(_canonical(raw))
+                except (OSError, RuntimeError, ValueError):
+                    continue
+            kept_homes = []
+            for raw in homes:
+                try:
+                    home = _canonical(raw)
+                except (OSError, RuntimeError, ValueError):
+                    kept_homes.append(raw)
+                    continue
+                if home != old_home:
+                    kept_homes.append(raw)
+                    continue
+                hub = home / "hub"
+                if any(path == hub or path.is_relative_to(hub) for path in remaining):
+                    kept_homes.append(raw)
+            homes = kept_homes
+
+        upsert_app_settings(
+            {
+                MODEL_STORAGE_HOMES_KEY: homes,
+                MODEL_STORAGE_LOCATIONS_KEY: locations,
+                MODEL_STORAGE_REDIRECTS_KEY: redirects,
+            }
+        )
+
+
 def relocated_model_path(model_id: str) -> Optional[Path]:
     """Resolve moved repo IDs locally; an unplugged disk must not redownload GBs."""
     from storage.studio_db import get_app_setting
-    locations = get_app_setting(MODEL_STORAGE_LOCATIONS_KEY, {})
-    raw = locations.get(model_id.casefold()) if isinstance(locations, dict) else None
-    if not isinstance(raw, str):
+    repo = relocated_model_repo_path(model_id)
+    if repo is None:
         redirects = get_app_setting(MODEL_STORAGE_REDIRECTS_KEY, {})
         if not isinstance(redirects, dict) or not Path(model_id).is_absolute():
             return None
@@ -405,7 +530,6 @@ def relocated_model_path(model_id: str) -> Optional[Path]:
                 return None  # original retained after an interrupted commit
             raise ValueError("The disk containing this model is unavailable. Reconnect it before loading the model.")
         return None
-    repo = Path(raw)
     if not repo.is_dir():
         # The registration is persisted before commit. A failed commit may
         # still have the original, which remains a valid local fallback.

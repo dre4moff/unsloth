@@ -155,6 +155,7 @@ def move_repository(
     cancel: threading.Event,
     update,
     publish,
+    finalize = lambda: None,
     guard = lambda: None,
 ) -> None:
     """Filesystem transaction, also used directly by the fault-injection tests."""
@@ -186,6 +187,11 @@ def move_repository(
         update(phase = "finishing")
         publish()
         source.rename(destination)
+        try:
+            finalize()
+        except Exception:
+            destination.rename(source)
+            raise
         update(completed_bytes = total)
         return
     # Test symlink support before calculating required space. exFAT does not
@@ -262,6 +268,11 @@ def move_repository(
             raise ValueError("The destination appeared during the move; nothing was overwritten.")
         stage.rename(destination)
         try:
+            finalize()
+        except Exception:
+            shutil.rmtree(destination)
+            raise
+        try:
             shutil.rmtree(source)
         except OSError:
             update(
@@ -279,10 +290,14 @@ def move_repository(
             shutil.rmtree(stage)
 
 
-def status(repo_id: str, subject: str) -> dict | None:
+def status(repo_id: str, subject: str, operation: str | None = None) -> dict | None:
     with _lock:
         job = _jobs.get(repo_id.casefold())
-        if not job or job["subject"] != subject:
+        if (
+            not job
+            or job["subject"] != subject
+            or (operation is not None and job.get("operation") != operation)
+        ):
             return None
         return {key: value for key, value in job.items() if key not in {"cancel", "subject"}}
 
@@ -319,6 +334,14 @@ def _assert_unloaded(repo_id: str):
 
 
 async def start_move(repo_id: str, folder: str, subject: str) -> dict:
+    return await _start(repo_id, subject, folder = folder, restoring = False)
+
+
+async def start_restore(repo_id: str, subject: str) -> dict:
+    return await _start(repo_id, subject, folder = None, restoring = True)
+
+
+async def _start(repo_id: str, subject: str, *, folder: str | None, restoring: bool) -> dict:
     from hub.utils.paths import is_valid_repo_id
     from hub.services.models import downloads
 
@@ -347,19 +370,26 @@ async def start_move(repo_id: str, folder: str, subject: str) -> dict:
             warning = None,
             cancel = threading.Event(),
             subject = subject,
+            operation = "restore" if restoring else "move",
         )
-    task = asyncio.create_task(_run(repo_id, folder, subject, owner))
+    task = asyncio.create_task(_run(repo_id, folder, subject, owner, restoring))
     _tasks.add(task)
     task.add_done_callback(_tasks.discard)
     return status(repo_id, subject)
 
 
-async def _run(repo_id: str, folder: str, subject: str, owner):
+async def _run(repo_id: str, folder: str | None, subject: str, owner, restoring: bool):
     from core.inference.llama_keepwarm import inference_lifecycle_gate
     from hub.services.models import downloads
     from hub.utils.hf_cache_state import iter_repo_cache_dirs
     from hub.utils.inventory_scan import invalidate_hf_cache_scans
-    from utils.hf_cache_settings import _validate_cache_home, remember_model_storage_home
+    from utils.hf_cache_settings import (
+        _validate_cache_home,
+        finish_model_storage_restore,
+        model_storage_restore_destination,
+        relocated_model_repo_path,
+        remember_model_storage_home,
+    )
     from utils.model_storage_activity import relocation_reservation
 
     key = repo_id.casefold()
@@ -373,12 +403,39 @@ async def _run(repo_id: str, folder: str, subject: str, owner):
     def work():
         update(phase = "checking")
         _assert_unloaded(repo_id)
+        registered = None
+        if restoring:
+            registered = relocated_model_repo_path(repo_id)
+            if registered is None:
+                raise ValueError("This model is already in its original cache location.")
+            if not registered.is_dir():
+                raise ValueError("Reconnect the disk containing this model before restoring it.")
+            registered = registered.resolve()
         sources = list(
             dict.fromkeys(path.resolve() for path in iter_repo_cache_dirs("model", repo_id))
         )
         if len(sources) != 1:
             raise ValueError("The model must have exactly one available cached copy to move it.")
         source = sources[0]
+        if restoring:
+            assert registered is not None
+            if source != registered:
+                raise ValueError("The relocated model location does not match the available cached copy.")
+            destination = model_storage_restore_destination(repo_id, source)
+            destination.parent.mkdir(parents = True, exist_ok = True)
+            update(destination = str(destination))
+            move_repository(
+                source,
+                destination,
+                cancel = _jobs[key]["cancel"],
+                update = update,
+                publish = lambda: None,
+                finalize = lambda: finish_model_storage_restore(repo_id, destination, source),
+                guard = lambda: _assert_unloaded(repo_id),
+            )
+            return
+
+        assert folder is not None
         selected = Path(folder).expanduser()
         if not selected.is_absolute() or not selected.is_dir():
             raise ValueError("Connect the destination disk and select an existing folder.")

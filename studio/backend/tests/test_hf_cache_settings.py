@@ -364,3 +364,34 @@ def test_old_chat_paths_follow_multiple_moves(settings_store, tmp_path):
     hf_cache_settings.remember_model_storage_home(final.parent.parent, "org/model", final, first)
     assert hf_cache_settings.relocated_model_path(str(old / "snapshots/revision")) == snapshot
     assert hf_cache_settings.relocated_model_path(str(first / "snapshots/revision")) == snapshot
+
+
+def test_restore_recovers_original_path_and_retires_external_registration(settings_store, tmp_path):
+    original = tmp_path / "local" / "hub" / "models--org--model"
+    external_home = tmp_path / "external" / "Unsloth Models"
+    external = external_home / "hub" / original.name
+    (external / "snapshots" / "revision").mkdir(parents = True)
+
+    hf_cache_settings.remember_model_storage_home(
+        external_home,
+        "org/model",
+        external,
+        original,
+    )
+    assert hf_cache_settings.relocated_model_repo_path("ORG/MODEL") == external
+    assert hf_cache_settings.is_model_relocated("org/model") is True
+    assert hf_cache_settings.model_storage_restore_destination("org/model", external) == original
+
+    hf_cache_settings.finish_model_storage_restore("org/model", original, external)
+    locations = settings_store[hf_cache_settings.MODEL_STORAGE_LOCATIONS_KEY]
+    redirects = settings_store[hf_cache_settings.MODEL_STORAGE_REDIRECTS_KEY]
+    homes = settings_store[hf_cache_settings.MODEL_STORAGE_HOMES_KEY]
+    assert "org/model" not in locations
+    assert str(external_home.resolve()) not in homes
+    assert redirects[str(external.resolve())] == str(original.resolve())
+    assert str(original.resolve()) not in redirects
+
+    snapshot = original / "snapshots" / "revision"
+    snapshot.mkdir(parents = True)
+    assert hf_cache_settings.relocated_model_path("org/model") is None
+    assert hf_cache_settings.relocated_model_path(str(external / "snapshots/revision")) == snapshot

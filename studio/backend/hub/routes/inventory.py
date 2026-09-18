@@ -263,6 +263,10 @@ class MoveCachedModelRequest(BaseModel):
     folder: str
 
 
+class RestoreCachedModelRequest(BaseModel):
+    repo_id: str
+
+
 @router.post("/move-cached", status_code = 202)
 async def move_cached_model(
     body: MoveCachedModelRequest,
@@ -277,7 +281,36 @@ async def move_cached_model(
 @router.get("/move-cached")
 def model_move_status(repo_id: str = Query(...), current_subject: str = Depends(get_current_subject)):
     from hub.services.models.relocation import status
-    return status(repo_id, current_subject)
+    return status(repo_id, current_subject, "move")
+
+
+@router.get("/move-cached/relocated")
+def model_relocated_status(repo_id: str = Query(...), current_subject: str = Depends(get_current_subject)):
+    from utils.hf_cache_settings import is_model_relocated
+
+    return {"relocated": is_model_relocated(repo_id)}
+
+
+@router.post("/move-cached/restore", status_code = 202)
+async def restore_cached_model(
+    body: RestoreCachedModelRequest,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
+    require_ui_session(via_api_key)
+    from hub.services.models.relocation import start_restore
+
+    return await start_restore(body.repo_id, current_subject)
+
+
+@router.get("/move-cached/restore")
+def model_restore_status(
+    repo_id: str = Query(...),
+    current_subject: str = Depends(get_current_subject),
+):
+    from hub.services.models.relocation import status
+
+    return status(repo_id, current_subject, "restore")
 
 
 @router.post("/move-cached/cancel")
@@ -288,4 +321,16 @@ def cancel_model_move(
 ):
     require_ui_session(via_api_key)
     from hub.services.models.relocation import cancel_move
+    return cancel_move(repo_id, current_subject)
+
+
+@router.post("/move-cached/restore/cancel")
+def cancel_model_restore(
+    repo_id: str = Query(...),
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
+    require_ui_session(via_api_key)
+    from hub.services.models.relocation import cancel_move
+
     return cancel_move(repo_id, current_subject)

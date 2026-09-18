@@ -40,6 +40,17 @@ type Move = {
 const active = (move: Move | null) =>
   move !== null && !["completed", "cancelled", "failed"].includes(move.phase);
 
+const restorePhaseKeys = {
+  queued: "modelStorage.restoreQueued",
+  checking: "modelStorage.restoreChecking",
+  copying: "modelStorage.restoreCopying",
+  verifying: "modelStorage.restoreVerifying",
+  finishing: "modelStorage.restoreFinishing",
+  completed: "modelStorage.restoreCompleted",
+  cancelled: "modelStorage.restoreCancelled",
+  failed: "modelStorage.restoreFailed",
+} as const;
+
 async function requestMove(
   url: string,
   init?: RequestInit,
@@ -56,12 +67,15 @@ export function ModelMoveDialog({
   repoId,
   open,
   onOpenChange,
+  mode = "move",
 }: {
   repoId: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  mode?: "move" | "restore";
 }) {
   const t = useT();
+  const restoring = mode === "restore";
   const [folder, setFolder] = useState("");
   const [browserOpen, setBrowserOpen] = useState(false);
   const [move, setMove] = useState<Move | null>(null);
@@ -69,7 +83,10 @@ export function ModelMoveDialog({
   const [pending, setPending] = useState(false);
   const [loading, setLoading] = useState(true);
   const refreshed = useRef(false);
-  const url = `/api/hub/move-cached?repo_id=${encodeURIComponent(repoId)}`;
+  const operationUrl = restoring
+    ? "/api/hub/move-cached/restore"
+    : "/api/hub/move-cached";
+  const url = `${operationUrl}?repo_id=${encodeURIComponent(repoId)}`;
   const busy = active(move) || pending;
   useEffect(() => {
     if (!open) return;
@@ -123,10 +140,12 @@ export function ModelMoveDialog({
     refreshed.current = false;
     try {
       setMove(
-        await requestMove("/api/hub/move-cached", {
+        await requestMove(operationUrl, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ repo_id: repoId, folder }),
+          body: JSON.stringify(
+            restoring ? { repo_id: repoId } : { repo_id: repoId, folder },
+          ),
         }),
       );
     } catch (err) {
@@ -140,7 +159,7 @@ export function ModelMoveDialog({
     try {
       setMove(
         await requestMove(
-          `/api/hub/move-cached/cancel?repo_id=${encodeURIComponent(repoId)}`,
+          `${operationUrl}/cancel?repo_id=${encodeURIComponent(repoId)}`,
           { method: "POST" },
         ),
       );
@@ -158,34 +177,59 @@ export function ModelMoveDialog({
           onClick={(event) => event.stopPropagation()}
         >
           <DialogHeader>
-            <DialogTitle>{t("modelStorage.title")}</DialogTitle>
+            <DialogTitle>
+              {t(
+                restoring
+                  ? "modelStorage.restoreTitle"
+                  : "modelStorage.title",
+              )}
+            </DialogTitle>
             <DialogDescription>
-              {t("modelStorage.description", { model: repoId })}
+              {t(
+                restoring
+                  ? "modelStorage.restoreDescription"
+                  : "modelStorage.description",
+                { model: repoId },
+              )}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3 text-sm">
-            <p>{t("modelStorage.memory")}</p>
-            <p className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3">
-              {t("modelStorage.warning")}
-            </p>
-            <p className="text-muted-foreground">
-              {t("modelStorage.keepConnected")}
-            </p>
-            <Button
-              variant="outline"
-              disabled={busy || loading}
-              onClick={() => void choose()}
-            >
-              {t("modelStorage.choose")}
-            </Button>
-            {folder && (
-              <p className="break-all font-mono text-xs">
-                {folder}/Unsloth Models
+            {restoring ? (
+              <p className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3">
+                {t("modelStorage.restoreWarning")}
               </p>
+            ) : (
+              <>
+                <p>{t("modelStorage.memory")}</p>
+                <p className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3">
+                  {t("modelStorage.warning")}
+                </p>
+                <p className="text-muted-foreground">
+                  {t("modelStorage.keepConnected")}
+                </p>
+                <Button
+                  variant="outline"
+                  disabled={busy || loading}
+                  onClick={() => void choose()}
+                >
+                  {t("modelStorage.choose")}
+                </Button>
+                {folder && (
+                  <p className="break-all font-mono text-xs">
+                    {folder}/Unsloth Models
+                  </p>
+                )}
+              </>
             )}
             {move && (
               <div aria-live="polite" className="space-y-2">
-                <p>{t(`modelStorage.${move.phase}`)}</p>
+                <p>
+                  {t(
+                    restoring
+                      ? restorePhaseKeys[move.phase]
+                      : `modelStorage.${move.phase}`,
+                  )}
+                </p>
                 {active(move) && (
                   <Progress
                     value={
@@ -234,26 +278,32 @@ export function ModelMoveDialog({
               </Button>
             ) : (
               <Button
-                disabled={!folder || loading}
+                disabled={loading || (!restoring && !folder)}
                 onClick={() => void start()}
               >
-                {t("modelStorage.action")}
+                {t(
+                  restoring
+                    ? "modelStorage.restoreAction"
+                    : "modelStorage.action",
+                )}
               </Button>
             )}
           </DialogFooter>
         </DialogContent>
       </Dialog>
-      <FolderBrowser
-        open={browserOpen}
-        onOpenChange={setBrowserOpen}
-        onSelect={(path) => {
-          setFolder(path);
-          setError(null);
-          setBrowserOpen(false);
-        }}
-        title={t("modelStorage.choose")}
-        showModelHints={false}
-      />
+      {!restoring && (
+        <FolderBrowser
+          open={browserOpen}
+          onOpenChange={setBrowserOpen}
+          onSelect={(path) => {
+            setFolder(path);
+            setError(null);
+            setBrowserOpen(false);
+          }}
+          title={t("modelStorage.choose")}
+          showModelHints={false}
+        />
+      )}
     </>
   );
 }

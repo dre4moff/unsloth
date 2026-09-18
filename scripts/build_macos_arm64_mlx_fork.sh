@@ -5,8 +5,8 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 release_dir="$repo_root/release"
-app_version="0.1.800-mlx.33"
-backend_version="2026.8.19+mlxcompaction8.companion20.kaggletpu9.release33"
+app_version="0.1.800-mlx.34"
+backend_version="2026.8.19+mlxcompaction8.companion20.kaggletpu9.release34"
 rust_toolchain="1.89.0"
 wheel_name="unsloth-${backend_version}-py3-none-any.whl"
 resource_dir="$repo_root/studio/src-tauri/resources/backend"
@@ -265,8 +265,8 @@ with zipfile.ZipFile(sys.argv[1]) as wheel:
             raise SystemExit("Shared-blob relocation cleanup missing from wheel")
     checks = {
         "studio/backend/utils/model_storage_activity.py": "def relocation_reservation(",
-        "studio/backend/utils/hf_cache_settings.py": "def relocated_model_path(",
-        "studio/backend/hub/routes/inventory.py": '@router.post("/move-cached",',
+        "studio/backend/utils/hf_cache_settings.py": "def finish_model_storage_restore(",
+        "studio/backend/hub/routes/inventory.py": '@router.post("/move-cached/restore",',
     }
     for path, marker in checks.items():
         if marker not in wheel.read(path).decode():

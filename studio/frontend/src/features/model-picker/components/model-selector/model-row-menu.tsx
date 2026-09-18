@@ -13,6 +13,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { usePlatformStore } from "@/config/env";
+import { authFetch } from "@/features/auth";
 import { revealCachedModel } from "@/features/chat";
 import {
   DeleteConfirmDialog,
@@ -33,7 +34,7 @@ import {
   Settings02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { RefreshCw, HardDrive } from "lucide-react";
+import { RefreshCw, HardDrive, RotateCcw } from "lucide-react";
 import { useT } from "@/i18n";
 import { ModelMoveDialog } from "./model-move-dialog";
 import {
@@ -108,6 +109,8 @@ export function ModelRowMenu({
 }) {
   const t = useT();
   const [moveOpen, setMoveOpen] = useState(false);
+  const [restoreOpen, setRestoreOpen] = useState(false);
+  const [relocated, setRelocated] = useState(false);
   const deviceType = usePlatformStore((s) => s.deviceType);
   const revealLabel =
     deviceType === "mac" ? "Reveal in Finder" : "Reveal in Folder";
@@ -184,11 +187,32 @@ export function ModelRowMenu({
     });
   }, [cachePathRepoId, cachePathVariant]);
 
+  const refreshRelocated = useCallback(async () => {
+    if (!cachePathRepoId) {
+      setRelocated(false);
+      return;
+    }
+    try {
+      const response = await authFetch(
+        `/api/hub/move-cached/relocated?repo_id=${encodeURIComponent(cachePathRepoId)}`,
+      );
+      if (!response.ok) return;
+      const body = (await response.json()) as { relocated?: boolean };
+      setRelocated(Boolean(body.relocated));
+    } catch {
+      // The menu can still expose the normal cache actions if this probe fails.
+    }
+  }, [cachePathRepoId]);
+
   if (!pin && !update && !del && !cachePath && !settings) return null;
 
   return (
     <>
-      <DropdownMenu>
+      <DropdownMenu
+        onOpenChange={(nextOpen) => {
+          if (nextOpen) void refreshRelocated();
+        }}
+      >
         <DropdownMenuTrigger asChild={true}>
           <button
             type="button"
@@ -270,6 +294,18 @@ export function ModelRowMenu({
               <span>{t("modelStorage.menu")}</span>
             </DropdownMenuItem>
           )}
+          {cachePath && relocated && (
+            <DropdownMenuItem
+              disabled={del?.disabled || update?.disabled}
+              onSelect={(event) => {
+                event.stopPropagation();
+                setRestoreOpen(true);
+              }}
+            >
+              <RotateCcw className="size-icon" />
+              <span>{t("modelStorage.restoreMenu")}</span>
+            </DropdownMenuItem>
+          )}
           {update && (
             <DropdownMenuItem
               disabled={update.disabled}
@@ -310,6 +346,15 @@ export function ModelRowMenu({
           repoId={cachePath.repoId}
           open={moveOpen}
           onOpenChange={setMoveOpen}
+        />
+      )}
+
+      {cachePath && (
+        <ModelMoveDialog
+          repoId={cachePath.repoId}
+          open={restoreOpen}
+          onOpenChange={setRestoreOpen}
+          mode="restore"
         />
       )}
 
