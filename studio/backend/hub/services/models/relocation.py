@@ -119,6 +119,35 @@ def _same_filesystem(source: Path, parent: Path) -> bool:
     return source.stat().st_dev == parent.stat().st_dev
 
 
+def _sweep_materialized_shared_blobs(manifest: dict, cache_dir: Path) -> tuple[int, bool]:
+    """Collect shared-store payloads that became orphaned after a successful move.
+
+    Hugging Face owns the shared-store layout and its per-blob locks/reference
+    manifests, so delegate the final reference validation to its collector. A
+    blob still referenced by another cached repository is retained.
+    """
+    store_paths = {
+        Path(value[2])
+        for value in manifest.values()
+        if value[0] == "shared_blob"
+    }
+    if not store_paths:
+        return 0, False
+    try:
+        from huggingface_hub.utils import _shared_blobs
+    except (ImportError, AttributeError):
+        return 0, True
+
+    reclaimed = 0
+    failed = False
+    for store_path in store_paths:
+        try:
+            reclaimed += _shared_blobs.sweep_shared_blob(store_path, cache_dir = cache_dir)
+        except (OSError, RuntimeError, ValueError):
+            failed = True
+    return reclaimed, failed
+
+
 def move_repository(
     source: Path,
     destination: Path,
@@ -239,6 +268,12 @@ def move_repository(
                 warning = "The model was copied and verified, but the original could not be fully removed. "
                 f"You can remove the remaining copy at {source} after checking the destination."
             )
+        else:
+            _reclaimed, gc_failed = _sweep_materialized_shared_blobs(manifest, source.parent)
+            if gc_failed:
+                update(
+                    warning = "The model was moved, but some unused shared cache files could not be removed safely."
+                )
     finally:
         if stage.exists():
             shutil.rmtree(stage)

@@ -5,8 +5,8 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 release_dir="$repo_root/release"
-app_version="0.1.800-mlx.32"
-backend_version="2026.8.19+mlxcompaction8.companion20.kaggletpu9.release32"
+app_version="0.1.800-mlx.33"
+backend_version="2026.8.19+mlxcompaction8.companion20.kaggletpu9.release33"
 rust_toolchain="1.89.0"
 wheel_name="unsloth-${backend_version}-py3-none-any.whl"
 resource_dir="$repo_root/studio/src-tauri/resources/backend"
@@ -40,6 +40,7 @@ fi
 echo "Using macOS SDK: $macos_sdk"
 
 python3 -m py_compile \
+    "$repo_root/studio/backend/hub/services/models/relocation.py" \
     "$repo_root/studio/backend/core/companion/manager.py" \
     "$repo_root/studio/backend/core/inference/inference.py" \
     "$repo_root/studio/backend/core/inference/kaggle_tpu.py" \
@@ -258,8 +259,11 @@ python3 - "$resource_wheel" <<'PYVERIFY'
 import sys
 import zipfile
 with zipfile.ZipFile(sys.argv[1]) as wheel:
+    relocation = wheel.read("studio/backend/hub/services/models/relocation.py").decode()
+    for marker in ('"shared_blob"', "sweep_shared_blob"):
+        if marker not in relocation:
+            raise SystemExit("Shared-blob relocation cleanup missing from wheel")
     checks = {
-        "studio/backend/hub/services/models/relocation.py": '"shared_blob"',
         "studio/backend/utils/model_storage_activity.py": "def relocation_reservation(",
         "studio/backend/utils/hf_cache_settings.py": "def relocated_model_path(",
         "studio/backend/hub/routes/inventory.py": '@router.post("/move-cached",',

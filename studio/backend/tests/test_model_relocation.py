@@ -147,9 +147,15 @@ def test_escaping_link_is_rejected(model, monkeypatch, tmp_path):
 @pytest.mark.parametrize("cross", [False, True])
 def test_shared_hub_blob_is_materialized_on_move(model, monkeypatch, cross):
     source, dest = model
-    shared = source.parent / "blobs" / "aa" / "shared-weight"
+    xet_hash = "a" * 64
+    shared_root = source.parent / "blobs"
+    (shared_root / ".huggingface-shared-blobs").parent.mkdir(parents = True, exist_ok = True)
+    (shared_root / ".huggingface-shared-blobs").write_text("1\n")
+    shared = shared_root / xet_hash[:2] / xet_hash
     shared.parent.mkdir(parents = True)
     shared.write_bytes(b"shared" * 4096)
+    manifest = shared.with_name(f"{xet_hash}.refs")
+    manifest.write_text(f"{source.name}/blobs/weights\n")
     repo_blob = source / "blobs" / "weights"
     repo_blob.unlink()
     repo_blob.symlink_to(shared)
@@ -161,7 +167,86 @@ def test_shared_hub_blob_is_materialized_on_move(model, monkeypatch, cross):
     assert moved_blob.is_file() and not moved_blob.is_symlink()
     assert (dest / "snapshots/revision/model.gguf").is_symlink()
     assert (dest / "snapshots/revision/model.gguf").read_bytes() == b"shared" * 4096
-    assert shared.read_bytes() == b"shared" * 4096
+    assert not shared.exists()
+    assert not manifest.exists()
+
+
+def test_shared_blob_gc_runs_only_after_source_removal(model, monkeypatch):
+    source, _dest = model
+    shared = source.parent / "blobs" / "aa" / "shared-weight"
+    shared.parent.mkdir(parents = True)
+    shared.write_bytes(b"shared" * 4096)
+    repo_blob = source / "blobs" / "weights"
+    repo_blob.unlink()
+    repo_blob.symlink_to(shared)
+    swept = []
+
+    monkeypatch.setattr(
+        move,
+        "_sweep_materialized_shared_blobs",
+        lambda manifest, cache_dir: swept.append((manifest, cache_dir)) or (0, False),
+    )
+    run(model, monkeypatch)
+
+    assert not source.exists()
+    assert len(swept) == 1
+    assert swept[0][1] == source.parent
+
+
+def test_shared_blob_gc_retains_blob_used_by_another_repo(model, monkeypatch):
+    source, dest = model
+    xet_hash = "b" * 64
+    shared_root = source.parent / "blobs"
+    shared_root.mkdir(parents = True, exist_ok = True)
+    (shared_root / ".huggingface-shared-blobs").write_text("1\n")
+    shared = shared_root / xet_hash[:2] / xet_hash
+    shared.parent.mkdir(parents = True)
+    shared.write_bytes(b"shared" * 4096)
+
+    repo_blob = source / "blobs" / "weights"
+    repo_blob.unlink()
+    repo_blob.symlink_to(shared)
+
+    other_blob = source.parent / "models--org--other" / "blobs" / "weights"
+    other_blob.parent.mkdir(parents = True)
+    other_blob.symlink_to(shared)
+    manifest = shared.with_name(f"{xet_hash}.refs")
+    manifest.write_text(
+        f"{source.name}/blobs/weights\n"
+        "models--org--other/blobs/weights\n"
+    )
+
+    run(model, monkeypatch)
+
+    assert not source.exists()
+    assert (dest / "blobs/weights").is_file()
+    assert shared.is_file()
+    assert other_blob.read_bytes() == b"shared" * 4096
+    assert manifest.read_text() == "models--org--other/blobs/weights\n"
+
+
+def test_shared_blob_gc_is_skipped_when_source_cleanup_fails(model, monkeypatch):
+    source, _dest = model
+    shared = source.parent / "blobs" / "aa" / "shared-weight"
+    shared.parent.mkdir(parents = True)
+    shared.write_bytes(b"shared" * 4096)
+    repo_blob = source / "blobs" / "weights"
+    repo_blob.unlink()
+    repo_blob.symlink_to(shared)
+    original = move.shutil.rmtree
+
+    def fail_source(path, *args, **kwargs):
+        if path == source:
+            raise PermissionError("read only")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(move.shutil, "rmtree", fail_source)
+    monkeypatch.setattr(
+        move,
+        "_sweep_materialized_shared_blobs",
+        lambda *_: pytest.fail("shared blob GC must wait for source removal"),
+    )
+    run(model, monkeypatch)
 
 
 def test_exfat_materializes_links(model, monkeypatch):
