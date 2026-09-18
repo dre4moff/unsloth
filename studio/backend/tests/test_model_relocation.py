@@ -3,6 +3,7 @@
 
 import asyncio
 import functools
+import shutil
 import threading
 from pathlib import Path
 
@@ -97,6 +98,42 @@ def test_failed_verification_never_finalizes_restore_metadata(model, monkeypatch
     assert finalized == []
     assert model[0].is_dir()
     assert not model[1].exists()
+
+
+def test_restore_accepts_verified_existing_original_copy(model, monkeypatch):
+    source, destination = model
+    shutil.copytree(source, destination, symlinks = True)
+    finalized = []
+    updates = []
+    move.restore_repository(
+        source,
+        destination,
+        cancel = threading.Event(),
+        update = lambda **kw: updates.append(kw),
+        finalize = lambda: finalized.append(True),
+    )
+    assert finalized == [True]
+    assert destination.is_dir()
+    assert not source.exists()
+    assert "verifying" in [entry.get("phase") for entry in updates]
+
+
+def test_restore_refuses_different_existing_original_copy(model, monkeypatch):
+    source, destination = model
+    shutil.copytree(source, destination, symlinks = True)
+    (destination / "blobs" / "weights").write_bytes(b"different")
+    finalized = []
+    with pytest.raises(ValueError, match = "different or incomplete copy"):
+        move.restore_repository(
+            source,
+            destination,
+            cancel = threading.Event(),
+            update = lambda **kw: None,
+            finalize = lambda: finalized.append(True),
+        )
+    assert finalized == []
+    assert source.is_dir()
+    assert destination.is_dir()
 
 
 def test_same_disk_rename_does_not_copy(model, monkeypatch):
@@ -449,6 +486,55 @@ async def test_restore_with_disconnected_disk_fails_before_changing_metadata(tmp
     result = move.status("org/model", "owner", "restore")
     assert result["phase"] == "failed"
     assert "Reconnect the disk" in result["error"]
+
+
+@_async_test
+async def test_restore_uses_registered_source_even_when_another_cached_copy_exists(model, monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+    from hub.services.models import downloads
+    from hub.utils import hf_cache_state
+    from utils import hf_cache_settings
+
+    source, destination = model
+    shutil.copytree(source, destination, symlinks = True)
+    finalized = []
+
+    monkeypatch.setattr(
+        downloads,
+        "registry",
+        SimpleNamespace(
+            claim_repository_owner = lambda *args: (True, "owned"),
+            release_repository_owner = lambda *args: None,
+        ),
+    )
+    monkeypatch.setattr(move, "_jobs", {})
+    monkeypatch.setattr(move, "_assert_unloaded", lambda _: None)
+    monkeypatch.setattr(
+        hf_cache_state,
+        "iter_repo_cache_dirs",
+        lambda *args: pytest.fail("restore must not scan all cached copies"),
+    )
+    monkeypatch.setattr(hf_cache_settings, "relocated_model_repo_path", lambda _: source)
+    monkeypatch.setattr(
+        hf_cache_settings,
+        "model_storage_restore_destination",
+        lambda *args: destination,
+    )
+    monkeypatch.setattr(
+        hf_cache_settings,
+        "finish_model_storage_restore",
+        lambda *args: finalized.append(args),
+    )
+
+    result = await move.start_restore("org/model", "owner")
+    assert result["phase"] == "queued"
+    await asyncio.gather(*list(move._tasks))
+    result = move.status("org/model", "owner", "restore")
+    assert result["phase"] == "completed", result
+    assert finalized
+    assert destination.is_dir()
+    assert not source.exists()
 
 
 @_async_test

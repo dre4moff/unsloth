@@ -5,8 +5,8 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 release_dir="$repo_root/release"
-app_version="0.1.800-mlx.34"
-backend_version="2026.8.19+mlxcompaction8.companion20.kaggletpu9.release34"
+app_version="0.1.800-mlx.35"
+backend_version="2026.8.19+mlxcompaction8.companion20.kaggletpu9.release35"
 rust_toolchain="1.89.0"
 wheel_name="unsloth-${backend_version}-py3-none-any.whl"
 resource_dir="$repo_root/studio/src-tauri/resources/backend"

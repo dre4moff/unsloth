@@ -119,6 +119,29 @@ def _same_filesystem(source: Path, parent: Path) -> bool:
     return source.stat().st_dev == parent.stat().st_dev
 
 
+def _repository_content_signature(
+    root: Path,
+    cancel: threading.Event,
+    progress = None,
+) -> dict[str, tuple]:
+    """Compare repository contents independent of symlink/materialization layout."""
+    manifest = _manifest(root)
+    signature: dict[str, tuple] = {}
+    for name, value in manifest.items():
+        _check_cancel(cancel)
+        if value[0] == "dir":
+            signature[name] = ("dir",)
+            continue
+        path = root / name
+        try:
+            resolved = path.resolve(strict = True) if path.is_symlink() else path
+            size = resolved.stat().st_size
+        except OSError as exc:
+            raise ValueError("The cached model contains an unreadable file.") from exc
+        signature[name] = ("file", size, _digest(resolved, cancel, progress))
+    return signature
+
+
 def _sweep_materialized_shared_blobs(manifest: dict, cache_dir: Path) -> tuple[int, bool]:
     """Collect shared-store payloads that became orphaned after a successful move.
 
@@ -290,6 +313,86 @@ def move_repository(
             shutil.rmtree(stage)
 
 
+def restore_repository(
+    source: Path,
+    destination: Path,
+    *,
+    cancel: threading.Event,
+    update,
+    finalize,
+    guard = lambda: None,
+) -> None:
+    """Restore a registered external repository, accepting a verified local duplicate."""
+    source = source.resolve(strict = True)
+    destination = destination.resolve(strict = False)
+    if not destination.exists() and not destination.is_symlink():
+        move_repository(
+            source,
+            destination,
+            cancel = cancel,
+            update = update,
+            publish = lambda: None,
+            finalize = finalize,
+            guard = guard,
+        )
+        return
+
+    destination = destination.resolve(strict = True)
+    if (
+        destination == source
+        or destination.is_relative_to(source)
+        or source.is_relative_to(destination)
+    ):
+        raise ValueError("The model's original cache location resolves to its current location.")
+    if not destination.is_dir():
+        raise ValueError("The original cache location is occupied by another file.")
+
+    source_manifest = _manifest(source)
+    total = sum(
+        (source / name).stat().st_size
+        for name, value in source_manifest.items()
+        if value[0] != "dir"
+    )
+    update(phase = "checking", total_bytes = max(total * 2, 1), completed_bytes = 0)
+    _check_cancel(cancel)
+    guard()
+    completed = 0
+
+    def advance(size):
+        nonlocal completed
+        completed += size
+        update(completed_bytes = completed)
+
+    update(phase = "verifying")
+    source_signature = _repository_content_signature(source, cancel, advance)
+    destination_signature = _repository_content_signature(destination, cancel, advance)
+    if source_signature != destination_signature:
+        raise ValueError(
+            "The original cache location already contains a different or incomplete copy of this model. "
+            "Nothing was overwritten."
+        )
+    if _manifest(source) != source_manifest:
+        raise OSError("The external model changed during verification. It was kept.")
+    _check_cancel(cancel)
+    guard()
+    update(phase = "finishing")
+    finalize()
+    try:
+        shutil.rmtree(source)
+    except OSError:
+        update(
+            warning = "The local copy was verified and restored, but the external copy could not be fully removed. "
+            f"You can remove the remaining copy at {source}."
+        )
+    else:
+        _reclaimed, gc_failed = _sweep_materialized_shared_blobs(source_manifest, source.parent)
+        if gc_failed:
+            update(
+                warning = "The model was restored, but some unused shared cache files could not be removed safely."
+            )
+    update(completed_bytes = max(total * 2, 1))
+
+
 def status(repo_id: str, subject: str, operation: str | None = None) -> dict | None:
     with _lock:
         job = _jobs.get(repo_id.casefold())
@@ -403,37 +506,32 @@ async def _run(repo_id: str, folder: str | None, subject: str, owner, restoring:
     def work():
         update(phase = "checking")
         _assert_unloaded(repo_id)
-        registered = None
         if restoring:
             registered = relocated_model_repo_path(repo_id)
             if registered is None:
                 raise ValueError("This model is already in its original cache location.")
             if not registered.is_dir():
                 raise ValueError("Reconnect the disk containing this model before restoring it.")
-            registered = registered.resolve()
+            source = registered.resolve()
+            destination = model_storage_restore_destination(repo_id, source)
+            destination.parent.mkdir(parents = True, exist_ok = True)
+            update(destination = str(destination))
+            restore_repository(
+                source,
+                destination,
+                cancel = _jobs[key]["cancel"],
+                update = update,
+                finalize = lambda: finish_model_storage_restore(repo_id, destination, source),
+                guard = lambda: _assert_unloaded(repo_id),
+            )
+            return
+
         sources = list(
             dict.fromkeys(path.resolve() for path in iter_repo_cache_dirs("model", repo_id))
         )
         if len(sources) != 1:
             raise ValueError("The model must have exactly one available cached copy to move it.")
         source = sources[0]
-        if restoring:
-            assert registered is not None
-            if source != registered:
-                raise ValueError("The relocated model location does not match the available cached copy.")
-            destination = model_storage_restore_destination(repo_id, source)
-            destination.parent.mkdir(parents = True, exist_ok = True)
-            update(destination = str(destination))
-            move_repository(
-                source,
-                destination,
-                cancel = _jobs[key]["cancel"],
-                update = update,
-                publish = lambda: None,
-                finalize = lambda: finish_model_storage_restore(repo_id, destination, source),
-                guard = lambda: _assert_unloaded(repo_id),
-            )
-            return
 
         assert folder is not None
         selected = Path(folder).expanduser()
