@@ -105,8 +105,9 @@ def detect_wired_phone(existing: dict | None = None) -> dict | None:
         return None
     if int(platform.mac_ver()[0].split(".")[0] or 0) < 14:
         return None
-    # IOService includes the NCM network interface below each IOUSBHostDevice.
-    registry = plistlib.loads(_run(["/usr/sbin/ioreg", "-a", "-r", "-c", "IOUSBHostDevice"]))
+    # Include properties on every descendant: without -l ioreg prints BSD Name
+    # only on matched nodes, hiding the NCM interface below the USB device.
+    registry = plistlib.loads(_run(["/usr/sbin/ioreg", "-a", "-l", "-r", "-c", "IOUSBHostDevice"]))
     compatible = None
     for phone in usb_phones(registry):
         interface = phone["interface"]

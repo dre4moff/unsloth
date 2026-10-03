@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import plistlib
 import socket
 import struct
 import threading
@@ -56,6 +57,39 @@ def test_fast_hub_cannot_hide_a_slow_iphone():
 
 def test_usb_hyphenated_apple_serial_is_accepted():
     assert usb_phones(registry(serial="00008150-001E29A12669401C"))[0]["speedGbps"] == 10
+
+
+@pytest.mark.parametrize("speed,available", [(5, True), (4, False)])
+def test_discovery_includes_usb_network_descendant_properties(monkeypatch, speed, available):
+    monkeypatch.setattr(bb.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(bb.platform, "machine", lambda: "arm64")
+    monkeypatch.setattr(bb.platform, "mac_ver", lambda: ("27.0.1", (), ""))
+
+    def run(args, timeout=8):
+        if args[0].endswith("ioreg"):
+            tree = registry(speed)
+            if "-l" not in args:
+                # ioreg otherwise omits properties of non-matching descendants.
+                tree[0]["IORegistryEntryChildren"] = [{"IORegistryEntryName": "en8"}]
+            return plistlib.dumps(tree)
+        if args[0].endswith("ifconfig"):
+            assert args[1] == "en8"
+            return b"inet 169.254.1.1 netmask 0xffff0000\n"
+        if args[0].endswith("ping"):
+            assert args[1:3] == ["-b", "en8"]
+            return b"64 bytes from 169.254.1.2: icmp_seq=0\n"
+        if args[0].endswith("route"):
+            return b"interface: en8\n"
+        raise AssertionError(args)
+
+    monkeypatch.setattr(bb, "_run", run)
+    monkeypatch.setattr(bb, "phone_hello", lambda address, source: True)
+    monkeypatch.setattr(bb, "phone_command", lambda phone, command: {"tail_state": "down"})
+    phone = bb.detect_wired_phone()
+    assert (phone is not None) is available
+    if available:
+        assert phone["ready"] and phone["interface"] == "en8"
+        assert phone["speedGbps"] == 10
 
 
 @pytest.mark.parametrize("version,magic,length,expected", [(3, PATN, 72, True),
