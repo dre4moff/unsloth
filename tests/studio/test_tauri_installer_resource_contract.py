@@ -45,7 +45,10 @@ def test_each_bundle_ships_only_the_installer_it_runs() -> None:
     # AppImage finds, which is where Trojan:Script/Wacatac.B!ml landed.
     assert _bundled_resources("windows") == {"../../install.ps1": "install.ps1"}
     assert _bundled_resources("linux") == {"../../install.sh": "install.sh"}
-    assert _bundled_resources("macos") == {"../../install.sh": "install.sh"}
+    assert _bundled_resources("macos") == {
+        "../../install.sh": "install.sh",
+        "resources/backend/*": "backend/",
+    }
 
 
 def test_no_installer_resource_leaks_through_the_shared_config() -> None:

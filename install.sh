@@ -2739,6 +2739,28 @@ if ! command -v uv >/dev/null 2>&1 || ! _uv_version_ok uv; then
     fi
 fi
 
+# Match the backend's existing Studio cache default before the first uv venv/pip
+# operation. A global ~/.cache/uv can contain root-owned buckets after another
+# tool used sudo; an app repair must not depend on changing that shared cache.
+_configure_studio_uv_cache() {
+    [ "$OS" = "macos" ] || return 0
+    case "${UV_CACHE_DIR:-}" in
+        *[![:space:]]*) ;; # Preserve explicit cache paths, including spaces.
+        *) UV_CACHE_DIR="$STUDIO_HOME/cache/uv" ;;
+    esac
+    export UV_CACHE_DIR
+    if ! mkdir -p -- "$UV_CACHE_DIR"; then
+        tauri_log "ERROR" "Could not create the selected package cache: $UV_CACHE_DIR"
+        return 1
+    fi
+    _uv_cache_probe=$(mktemp "$UV_CACHE_DIR/.unsloth-write-check.XXXXXX") || {
+        tauri_log "ERROR" "Selected package cache is not writable: $UV_CACHE_DIR"
+        return 1
+    }
+    rm -f -- "$_uv_cache_probe"
+}
+_configure_studio_uv_cache || exit 1
+
 # ── Create venv (migrate old layout if possible, otherwise fresh) ──
 tauri_log "STEP" "Creating virtual environment"
 mkdir -p "$STUDIO_HOME"
