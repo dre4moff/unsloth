@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "updatedAt": "2026-08-29T00:00:00Z",
+  "models": [
+    {
+      "id": "gemma4-e2b-fast",
+      "displayName": "Gemma 4 E2B QAT Mobile",
+      "profile": "fast",
+      "source": "official",
+      "license": "apache-2.0",
+      "repository": "unsloth/gemma-4-E2B-it-qat-mobile-GGUF",
+      "revision": "46af839dc23aceb4b965ab640dae7fc1bea39bba",
+      "model": { "file": "gemma-4-E2B-it-qat-UD-Q2_K_XL.gguf", "size": 2186186784, "sha256": "0a5bbc20f91f92da96ab4870fa71b356c45b8500a7b8b9c3e0eb48359b72da28" },
+      "mmproj": { "file": "mmproj-F16.gguf", "size": 985654080, "sha256": "13c8966d1635d02e6727f27402880614906fa291850c07feda18dbcddf2291b6" },
+      "capabilities": ["text", "vision", "audio"]
+    },
+    {
+      "id": "gemma4-e4b-balanced",
+      "displayName": "Gemma 4 E4B QAT Mobile",
+      "profile": "balanced",
+      "source": "official",
+      "license": "apache-2.0",
+      "repository": "unsloth/gemma-4-E4B-it-qat-mobile-GGUF",
+      "revision": "6a6e7121b977cefd85daa8fbc538fa485e7e8b1b",
+      "model": { "file": "gemma-4-E4B-it-qat-UD-Q2_K_XL.gguf", "size": 3219532192, "sha256": "79dde517866cfbb5c00230b530de17910fc7fc78f8827554d0e14281ce5faf03" },
+      "mmproj": { "file": "mmproj-F16.gguf", "size": 990372672, "sha256": "6a255159ee4b01b304f633a57f017dd7d5a69d30fff52abb2614bf0813cef034" },
+      "capabilities": ["text", "vision", "audio"]
+    },
+    {
+      "id": "gemma4-e4b-deep",
+      "displayName": "Gemma 4 E4B QAT Deep",
+      "profile": "deep",
+      "source": "official",
+      "license": "apache-2.0",
+      "repository": "unsloth/gemma-4-E4B-it-qat-GGUF",
+      "revision": "8c5a9e4fd5482e2be20fe0bf013b4c262a8f4265",
+      "model": { "file": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf", "size": 4215695776, "sha256": "df0fd4ee07072c607c29a0a1cb4f98918426cca12f45a2776bdd6ee6d09a4de3" },
+      "mmproj": { "file": "mmproj-F16.gguf", "size": 990372672, "sha256": "6a255159ee4b01b304f633a57f017dd7d5a69d30fff52abb2614bf0813cef034" },
+      "capabilities": ["text", "vision", "audio"]
+    },
+    {
+      "id": "gemma4-e2b-community",
+      "displayName": "Gemma 4 E2B Heretic",
+      "profile": "community",
+      "source": "community",
+      "license": "apache-2.0",
+      "repository": "MobiusDevelopment/gemma4-E2B-it-qat-Q4-unsloth-heretic",
+      "revision": "66e776e56b2237c393f43bd3e8686c9c462bbc0f",
+      "model": { "file": "gemma4-E2B-it-qat-Q4_K_M-unsloth-heretic.gguf", "size": 3416118240, "sha256": "e9cf633c849ea2555377671db87f6d2a6939cf50140e10159a87dba960483a25" },
+      "mmproj": { "file": "mmproj-gemma4-E2B-it-unsloth-heretic.gguf", "size": 986833984, "sha256": "3e7d17b8242c75381c65931b792169884e0c828332415e8385f660ca7c413205" },
+      "capabilities": ["text", "vision", "audio"]
+    },
+    {
+      "id": "gemma4-e4b-community",
+      "displayName": "Gemma 4 E4B HauhauCS Aggressive",
+      "profile": "community",
+      "source": "community",
+      "license": "gemma",
+      "repository": "HauhauCS/Gemma-4-E4B-Uncensored-HauhauCS-Aggressive",
+      "revision": "45b6a334b4bcd1d7f37179df58b3b1d66a184e5d",
+      "model": { "file": "Gemma-4-E4B-Uncensored-HauhauCS-Aggressive-Q2_K_P.gguf", "size": 4431882208, "sha256": "1292d4767733de9e182a9bfd274d371103f0695cc0ca1f5f6678e5a855942d42" },
+      "mmproj": { "file": "mmproj-Gemma-4-E4B-Uncensored-HauhauCS-Aggressive-f16.gguf", "size": 990288832, "sha256": "debad39ab9c1152ab67695a674fb35e8375b2320c57bfd5075835d3ccb16c7db" },
+      "capabilities": ["text", "vision", "audio"]
+    }
+  ]
+}

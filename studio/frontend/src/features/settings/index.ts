@@ -2,6 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export { SettingsDialog } from "./settings-dialog";
+export { loadAccelerationStatus, loadCompanionStatus, prepareAcceleration, selectAccelerationMode } from "./api/companion";
+export type { AccelerationStatus, CompanionDevice, CompanionStatus } from "./api/companion";
 export { loadEmbeddingModelSettings } from "./api/embedding-model";
 export { loadOpenAIAutoSwitchSettings } from "./api/openai-auto-switch";
 export {

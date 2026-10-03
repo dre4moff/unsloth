@@ -29,6 +29,7 @@ struct Unsloth_CompanionApp: App {
                 .onReceive(NotificationCenter.default.publisher(for: .companionMemoryWarning)) { _ in appModel.service.memoryWarning() }
         }
         .onChange(of: scenePhase) { _, phase in
+            Task { await appModel.acceleration.sceneChanged(active: phase == .active) }
             switch phase {
             case .active: appModel.service.sceneDidBecomeActive()
             case .inactive: appModel.service.sceneWillResignActive()

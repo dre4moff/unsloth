@@ -16,6 +16,7 @@ final class CompanionAppModel: ObservableObject {
     @Published var isBusy = false
 
     let service = CompanionServiceModel()
+    let acceleration = BackburnerServiceModel()
     let downloads = ModelDownloadManager.shared
     private let storage = StorageBudgetManager.shared
     private let models = ModelStore.shared
@@ -59,6 +60,7 @@ final class CompanionAppModel: ObservableObject {
     }
 
     func load(_ model: InstalledModel) async {
+        guard !acceleration.selected else { return }
         isBusy = true; defer { isBusy = false }
         do {
             try await service.setLoadedModel(model)
@@ -127,6 +129,7 @@ final class CompanionAppModel: ObservableObject {
 
     func resetCompanion() async {
         isBusy = true; defer { isBusy = false }
+        await acceleration.setSelected(false, companion: service)
         await service.stop()
         await unloadModel()
         do {
@@ -141,5 +144,10 @@ final class CompanionAppModel: ObservableObject {
             try await downloads.bootstrap()
             try await refresh()
         } catch { presentedError = error.localizedDescription }
+    }
+
+    func selectAcceleration(_ selected: Bool) async {
+        await acceleration.setSelected(selected, companion: service)
+        loadedModelID = service.currentLoadedModel?.id
     }
 }

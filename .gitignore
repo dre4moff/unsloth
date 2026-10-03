@@ -209,6 +209,8 @@ resources/
 !studio/src-tauri/resources/
 !studio/src-tauri/resources/backend/
 !studio/src-tauri/resources/backend/.gitkeep
+!unsloth-companion/Unsloth Companion/Unsloth Companion/Resources/
+!unsloth-companion/Unsloth Companion/Unsloth Companion/Resources/**
 studio/src-tauri/resources/backend/*.whl
 tmp/
 **/node_modules/
@@ -243,6 +245,12 @@ package-lock.json
 !studio/backend/core/data_recipe/oxc-validator/package-lock.json
 !studio/package-lock.json
 llama.cpp/
+!studio/backend/vendor/backburner/llama.cpp/
+!studio/backend/vendor/backburner/llama.cpp/**
+# Generated pinned runtimes are included in releases, rebuilt from UPSTREAM.json.
+studio/backend/vendor/backburner/runtime/bin/
+studio/backend/vendor/backburner/runtime/anekv/
+unsloth-companion/Unsloth Companion/Unsloth Companion/Vendor/Backburner.xcframework/
 # Stray "~" dir some tools create from a literal ~ TMPDIR; never part of the repo.
 ~/
 

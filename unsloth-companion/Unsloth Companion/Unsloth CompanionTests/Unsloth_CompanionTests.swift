@@ -5,6 +5,38 @@ import Testing
 
 @Suite(.serialized)
 struct ProtocolAndStorageTests {
+    @Test @MainActor func accelerationRejectsAgentModelBeforeLoadingResources() async {
+        let service = CompanionServiceModel()
+        service.accelerationSelected = true
+        let model = InstalledModel(id: "guard-test", displayName: "Guard test", modelSHA256: "unused",
+                                   mmprojSHA256: nil, modelFileName: "unused.gguf", mmprojFileName: nil, installedAt: Date())
+        do {
+            try await service.setLoadedModel(model)
+            Issue.record("Agent model was accepted while acceleration was selected")
+        } catch {
+            guard let runtimeError = error as? ModelRuntimeError, case .busy = runtimeError else {
+                Issue.record("Unexpected model guard error: \(error)")
+                return
+            }
+        }
+        #expect(service.currentLoadedModel == nil)
+        service.start()
+        #expect(service.state == .offline)
+    }
+
+    @Test @MainActor func backgroundAccelerationSelectionAndAgentAreExclusive() async {
+        let service = CompanionServiceModel()
+        let acceleration = BackburnerServiceModel()
+        await acceleration.sceneChanged(active: false)
+        await acceleration.setSelected(true, companion: service)
+        #expect(acceleration.selected && !acceleration.running)
+        #expect(service.accelerationSelected)
+        service.start()
+        #expect(service.state == .offline)
+        await acceleration.setSelected(false, companion: service)
+        #expect(!acceleration.selected && !service.accelerationSelected)
+    }
+
     @Test func protocolRoundTripAndFractionalDate() throws {
         let task = CompanionTask(
             taskID: UUID(uuidString: "42f8a43c-b251-4f90-98e3-ce6ae8c6a4fd")!,

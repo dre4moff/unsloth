@@ -1,0 +1,48 @@
+#import <Foundation/Foundation.h>
+
+NS_ASSUME_NONNULL_BEGIN
+
+@interface SidecarRPC : NSObject
+/// Blocking. Call off the main thread. Returns nil on clean exit (it does not return while listening).
++ (nullable NSString *)startHost:(NSString *)host port:(int)port cacheDir:(NSString *)cacheDir
+    NS_SWIFT_NAME(start(host:port:cacheDir:));
+/// The USB-cable address only: one 169.254 IPv4, or empty. Wi-Fi and IPv6 are not returned.
++ (NSString *)cableAddress;
+
+/// Metal device stats: deviceName, allocatedBytes, recommendedWorkingSetBytes, hasUnifiedMemory.
++ (NSDictionary<NSString *, id> *)metalStats;
+
+/// Process/system memory: availableBytes (os_proc_available_memory), footprintBytes, physicalBytes.
++ (NSDictionary<NSString *, id> *)memoryStats;
+
+/// Cumulative rx/tx bytes and packets across non-loopback interfaces. Caller differentiates
+/// to get a rate - this is how you tell from the phone whether the Mac is actually using it.
++ (NSDictionary<NSString *, id> *)linkStats;
+
+/// Split-prefill tail worker (llama.cpp tools/split-prefill/tail-server.h). Blocking; call off the
+/// main thread. Loads the TAIL GGUF at modelPath (if present) and serves the Mac on port.
++ (nullable NSString *)startTailPort:(int)port modelPath:(NSString *)modelPath
+    NS_SWIFT_NAME(startTail(port:modelPath:));
+
+/// Tail worker status: state, detail, model, chunks, tokens, sessions, lastChunkMs, lastTokS.
++ (NSDictionary<NSString *, id> *)tailStatus;
+
+/// Hardware model string (utsname.machine), for the Bonjour TXT record.
++ (NSString *)deviceModel;
+@end
+
+@interface SidecarRPC (ANE)
+/// ANE bench server (line protocol, JSON replies) on port: loads Documents/*.mlmodelc via CoreML and times it.
++ (void)startANEBenchPort:(int)port NS_SWIFT_NAME(startANEBench(port:));
+/// Phone-held KV attention service (phone-attn/phone-attn.h) on port (50062), computed with SME2. Starts once.
++ (void)startPhoneAttnPort:(int)port NS_SWIFT_NAME(startPhoneAttn(port:));
+/// Phone attention status: state, calls, heldKeys, lastMs.
++ (NSDictionary<NSString *, id> *)phoneAttnStatus;
+// what the Mac is doing, as its proxy and serve-infernet.sh report it on :50061 ("mac PHASE [N1] [N2] [CTX]"):
+// phase, n1, n2, ctx, age (s since the last report), activations (count of "ready"), activating, activateMs
++ (NSDictionary<NSString *, id> *)macStatus;
+/// What Documents/env.txt and Documents/metal changed at launch ("" if nothing).
++ (NSString *)envNote;
+@end
+
+NS_ASSUME_NONNULL_END

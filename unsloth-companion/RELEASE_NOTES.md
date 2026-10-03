@@ -1,3 +1,11 @@
+## Companion 0.0.2 / Studio v0.1.800-mlx.36 (prerelease)
+
+Adds the dedicated Speed page and Mac Tools → iPhone selector for Backburner by StayLameBro. Agent and acceleration are exclusive. The Mac requires the exact iPhone USB device/interface to negotiate 10 Gb/s or faster; unknown speed and Wi-Fi do not qualify. The original Qwen3.8-27B IQ4_XS/DFlash2 profile and pinned, isolated engine are required. Native shutdown owns all workers and sockets; Agent settings are restored, and temporary suspension is not persisted over a Mac restart.
+
+The IPA requires user signing before installation, preserving its increased-memory entitlement. Its preparation signature is ad-hoc. See [setup and integration boundaries](../docs/iphone-backburner.md). Mac app minimum remains 12; acceleration requires macOS 14. Companion minimum remains iOS 18.6.
+
+Validation: 285 backend pytest cases (40 Backburner), 18 Companion protocol/manager cases, 4,099 frontend tests, three real TCP native lifecycle cycles, TypeScript/Vite, targeted lint and localization parity passed. Device build and simulator build-for-testing passed. Swift/UI tests were compiled but could not be executed because no simulator runtime was installed. Physical USB discovery, transfer, phone Metal/ANE inference and performance remain unverified. This is a prerelease for that reason.
+
 # Unsloth Companion prototype release notes
 
 GitHub prerelease: `v0.1.800-mlx.20-companion.4`

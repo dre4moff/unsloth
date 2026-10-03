@@ -4,8 +4,9 @@
 
 - Il Mac resta orchestratore e fallback.
 - L'iPhone è un co-processore locale, non una chat.
-- La v1 usa soltanto Bonjour + WSS sulla LAN.
-- USB, cloud inference, Windows/Linux, chat/browser AiryWay e Stable Diffusion restano fuori scope.
+- La modalità Agente v1 usa Bonjour + WSS sulla LAN.
+- La modalità Backburner, richiesta esplicitamente dal maintainer, usa soltanto USB compatibile ed è esclusiva rispetto ad Agente. Vedi `../docs/iphone-backburner.md`.
+- Cloud inference, Windows/Linux, chat/browser AiryWay e Stable Diffusion restano fuori scope.
 - AiryWay locale è riferimento in sola lettura e non una dipendenza runtime.
 
 ## Regole non negoziabili
@@ -18,7 +19,7 @@
 6. Non lasciare cache task o temporanei dopo un terminale.
 7. Non eliminare blob GGUF ancora referenziati.
 8. Non riassegnare automaticamente una cancellazione esplicita dell'utente.
-9. Non suddividere una generazione singola o la KV cache tra device.
+9. In modalità Agente non suddividere una generazione singola o la KV cache tra device. Backburner mantiene il profilo originale del suo autore per split prefill e KV remoto.
 10. Non segnare una verifica come superata senza evidenza effettiva.
 
 ## Verifica richiesta per modifiche
@@ -27,7 +28,7 @@
 - `scripts/test_desktop_companion.py` per protocollo/backend.
 - typecheck, lint mirato, parità i18n e build frontend per la UI Desktop.
 - build `iphoneos` per runtime o storage.
-- controllo che l'IPA resti arm64 e non firmata.
+- controllo che l'IPA resti arm64 e richieda firma dell'utente prima dell'installazione; Backburner conserva l'entitlement memoria nella firma ad-hoc preparatoria.
 - `codesign --verify`, metadata arm64/macOS 12 e `hdiutil verify` per la release Desktop.
 
 ## Release

@@ -295,11 +295,15 @@ class CompanionManager:
         async with self._lifecycle_lock:
             await self._stop_listener()
 
-    async def update_settings(self, value: CompanionSettings) -> CompanionStatus:
+    async def update_settings(self, value: CompanionSettings, *, persist: bool = True) -> CompanionStatus:
+        from core.companion.backburner import backburner_manager
+        if value.enabled and (backburner_manager.mode == "speed" or backburner_manager.preparing):
+            raise CompanionUnavailable("Switch iPhone Companion to Agent before enabling subagents")
         async with self._lifecycle_lock:
             was_enabled = self.settings.enabled
             self.settings = value
-            self._write_model(self.settings_path, value)
+            if persist:
+                self._write_model(self.settings_path, value)
             if value.enabled and not was_enabled:
                 await self._start_listener()
             elif not value.enabled and was_enabled:
@@ -1113,6 +1117,9 @@ class CompanionManager:
         ]
 
     def _connected_policy_sessions(self) -> list[DeviceSession]:
+        from core.companion.backburner import backburner_manager
+        if backburner_manager.mode == "speed" or backburner_manager.preparing:
+            return []
         if not self.settings.enabled or self._stopping:
             return []
         candidates = [
@@ -1125,6 +1132,11 @@ class CompanionManager:
         if self.settings.mode.value == "multiple":
             candidates = [value for value in candidates if value.device_id in self.settings.selectedDeviceIDs]
         return candidates
+
+    def has_pending_work(self) -> bool:
+        return bool(self.status().activeTasks) or any(
+            job.state in {"queued", "running"} for job in self._background_jobs.values()
+        )
 
     def _orchestration_sessions(self) -> list[DeviceSession]:
         return [

@@ -14555,6 +14555,12 @@ class LlamaCppBackend:
         # Serialise the whole load so concurrent /load calls never leave two
         # llama-server processes alive (#5401 / #5161). Doesn't block /unload.
         with self._serial_load_scope():
+            # Backburner owns a pinned, isolated engine and its exact original
+            # launch profile. Ordinary loads keep using the updateable runtime.
+            from core.companion.backburner import backburner_manager
+            if backburner_manager.mode == "speed":
+                from core.companion.backburner_runtime import load_backburner
+                return load_backburner(self, intent, load_cancel_event)
             # In-app update swapping binaries: refuse fast (set under this lock,
             # so any in-flight load has drained) instead of using a half-swapped one.
             if getattr(self, "_llama_update_in_progress", False):
@@ -20468,6 +20474,7 @@ class LlamaCppBackend:
 
     def _kill_process(self):
         """Terminate the subprocess if running."""
+        self._backburner_active = False
         # Stop the watchdog before a deliberate kill so a planned reload/unload
         # isn't seen as a crash; a real crash never routes through here.
         self._stop_mtp_crash_watchdog()

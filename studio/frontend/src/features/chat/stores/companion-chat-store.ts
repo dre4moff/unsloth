@@ -5,9 +5,11 @@ import { persist } from "zustand/middleware";
 
 import {
   loadCompanionStatus,
+  loadAccelerationStatus,
+  type AccelerationStatus,
   type CompanionDevice,
   type CompanionStatus,
-} from "@/features/settings/api/companion";
+} from "@/features/settings";
 
 const READY_STATES = new Set(["ready", "leased", "running"]);
 let refreshInFlight: Promise<void> | null = null;
@@ -16,6 +18,8 @@ type CompanionChatState = {
   enabled: boolean;
   status: CompanionStatus | null;
   statusError: string | null;
+  acceleration: AccelerationStatus | null;
+  setAcceleration: (status: AccelerationStatus) => void;
   setEnabled: (enabled: boolean) => void;
   setStatus: (status: CompanionStatus | null, error?: string | null) => void;
 };
@@ -26,6 +30,8 @@ export const useCompanionChatStore = create<CompanionChatState>()(
       enabled: true,
       status: null,
       statusError: null,
+      acceleration: null,
+      setAcceleration: (acceleration) => set({ acceleration }),
       setEnabled: (enabled) => set({ enabled }),
       setStatus: (status, statusError = null) => set({ status, statusError }),
     }),
@@ -45,6 +51,8 @@ export const useCompanionChatStore = create<CompanionChatState>()(
 export function readyCompanionDevices(
   status: CompanionStatus | null,
 ): CompanionDevice[] {
+  const acceleration = useCompanionChatStore.getState().acceleration;
+  if (acceleration?.mode === "speed" || acceleration?.preparing) return [];
   if (!status?.settings.enabled) return [];
   const selected = new Set(status.settings.selectedDeviceIDs);
   return status.devices.filter((device) => {
@@ -68,8 +76,9 @@ export async function refreshCompanionChatStatus(): Promise<void> {
   if (refreshInFlight) return refreshInFlight;
   refreshInFlight = (async () => {
     try {
-      const status = await loadCompanionStatus();
+      const [status, acceleration] = await Promise.all([loadCompanionStatus(), loadAccelerationStatus()]);
       useCompanionChatStore.getState().setStatus(status);
+      useCompanionChatStore.getState().setAcceleration(acceleration);
     } catch (error) {
       const current = useCompanionChatStore.getState();
       current.setStatus(
@@ -81,4 +90,9 @@ export async function refreshCompanionChatStatus(): Promise<void> {
     }
   })();
   return refreshInFlight;
+}
+
+export function isCompanionChatEnabled(): boolean {
+  const state = useCompanionChatStore.getState();
+  return state.enabled && state.acceleration?.mode !== "speed" && !state.acceleration?.preparing;
 }

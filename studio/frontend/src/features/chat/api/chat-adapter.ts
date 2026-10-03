@@ -126,7 +126,7 @@ import {
   awaitThreadScopedPairing,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
-import { useCompanionChatStore } from "../stores/companion-chat-store";
+import { isCompanionChatEnabled } from "../stores/companion-chat-store";
 import { resolveFitMaxSeqLength, resolveManualAutoCtxPin } from "../presets/preset-policy";
 import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
@@ -1736,7 +1736,7 @@ export function buildLocalTokenCountReasoning(): Record<string, unknown> {
 export async function buildLocalTokenCountExtras(
   threadId: string | undefined,
 ): Promise<Record<string, unknown>> {
-  const companionEnabled = useCompanionChatStore.getState().enabled;
+  const companionEnabled = isCompanionChatEnabled();
   const {
     supportsTools,
     toolsEnabled,
@@ -4280,7 +4280,7 @@ export function createOpenAIStreamAdapter(
         ragAutoInject,
         ragAutoInjectMinScore,
       } = runtime;
-      const companionEnabled = useCompanionChatStore.getState().enabled;
+      const companionEnabled = isCompanionChatEnabled();
       // Project sources auto-scope: a chat inside a project retrieves from the
       // project's indexed sources even when the Docs pill is off. The probe is
       // cached, so this is one round trip per project every ~30s at most.

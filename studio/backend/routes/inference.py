@@ -8851,6 +8851,14 @@ async def _load_model_impl(
         if load_cancel_event is not None and load_cancel_event.is_set():
             raise HTTPException(status_code = 409, detail = "Model load cancelled")
 
+    from core.companion.backburner import backburner_manager
+    try:
+        backburner_manager.require_selected_model(
+            request.model_path, request.gguf_variant, get_llama_cpp_backend().last_load_intent,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+
     # A new load starts here; arm the progress throttle so this load's first
     # sampled step logs even if it reports 100% immediately (cached/small load).
     _reset_load_progress_step()

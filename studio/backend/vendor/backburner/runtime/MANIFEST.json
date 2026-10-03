@@ -1,0 +1,13 @@
+{
+  "engineCommit": "f8c76832b9bb7710db52143d9c89adcda5402718",
+  "template": "Original kv_N16384_R48_fp16_pfix_cinput; coremltools 9.0 / numpy 2.2.6",
+  "files": {
+    "anekv/tmpl16k.mlmodelc/analytics/coremldata.bin": "accfa7ba5a1f5b5f58fe9494c56959493923e3e336d356e215bf564e296da519",
+    "anekv/tmpl16k.mlmodelc/coremldata.bin": "dd7b2c0a16f70b48fe27412ee36ae89f8e0fead2dcc732125ae13d57556c0c72",
+    "anekv/tmpl16k.mlmodelc/metadata.json": "4bfeb17cc0beb6a8bc4de23578fc5fe57e5874612567a9c3b823a6114ace9edb",
+    "anekv/tmpl16k.mlmodelc/model.mil": "cb86014639010081c51ac564515e88669f68aca559637dbeba8a82f3aecf5e44",
+    "anekv/tmpl16k.mlmodelc/weights/weight.bin": "b179e2248a180db5c658056dc2cd73d887d600d65065c9e49327a06b18315fcc",
+    "bin/llama-quantize": "ffdee57ed1895ac006585d957e6c4a128bb75a3bb1a35371c03d6860e90885e0",
+    "bin/llama-server": "06828419e6eb78c6b5be11853c3156c96aa6f29f30e5d8c77a8359c0d389a861"
+  }
+}

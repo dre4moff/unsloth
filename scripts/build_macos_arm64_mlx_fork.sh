@@ -5,8 +5,8 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 release_dir="$repo_root/release"
-app_version="0.1.800-mlx.35"
-backend_version="2026.8.19+mlxcompaction8.companion20.kaggletpu9.release35"
+app_version="0.1.800-mlx.36"
+backend_version="2026.8.19+mlxcompaction8.companion20.kaggletpu9.backburner1.release36"
 rust_toolchain="1.89.0"
 wheel_name="unsloth-${backend_version}-py3-none-any.whl"
 resource_dir="$repo_root/studio/src-tauri/resources/backend"
@@ -42,6 +42,8 @@ echo "Using macOS SDK: $macos_sdk"
 python3 -m py_compile \
     "$repo_root/studio/backend/hub/services/models/relocation.py" \
     "$repo_root/studio/backend/core/companion/manager.py" \
+    "$repo_root/studio/backend/core/companion/backburner.py" \
+    "$repo_root/studio/backend/core/companion/backburner_runtime.py" \
     "$repo_root/studio/backend/core/inference/inference.py" \
     "$repo_root/studio/backend/core/inference/kaggle_tpu.py" \
     "$repo_root/studio/backend/vendor/kaggle_tpu_lab/launch.py" \
@@ -139,6 +141,21 @@ with zipfile.ZipFile(sys.argv[1]) as wheel:
     ]
     if generated:
         raise SystemExit(f"Backend wheel contains generated caches: {generated}")
+    import hashlib, json
+    prefix = "studio/backend/vendor/backburner/"
+    upstream = json.loads(wheel.read(prefix + "UPSTREAM.json"))
+    runtime = json.loads(wheel.read(prefix + "runtime/MANIFEST.json"))
+    if runtime["engineCommit"] != upstream["engine_commit"]:
+        raise SystemExit("Bundled Backburner runtime is not the pinned upstream engine")
+    for rel, digest in upstream["files"].items():
+        if hashlib.sha256(wheel.read(prefix + rel)).hexdigest() != digest:
+            raise SystemExit(f"Bundled Backburner source differs from upstream: {rel}")
+    for rel, digest in runtime["files"].items():
+        if hashlib.sha256(wheel.read(prefix + "runtime/" + rel)).hexdigest() != digest:
+            raise SystemExit(f"Bundled Backburner runtime failed integrity: {rel}")
+    for rel in ("core/companion/backburner.py", "core/companion/backburner_runtime.py"):
+        if "studio/backend/" + rel not in wheel.namelist():
+            raise SystemExit(f"Missing Backburner integration: {rel}")
 PY
 if ! unzip -p "$built_wheel" studio/backend/core/inference/orchestrator.py \
     | grep -Fq "def compact_chat_context"; then

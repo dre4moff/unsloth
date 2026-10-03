@@ -7,8 +7,8 @@ COMPANION_ROOT=${SCRIPT_DIR:h}
 PROJECT_DIR="$COMPANION_ROOT/Unsloth Companion"
 PROJECT_FILE="$PROJECT_DIR/Unsloth Companion.xcodeproj"
 RELEASE_DIR=${1:-"${COMPANION_ROOT:h}/release"}
-IPA_NAME="Unsloth-Companion_0.0.1_unsigned.ipa"
-DEVELOPER_DIR_PATH=${DEVELOPER_DIR:-/Applications/Xcode-beta.app/Contents/Developer}
+IPA_NAME="Unsloth-Companion_0.0.2_unsigned.ipa"
+DEVELOPER_DIR_PATH=${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}
 DERIVED_DIR=$(mktemp -d /tmp/unsloth-companion-derived.XXXXXX)
 PACKAGE_DIR=$(mktemp -d /tmp/unsloth-companion-ipa.XXXXXX)
 
@@ -45,7 +45,7 @@ FRAMEWORK="$APP/Frameworks/llama.framework"
 # distribuzione, per non incorporare percorsi della macchina di compilazione.
 DEVELOPER_DIR="$DEVELOPER_DIR_PATH" xcrun strip -S -x "$EXECUTABLE"
 
-[[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist")" == "8" ]]
+[[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist")" == "9" ]]
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$APP/Info.plist")" == "18.6" ]]
 [[ "$(lipo -archs "$EXECUTABLE")" == "arm64" ]]
 [[ "$(lipo -archs "$FRAMEWORK/llama")" == "arm64" ]]
@@ -54,6 +54,15 @@ if /usr/bin/grep -a -F -q "$PROJECT_DIR" "$EXECUTABLE"; then
   print -u2 "Il binario Release contiene il percorso locale del progetto."
   exit 1
 fi
+
+BACKBURNER_FRAMEWORK="$APP/Frameworks/Backburner.framework"
+[[ -f "$BACKBURNER_FRAMEWORK/Backburner" ]]
+[[ "$(lipo -archs "$BACKBURNER_FRAMEWORK/Backburner")" == "arm64" ]]
+# An ad-hoc signature carries the increased-memory-limit entitlement for the
+# sideloading signer, as in the original Backburner IPA. It is not an Apple distribution signature.
+for framework in "$APP"/Frameworks/*.framework; do codesign -f -s - "$framework"; done
+codesign -f -s - --entitlements "$PROJECT_DIR/Config/Companion.entitlements" "$APP"
+codesign -d --entitlements - "$APP" 2>/dev/null | grep -q increased-memory-limit
 
 mkdir -p "$PACKAGE_DIR/Payload" "$RELEASE_DIR"
 ditto "$APP" "$PACKAGE_DIR/Payload/Unsloth Companion.app"

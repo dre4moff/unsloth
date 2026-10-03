@@ -28,6 +28,24 @@ export type CompanionStatus = {
   listenerPort: number | null; certificateSHA256: string | null;
 };
 
+export type AccelerationStatus = {
+  mode: "agent" | "speed";
+  available: boolean; ready: boolean; prepared: boolean; preparing: boolean;
+  progress: string; error: string | null; draftPath: string | null; modelPath?: string | null;
+  phone: { name: string; speedGbps: number; deviceID: string } | null;
+  author: string; sourceURL: string; engineCommit: string;
+};
+
+export async function loadAccelerationStatus(): Promise<AccelerationStatus> {
+  return (await request("/acceleration/status")).json();
+}
+export async function selectAccelerationMode(mode: "agent" | "speed"): Promise<AccelerationStatus> {
+  return (await request("/acceleration/mode", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode }) })).json();
+}
+export async function prepareAcceleration(modelPath: string, draftPath: string): Promise<AccelerationStatus> {
+  return (await request("/acceleration/prepare", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ modelPath, draftPath }) })).json();
+}
+
 async function request(path: string, init?: RequestInit): Promise<Response> {
   const response = await authFetch(`/api/companion${path}`, init);
   if (!response.ok) throw new Error(await readFastApiError(response, "Companion request failed"));

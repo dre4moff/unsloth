@@ -1,5 +1,7 @@
 # Unsloth Companion open prototype
 
+Companion 0.0.2 adds a separate wired acceleration page using **Backburner by StayLameBro**. Agent and acceleration are mutually exclusive. Follow the [Backburner setup, requirements and validation notes](../docs/iphone-backburner.md); its original model profile is required, and physical cable/inference acceptance remains pending.
+
 Unsloth Companion turns one or more iPhones into private, local co-processors for
 an offline LLM application. The desktop model remains the orchestrator, owns the
 conversation and decides what to delegate; paired phones run independent text,
@@ -138,6 +140,9 @@ also required for the desktop build.
 ```bash
 # Rebuild the pinned native runtime when needed.
 ./unsloth-companion/scripts/build_llama_xcframework.sh
+
+# Build the separate pinned Backburner runtime (see the setup guide for the ANE build environment).
+./unsloth-companion/scripts/build_backburner_runtime.sh
 
 # Run the desktop protocol and manager contract tests.
 python3 unsloth-companion/scripts/test_desktop_companion.py

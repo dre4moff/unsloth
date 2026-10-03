@@ -16,6 +16,7 @@ struct ContentView: View {
             if appModel.hasCompletedOnboarding {
                 TabView {
                     DashboardView(appModel: appModel).tabItem { Label("Dashboard", systemImage: "iphone.and.arrow.forward") }
+                    BackburnerView(appModel: appModel).tabItem { Label("Speed", systemImage: "bolt.fill") }
                     ModelsView(appModel: appModel).tabItem { Label("Models", systemImage: "cpu") }
                     ActivitiesView(appModel: appModel).tabItem { Label("Activity", systemImage: "clock.arrow.circlepath") }
                     StorageView(appModel: appModel).tabItem { Label("Storage", systemImage: "internaldrive") }

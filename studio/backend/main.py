@@ -795,6 +795,8 @@ async def lifespan(app: FastAPI):
     await _close_llama_http()
 
     from core.companion import companion_manager
+    from core.companion.backburner import backburner_manager
+    await backburner_manager.shutdown()
     await companion_manager.stop()
 
     await run_lifespan_shutdown(

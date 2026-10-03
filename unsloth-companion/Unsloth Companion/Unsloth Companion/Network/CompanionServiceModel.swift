@@ -21,6 +21,7 @@ private struct PendingPairing {
 
 @MainActor
 final class CompanionServiceModel: ObservableObject {
+    var accelerationSelected = false
     @Published private(set) var state: CompanionServiceState = .offline { didSet { applyIdleTimer() } }
     @Published private(set) var statusDetail = String(localized: "Offline")
     @Published private(set) var pairingCode: String?
@@ -53,6 +54,7 @@ final class CompanionServiceModel: ObservableObject {
     private var reconnectEndpoint: DiscoveredDesktop?
     private var loadedModelID: String?
     private var loadedModel: InstalledModel?
+    var currentLoadedModel: InstalledModel? { loadedModel }
 
     init() {
         if let data = UserDefaults.standard.data(forKey: "companion-settings"),
@@ -68,6 +70,7 @@ final class CompanionServiceModel: ObservableObject {
     deinit { monitorTask?.cancel(); receiveTask?.cancel() }
 
     func start() {
+        guard !accelerationSelected else { return }
         guard settings.serviceEnabled else { state = .offline; return }
         state = .discovering
         statusDetail = String(localized: "Searching for Unsloth Desktop")
@@ -78,6 +81,7 @@ final class CompanionServiceModel: ObservableObject {
     func stop(reason: TaskCancellationReason = .companionDisabled) async {
         state = .draining
         await coordinator.drain(reason: reason)
+        currentTaskID = nil
         await closeConnection()
         discovery.stop()
         state = .offline
@@ -86,6 +90,7 @@ final class CompanionServiceModel: ObservableObject {
     }
 
     func connect(to desktop: DiscoveredDesktop) async {
+        guard !accelerationSelected else { return }
         reconnectEndpoint = desktop
         lastError = nil
         statusDetail = String(localized: "Connecting to Mac")
@@ -152,6 +157,7 @@ final class CompanionServiceModel: ObservableObject {
     }
 
     func setLoadedModel(_ model: InstalledModel?) async throws {
+        guard !accelerationSelected || model == nil else { throw ModelRuntimeError.busy }
         guard currentTaskID == nil else { throw ModelRuntimeError.busy }
         if model?.id == loadedModel?.id { return }
         let previous = loadedModel
@@ -187,6 +193,7 @@ final class CompanionServiceModel: ObservableObject {
     }
 
     func sceneDidBecomeActive() {
+        guard !accelerationSelected else { return }
         if settings.serviceEnabled {
             if authenticatedDesktop != nil {
                 state = currentTaskID == nil ? .ready : .running
@@ -426,6 +433,7 @@ final class CompanionServiceModel: ObservableObject {
     private func monitorDevice() async {
         while !Task.isCancelled {
             try? await Task.sleep(for: .seconds(5))
+            if accelerationSelected { continue }
             if authenticatedDesktop != nil, Date().timeIntervalSince(lastHeartbeat) > CompanionProtocol.heartbeatInterval * 3 {
                 if let transport { await connectionEnded(error: CompanionTransportError.connectionFailed(String(localized: "heartbeat timeout")), source: transport) }
             }

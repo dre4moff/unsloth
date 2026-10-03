@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "name": "Unsloth Companion v1 release manifest",
-  "updatedAt": "2026-09-02T14:49:00Z",
+  "name": "Unsloth Companion 0.0.2 / Backburner release manifest",
+  "updatedAt": "2026-10-03T04:59:48.336717+00:00",
   "runtime": {
     "project": "ggml-org/llama.cpp",
     "commit": "3173a56471c1753650cd806694145ffd6dcace67",
@@ -35,37 +35,11 @@
   ],
   "buildScripts": {
     "llamaXCFramework": "scripts/build_llama_xcframework.sh",
-    "unsignedIPA": "scripts/build_unsigned_ipa.sh"
+    "unsignedIPA": "scripts/build_unsigned_ipa.sh",
+    "backburnerRuntime": "scripts/build_backburner_runtime.sh",
+    "nativeLifecycleTest": "scripts/test_backburner_lifecycle.py"
   },
-  "releaseArtifacts": {
-    "unsignedIPA": {
-      "path": "../release/Unsloth-Companion_0.0.1_unsigned.ipa",
-      "sha256": "722547db680a5da8e9434c0201a91c439c5edf31a55cad89d85d067260b528f7",
-      "bytes": 4048141,
-      "signed": false,
-      "minimumOS": "18.6"
-    },
-    "macOSDMG": {
-      "path": "../release/Unsloth_0.1.800-mlx.20_aarch64.dmg",
-      "sha256": "4bf89903f4c741ffe0cb3b2bfabe4e1d348d4fe146897502f6ed73b1f01222ed",
-      "bytes": 138166251,
-      "architecture": "arm64",
-      "minimumOS": "12.0",
-      "signing": "ad-hoc",
-      "notarized": false
-    },
-    "macOSExecutable": {
-      "path": "../release/Unsloth_0.1.800-mlx.20_aarch64.dmg::/Unsloth.app/Contents/MacOS/unsloth-studio",
-      "sha256": "abf23e68488193c482fc8497d41d7f09f45ca349ae4b5273f0100e81aa416ef6",
-      "bytes": 59518832
-    },
-    "desktopBackendWheel": {
-      "path": "../release/Unsloth_0.1.800-mlx.20_aarch64.dmg::/Unsloth.app/Contents/Resources/backend/unsloth-2026.8.19+mlxcompaction8.companion20-py3-none-any.whl",
-      "sha256": "f6ef08704c56d795465b8bc860d4abfd346c9c4f3934611d3ece4ed5fd3b5fb0",
-      "bytes": 92649657
-    }
-  },
-  "verification": {
+  "historicalCompanion20Verification": {
     "swiftUnitTests": 14,
     "iOSUITests": 3,
     "desktopPythonTests": 0,
@@ -93,5 +67,95 @@
     "excludedPhysicalDevices": [
       "iPhone 14 Pro"
     ]
+  },
+  "historicalCompanion20Artifacts": {
+    "unsignedIPA": {
+      "path": "../release/Unsloth-Companion_0.0.1_unsigned.ipa",
+      "sha256": "722547db680a5da8e9434c0201a91c439c5edf31a55cad89d85d067260b528f7",
+      "bytes": 4048141,
+      "signed": false,
+      "minimumOS": "18.6"
+    },
+    "macOSDMG": {
+      "path": "../release/Unsloth_0.1.800-mlx.20_aarch64.dmg",
+      "sha256": "4bf89903f4c741ffe0cb3b2bfabe4e1d348d4fe146897502f6ed73b1f01222ed",
+      "bytes": 138166251,
+      "architecture": "arm64",
+      "minimumOS": "12.0",
+      "signing": "ad-hoc",
+      "notarized": false
+    },
+    "macOSExecutable": {
+      "path": "../release/Unsloth_0.1.800-mlx.20_aarch64.dmg::/Unsloth.app/Contents/MacOS/unsloth-studio",
+      "sha256": "abf23e68488193c482fc8497d41d7f09f45ca349ae4b5273f0100e81aa416ef6",
+      "bytes": 59518832
+    },
+    "desktopBackendWheel": {
+      "path": "../release/Unsloth_0.1.800-mlx.20_aarch64.dmg::/Unsloth.app/Contents/Resources/backend/unsloth-2026.8.19+mlxcompaction8.companion20-py3-none-any.whl",
+      "sha256": "f6ef08704c56d795465b8bc860d4abfd346c9c4f3934611d3ece4ed5fd3b5fb0",
+      "bytes": 92649657
+    }
+  },
+  "backburner": {
+    "author": "StayLameBro",
+    "repository": "https://github.com/StayLameBro/backburner",
+    "commit": "c78e38b6bf74c5672aaaf5c66668b6540b97bd37",
+    "engine_commit": "f8c76832b9bb7710db52143d9c89adcda5402718",
+    "upstream_sources_verified": 50,
+    "runtime_files_verified": 7,
+    "minimum_macos": "14.0",
+    "standard_updater_isolated": true,
+    "deviceFrameworkSHA256": "8ed6305d4abfe3b687d6dfec8b686af33cbea0aef93af8f962b035c1e7b99fde"
+  },
+  "releaseArtifacts": {
+    "iphoneCompanion": {
+      "name": "Unsloth-Companion_0.0.2_unsigned.ipa",
+      "sha256": "386298a12fea79a709472b61923d47d0d2dea434c76eec5f8bc08ad35717c7a7",
+      "size_bytes": 6454967,
+      "version": "0.0.2",
+      "build": "9",
+      "architecture": "arm64",
+      "minimum_ios": "18.6",
+      "signing": "ad-hoc, user resigning required",
+      "distribution_signed": false,
+      "increased_memory_entitlement": true,
+      "native_payload_sections_match_pinned_build": 26,
+      "c_symbol_exports_isolated": true
+    },
+    "macOSDMG": {
+      "name": "Unsloth_0.1.800-mlx.36_aarch64.dmg",
+      "sha256": "f75e585053a71c965525d835c11d6963b99a6d6eb8ad9e90940cc1c401c1d29f",
+      "size_bytes": 208271930,
+      "mounted_app_identical": true,
+      "codesign_mounted_passed": true,
+      "hdiutil_verify_passed": true
+    },
+    "macOSExecutable": {
+      "name": "unsloth-studio",
+      "sha256": "fd2d9ee2f83e62a3467c76789889d2e276c26a969d8a138fa7a7f7a6aef6a041",
+      "size_bytes": 59519568
+    },
+    "desktopBackendWheel": {
+      "name": "unsloth-2026.8.19+mlxcompaction8.companion20.kaggletpu9.backburner1.release36-py3-none-any.whl",
+      "sha256": "ac6b5c90d79e0217c1d6abcb3fe8a8a64d0abe8eaef6820460c5f8314f369a56",
+      "size_bytes": 162755933
+    }
+  },
+  "verification": {
+    "backend_pytest_passed": 285,
+    "backburner_pytest_passed": 40,
+    "desktop_companion_unittest_passed": 18,
+    "frontend_node_tests_passed": 4099,
+    "native_tcp_lifecycle_cycles_passed": 3,
+    "frontend_typecheck_build_passed": true,
+    "targeted_eslint_new_files_passed": true,
+    "existing_chat_adapter_eslint_errors": 13,
+    "localization_parity_passed": true,
+    "ios_device_build_passed": true,
+    "ios_simulator_build_for_testing_passed": true,
+    "swift_tests_executed": false,
+    "swift_test_execution_reason": "No installed simulator runtime; physical iPhone unavailable",
+    "physical_usb_inference_performance_verified": false,
+    "releaseChannel": "prerelease"
   }
 }

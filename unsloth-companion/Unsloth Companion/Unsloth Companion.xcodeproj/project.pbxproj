@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		C0DEC0DE0000000000000001 /* llama.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = C0DEC0DE0000000000000002 /* llama.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		BACCB0000000000000000001 /* Backburner.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = BACCB0000000000000000002 /* Backburner.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -32,6 +33,7 @@
 		84A7D5AE30433979007F8531 /* Unsloth Companion.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Unsloth Companion.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		84A7D5BB3043397B007F8531 /* Unsloth CompanionTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Unsloth CompanionTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		84A7D5C53043397B007F8531 /* Unsloth CompanionUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Unsloth CompanionUITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
+		BACCB0000000000000000002 /* Backburner.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = "Unsloth Companion/Vendor/Backburner.xcframework"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -75,6 +77,7 @@
 			isa = PBXGroup;
 			children = (
 				C0DEC0DE0000000000000002 /* llama.xcframework */,
+				BACCB0000000000000000002 /* Backburner.xcframework */,
 				84A7D5B030433979007F8531 /* Unsloth Companion */,
 				84A7D5BE3043397B007F8531 /* Unsloth CompanionTests */,
 				84A7D5C83043397B007F8531 /* Unsloth CompanionUITests */,
@@ -166,6 +169,7 @@
 			dstSubfolderSpec = 10;
 			files = (
 				C0DEC0DE0000000000000001 /* llama.xcframework in Embed Frameworks */,
+				BACCB0000000000000000001 /* Backburner.xcframework in Embed Frameworks */,
 			);
 			name = "Embed Frameworks";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -392,11 +396,12 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 8;
+				CURRENT_PROJECT_VERSION = 9;
 				DEVELOPMENT_TEAM = W47S4G8UMA;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Config/Info.plist;
+				CODE_SIGN_ENTITLEMENTS = Config/Companion.entitlements;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Camera access is used only after local confirmation to process images on this iPhone.";
 				INFOPLIST_KEY_NSBonjourServices = "_unsloth-cp._tcp.";
@@ -412,7 +417,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.0.1;
+				MARKETING_VERSION = 0.0.2;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.OvenTeam.app.Unsloth-Companion";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -431,7 +436,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CLANG_COVERAGE_MAPPING = NO;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 8;
+				CURRENT_PROJECT_VERSION = 9;
 				DEVELOPMENT_TEAM = W47S4G8UMA;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_CODE_COVERAGE = NO;
@@ -439,6 +444,7 @@
 				GCC_INSTRUMENT_PROGRAM_FLOW_ARCS = NO;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Config/Info.plist;
+				CODE_SIGN_ENTITLEMENTS = Config/Companion.entitlements;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Camera access is used only after local confirmation to process images on this iPhone.";
 				INFOPLIST_KEY_NSBonjourServices = "_unsloth-cp._tcp.";
@@ -454,7 +460,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.0.1;
+				MARKETING_VERSION = 0.0.2;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.OvenTeam.app.Unsloth-Companion";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
