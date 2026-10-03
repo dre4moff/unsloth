@@ -7,7 +7,11 @@
     "anekv/tmpl16k.mlmodelc/metadata.json": "4bfeb17cc0beb6a8bc4de23578fc5fe57e5874612567a9c3b823a6114ace9edb",
     "anekv/tmpl16k.mlmodelc/model.mil": "cb86014639010081c51ac564515e88669f68aca559637dbeba8a82f3aecf5e44",
     "anekv/tmpl16k.mlmodelc/weights/weight.bin": "b179e2248a180db5c658056dc2cd73d887d600d65065c9e49327a06b18315fcc",
-    "bin/llama-quantize": "ffdee57ed1895ac006585d957e6c4a128bb75a3bb1a35371c03d6860e90885e0",
-    "bin/llama-server": "06828419e6eb78c6b5be11853c3156c96aa6f29f30e5d8c77a8359c0d389a861"
+    "bin/llama-quantize": "b8dff9bc027125473cc02fb12a017077e0b94a4bfd4943346e8d4b4637053956",
+    "bin/llama-server": "c461ff8d9ac834089c481e6bd5ce90e862e633b30c8384d1fb7ac9003844e150"
+  },
+  "macLifecyclePatch": {
+    "name": "backburner-mac-remote-shutdown.patch",
+    "sha256": "87a0a63249e42b58774607c26e0b70d07b7fda1bafcd4815d9c62e597bbe8061"
   }
 }

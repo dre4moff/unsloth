@@ -46,6 +46,10 @@ def test_16gb_profile_admits_user_iq3_with_both_drafts_at_50k(tmp_path, size):
     assert profile["kv"] == "q4_0" and profile["loadMode"] == "mmap"
     assert profile["estimatedBytes"] < 13*GIB
     assert profile["checkpoints"] == 1
+    # Pinned split_prepare checks both the complete batch and the offloaded
+    # prefix, excluding the last microbatch retained by Mac. Both must fit.
+    n_split = ((profile["batch"] + profile["ubatch"] - 1) // profile["ubatch"] - 1) * profile["ubatch"]
+    assert 0 < profile["splitMinTokens"] <= n_split < profile["batch"]
     assert profile["draftGpuLayers"] == (999 if size < 1024**3 else 0)
 
 

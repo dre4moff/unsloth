@@ -15,15 +15,36 @@ fi
 git -C "$engine" fetch --depth 1 origin "$commit"
 git -C "$engine" checkout --detach "$commit"
 test "$(git -C "$engine" rev-parse HEAD)" = "$commit"
+patch="$repo_root/unsloth-companion/scripts/patches/backburner-mac-remote-shutdown.patch"
+# Mac-only lifecycle fix: join remote attention before static mutex destruction.
+# The device framework, kernels and wire protocols remain pinned upstream.
+if ! git -C "$engine" apply --reverse --check "$patch" 2>/dev/null; then
+    git -C "$engine" apply --check "$patch"
+    git -C "$engine" apply "$patch"
+fi
 cmake -S "$engine" -B "$work_root/mac" -DCMAKE_BUILD_TYPE=Release \
     -DBUILD_SHARED_LIBS=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_UI=OFF \
     -DLLAMA_USE_PREBUILT_UI=OFF -DLLAMA_UI_GZIP=OFF -DLLAMA_OPENSSL=OFF \
     -DGGML_NATIVE=OFF -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0
-cmake --build "$work_root/mac" --target llama-server llama-quantize -j 6
+cmake --build "$work_root/mac" --target llama-server llama-quantize -j "${UNSLOTH_BACKBURNER_BUILD_JOBS:-6}"
 mkdir -p "$vendor/runtime/bin"
 cp "$work_root/mac/bin/llama-server" "$work_root/mac/bin/llama-quantize" "$vendor/runtime/bin/"
 codesign -f -s - "$vendor/runtime/bin/llama-server"
 codesign -f -s - "$vendor/runtime/bin/llama-quantize"
+git -C "$engine" apply --reverse "$patch"
+if [ "${1:-}" = "--mac-only" ]; then
+    python3 - "$vendor" "$patch" <<'MAC_MANIFEST'
+import hashlib, json, sys
+from pathlib import Path
+vendor, patch = map(Path, sys.argv[1:]); root = vendor / 'runtime'
+manifest = json.loads((root / 'MANIFEST.json').read_text())
+manifest['macLifecyclePatch'] = {'name': patch.name, 'sha256': hashlib.sha256(patch.read_bytes()).hexdigest()}
+for path in (root / 'bin').iterdir():
+    if path.is_file(): manifest['files'][str(path.relative_to(root))] = hashlib.sha256(path.read_bytes()).hexdigest()
+(root / 'MANIFEST.json').write_text(json.dumps(manifest, indent=2) + '\n')
+MAC_MANIFEST
+    exit 0
+fi
 
 native="$work_root/native"
 python3 "$repo_root/unsloth-companion/scripts/adapt_backburner_ios.py" "$native" "$engine"
@@ -124,12 +145,14 @@ coreml_python="${UNSLOTH_BACKBURNER_COREML_PYTHON:-python3}"
     --keys 16384 --rows 48 --wq fp16 --pfix --center input
 mkdir -p "$vendor/runtime/anekv"
 ditto "$work_root/ane-template/kv_N16384_R48_fp16_pfix_cinput.mlmodelc" "$vendor/runtime/anekv/tmpl16k.mlmodelc"
-python3 - "$vendor" <<'MANIFEST'
+python3 - "$vendor" "$patch" <<'MANIFEST'
 import hashlib, json, sys
 from pathlib import Path
 vendor = Path(sys.argv[1]); root = vendor / 'runtime'
+patch = Path(sys.argv[2])
 meta = json.loads((vendor / 'UPSTREAM.json').read_text())
 manifest = {'engineCommit': meta['engine_commit'],
+            'macLifecyclePatch': {'name': patch.name, 'sha256': hashlib.sha256(patch.read_bytes()).hexdigest()},
             'template': 'Original kv_N16384_R48_fp16_pfix_cinput; coremltools 9.0 / numpy 2.2.6',
             'files': {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()
                       for p in sorted(root.rglob('*')) if p.is_file() and p.name != 'MANIFEST.json'}}

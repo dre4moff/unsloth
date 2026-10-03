@@ -94,8 +94,11 @@ def load_backburner(backend, intent, cancel_event=None) -> bool:
                    CACHE_DIR=str(root / "cache" / cache_identity / kv), PROXY="1",
                    PATH=str(shim)+os.pathsep+env.get("PATH", "/usr/bin:/bin"))
         if profile["name"] == "memory-saving":
-            env.update(LOAD_MODE="mmap", CACHE_RAM="0", CTX_CHECKPOINTS="1", SPLIT_UB="64",
-                       SERVER_ARGS=f'-b 128 -ub 64 --spec-draft-n-max 3 -ngld {profile["draftGpuLayers"]}')
+            env.update(LOAD_MODE=profile["loadMode"], CACHE_RAM="0",
+                       CTX_CHECKPOINTS=str(profile["checkpoints"]), SPLIT_UB=str(profile["ubatch"]),
+                       LLAMA_SPLIT_MIN=str(profile["splitMinTokens"]),
+                       SERVER_ARGS=f'-b {profile["batch"]} -ub {profile["ubatch"]} '
+                                   f'--spec-draft-n-max {profile["draftMax"]} -ngld {profile["draftGpuLayers"]}')
         backend._read_gguf_metadata(intent.gguf_path)
         backend._api_key = None
         backend._stdout_lines = []

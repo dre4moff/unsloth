@@ -416,13 +416,14 @@ async def test_shutdown_terminates_owned_preparation_child(tmp_path, monkeypatch
 
 @pytest.mark.parametrize("profile", [None, {"name": "memory-saving", "context": 8192,
     "totalContext": 50000, "kv": "q4_0", "bytesPerToken": 18432, "batch": 128,
-    "ubatch": 64, "checkpoints": 1, "loadMode": "mmap", "draftMax": 3, "draftGpuLayers": 0}])
+    "ubatch": 64, "splitMinTokens": 64, "checkpoints": 1, "loadMode": "mmap", "draftMax": 3, "draftGpuLayers": 0}])
 def test_original_launch_profile_and_isolation(tmp_path, monkeypatch, profile):
     from core.companion import backburner_runtime as runtime
     from core.inference.llama_cpp import GgufLoadIntent
     manager = BackburnerManager()
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setenv("LLAMA_SPLIT_TAIL", "192.168.1.2:50060")
+    monkeypatch.setenv("LLAMA_SPLIT_MIN", "99999")
     monkeypatch.setenv("SPEC_TYPE", "draft-mtp")
     phone = {"address": "169.254.1.2", "memory": {"sys_wired_mb": 4000, "avail_mb": 5000}}
     draft = tmp_path / "draft.gguf"; draft.write_bytes(b"draft")
@@ -447,7 +448,10 @@ def test_original_launch_profile_and_isolation(tmp_path, monkeypatch, profile):
     assert env["CTX"] == str(local) and env["KV"] == kv and env["PROXY"] == "1"
     if profile:
         assert env["LOAD_MODE"] == "mmap" and env["SPLIT_UB"] == "64"
+        assert env["LLAMA_SPLIT_MIN"] == "64"
         assert "-ngld 0" in env["SERVER_ARGS"] and "--spec-draft-n-max 3" in env["SERVER_ARGS"]
+    else:
+        assert "LLAMA_SPLIT_MIN" not in env  # original serve.sh owns its 512 default
     assert "SPEC_TYPE" not in env and launch["start_new_session"] is True
     assert Path(env["CACHE_DIR"]).parent.name == backend._backburner_cache_identity
     assert Path(env["CACHE_DIR"]).name == kv
@@ -466,6 +470,39 @@ def test_original_launch_profile_and_isolation(tmp_path, monkeypatch, profile):
     assert runtime.load_backburner(backend, intent) and len(launches) == 3
     assert launches[1][1]["env"]["CACHE_DIR"] != launches[2][1]["env"]["CACHE_DIR"]
     backend._llama_log_fh.close()
+
+
+def test_original_serve_script_preserves_small_batch_split_threshold(tmp_path):
+    """Run the real upstream launcher without a model, sockets or iPhone RPC."""
+    import os
+    import shutil
+    import subprocess
+    import sys
+    scripts = tmp_path / "scripts"; scripts.mkdir()
+    shutil.copyfile(bb.VENDOR / "scripts/serve.sh", scripts / "serve.sh")
+    binary = tmp_path / "bin"; binary.mkdir()
+    capture = tmp_path / "launch.json"
+    server = binary / "llama-server"
+    server.write_text(f"#!{sys.executable}\n"
+        "import json, os, sys\n"
+        "from pathlib import Path\n"
+        "Path(os.environ['CAPTURE']).write_text(json.dumps({'args': sys.argv[1:], "
+        "'min': int(os.environ['LLAMA_SPLIT_MIN'])}))\n")
+    server.chmod(0o755)
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("LLAMA_", "GGML_", "SPEC_", "PHONE"))}
+    env.update(BIN=str(binary), MODEL="unused.gguf", DRAFT="unused-draft.gguf",
+               PHONE="0", PROXY="0", LOAD_MODE="mmap", CTX="8192", KV="q4_0",
+               CTX_CHECKPOINTS="1", SPLIT_UB="64", LLAMA_SPLIT_MIN="64",
+               LLAMA_SPLIT_TAIL="127.0.0.1:1", SERVER_ARGS="-b 128 -ub 64",
+               CAPTURE=str(capture), CACHE_DIR=str(tmp_path / "cache"))
+    subprocess.run(["/bin/bash", str(scripts / "serve.sh")], env=env,
+                   check=True, capture_output=True, timeout=10)
+    actual = json.loads(capture.read_text())
+    args = actual["args"]
+    batch = int(args[len(args) - 1 - args[::-1].index("-b") + 1])
+    ubatch = int(args[len(args) - 1 - args[::-1].index("-ub") + 1])
+    offloaded = ((batch + ubatch - 1) // ubatch - 1) * ubatch
+    assert 0 < actual["min"] <= offloaded < batch
 
 
 @run_async

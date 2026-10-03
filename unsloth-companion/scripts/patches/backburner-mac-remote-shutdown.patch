@@ -1,0 +1,46 @@
+--- a/ggml/src/ggml-metal/ggml-metal-remote.mm
++++ b/ggml/src/ggml-metal/ggml-metal-remote.mm
+@@ -24,6 +24,7 @@
+ #include <atomic>
+ #include <cfloat>
+ #include <cmath>
++#include <cstdlib>
+ #include <mutex>
+ #include <string>
+ #include <thread>
+@@ -63,6 +64,8 @@
+ std::mutex              r_qmu;
+ std::vector<ggml_metal_remote_job> r_q;
+ pthread_once_t          r_once = PTHREAD_ONCE_INIT;
++std::atomic<bool>       r_stopping{false};
++pthread_t               r_thread;
+ 
+ uint64_t now_ns() { return clock_gettime_nsec_np(CLOCK_UPTIME_RAW); }
+ 
+@@ -376,7 +379,7 @@
+     std::vector<uint16_t> Q, O;
+     std::vector<float> lse;
+     uint64_t t_idle = now_ns();
+-    for (;;) {
++    while (!r_stopping.load()) {
+         ggml_metal_remote_job j;
+         bool have = false;
+         {
+@@ -422,9 +425,14 @@
+ }
+ 
+ void start_thread() {
+-    pthread_t th;
+-    pthread_create(&th, nullptr, phone_thread, nullptr);
+-    pthread_detach(th);
++    if (pthread_create(&r_thread, nullptr, phone_thread, nullptr) == 0) {
++        // Register after static initialization: join before r_qmu/r_q and the
++        // connection globals are destroyed. Attention jobs remain unchanged.
++        std::atexit([] {
++            r_stopping.store(true);
++            pthread_join(r_thread, nullptr);
++        });
++    }
+ }
+ 
+ } // namespace

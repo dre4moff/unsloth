@@ -56,5 +56,9 @@ def launch_profile(model: str, draft: str, requested_context: int, physical_byte
     # wired limit past physical RAM, and do not interpret its automatic 0 as 0 RAM.
     return {"name": "memory-saving", "context": context, "totalContext": max(context, requested_context),
             "kv": "q4_0", "bytesPerToken": 18432, "batch": 128, "ubatch": 64,
+            # Upstream keeps the last ubatch on Mac. Of a 128-token batch,
+            # only 64 tokens reach the tail; its default minimum of 512 would
+            # silently disable every split. Include this in cache identity.
+            "splitMinTokens": 64,
             "draftMax": 3, "draftGpuLayers": draft_gpu_layers, "checkpoints": 1,
             "loadMode": "mmap", "estimatedBytes": estimate}
