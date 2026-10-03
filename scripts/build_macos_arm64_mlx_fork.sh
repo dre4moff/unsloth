@@ -5,8 +5,8 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 release_dir="$repo_root/release"
-app_version="0.1.800-mlx.39"
-backend_version="2026.8.19+mlxcompaction8.companion20.kaggletpu9.backburner1.release39"
+app_version="0.1.800-mlx.40"
+backend_version="2026.8.19+mlxcompaction8.companion20.kaggletpu9.backburner1.release40"
 rust_toolchain="1.89.0"
 wheel_name="unsloth-${backend_version}-py3-none-any.whl"
 resource_dir="$repo_root/studio/src-tauri/resources/backend"
@@ -46,6 +46,8 @@ python3 -m py_compile \
     "$repo_root/studio/backend/core/companion/backburner_models.py" \
     "$repo_root/studio/backend/core/companion/backburner_gguf.py" \
     "$repo_root/studio/backend/core/companion/backburner_runtime.py" \
+    "$repo_root/studio/backend/core/companion/backburner_drafts.py" \
+    "$repo_root/studio/backend/core/companion/backburner_profile.py" \
     "$repo_root/studio/backend/core/inference/inference.py" \
     "$repo_root/studio/backend/core/inference/kaggle_tpu.py" \
     "$repo_root/studio/backend/vendor/kaggle_tpu_lab/launch.py" \
@@ -156,7 +158,8 @@ with zipfile.ZipFile(sys.argv[1]) as wheel:
         if hashlib.sha256(wheel.read(prefix + "runtime/" + rel)).hexdigest() != digest:
             raise SystemExit(f"Bundled Backburner runtime failed integrity: {rel}")
     for rel in ("core/companion/backburner.py", "core/companion/backburner_runtime.py",
-                "core/companion/backburner_models.py", "core/companion/backburner_gguf.py"):
+                "core/companion/backburner_models.py", "core/companion/backburner_gguf.py",
+                "core/companion/backburner_drafts.py", "core/companion/backburner_profile.py"):
         if "studio/backend/" + rel not in wheel.namelist():
             raise SystemExit(f"Missing Backburner integration: {rel}")
 PY

@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { useLocale } from "@/i18n";
 import { SmartphoneIcon, ZapIcon } from "lucide-react";
 import { useEffect, useId, useState } from "react";
-import { selectAccelerationMode, prepareAcceleration } from "@/features/settings";
+import { selectAccelerationMode, prepareAcceleration, loadAccelerationDrafts, type AccelerationDraft } from "@/features/settings";
 import { readyCompanionDevices, refreshCompanionChatStatus, useCompanionChatStore } from "../stores/companion-chat-store";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import { getInferenceStatus } from "../api/chat-api";
@@ -28,8 +28,14 @@ export function IPhoneCompanionComposerButton({ side = "top" }: { side?: "top" |
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [setup, setSetup] = useState(false);
+  const [open, setOpen] = useState(false);
   const [modelPath, setModelPath] = useState("");
-  const [draftPath, setDraftPath] = useState("");
+  const [draftPath, setDraftPath] = useState<string | null>(null);
+  const [drafts, setDrafts] = useState<AccelerationDraft[]>([]);
+  const [draftsLoading, setDraftsLoading] = useState(false);
+  const [draftsError, setDraftsError] = useState<string | null>(null);
+  const [manualDraft, setManualDraft] = useState(false);
+  const selectedDraft = draftPath ?? acceleration?.draftPath ?? "";
   const speed = acceleration?.mode === "speed";
   const ready = readyCompanionDevices(status).length > 0;
   const usable = !modelLoaded || supportsTools;
@@ -45,6 +51,29 @@ export function IPhoneCompanionComposerButton({ side = "top" }: { side?: "top" |
     window.addEventListener("focus", refreshOnFocus);
     return () => { window.clearInterval(timer); window.removeEventListener("focus", refreshOnFocus); };
   }, []);
+
+  useEffect(() => {
+    if (!open || !setup || speed) return;
+    let cancelled = false;
+    let inFlight = false;
+    async function refreshDrafts() {
+      if (inFlight || document.visibilityState !== "visible") return;
+      inFlight = true;
+      setDraftsLoading(true);
+      try {
+        const downloaded = await loadAccelerationDrafts();
+        if (!cancelled) { setDrafts(downloaded); setDraftsError(null); }
+      } catch (failure) {
+        if (!cancelled) setDraftsError(failure instanceof Error ? failure.message : String(failure));
+      } finally {
+        inFlight = false;
+        if (!cancelled) setDraftsLoading(false);
+      }
+    }
+    void refreshDrafts();
+    const timer = window.setInterval(() => void refreshDrafts(), 5_000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [open, setup, speed]);
 
   async function changeMode(mode: "agent" | "speed") {
     const runtime = useChatRuntimeStore.getState();
@@ -77,14 +106,14 @@ export function IPhoneCompanionComposerButton({ side = "top" }: { side?: "top" |
   async function prepare() {
     setBusy(true); setError(null);
     try {
-      const next = await prepareAcceleration(modelPath || acceleration?.modelPath || "", draftPath || acceleration?.draftPath || "");
+      const next = await prepareAcceleration(modelPath || acceleration?.modelPath || "", selectedDraft);
       useCompanionChatStore.getState().setAcceleration(next);
     } catch (failure) { setError(failure instanceof Error ? failure.message : String(failure)); }
     finally { setBusy(false); }
   }
 
   return (
-    <Popover>
+    <Popover open={open} onOpenChange={setOpen}>
       <Tooltip>
         <TooltipTrigger asChild>
           <PopoverTrigger asChild>
@@ -104,7 +133,7 @@ export function IPhoneCompanionComposerButton({ side = "top" }: { side?: "top" |
             : (italian ? "Subagente iPhone o accelerazione via cavo." : "iPhone subagent or wired acceleration.")}
         </TooltipContent>
       </Tooltip>
-      <PopoverContent side={side} align="start" className="w-80 space-y-3">
+      <PopoverContent side={side} align="start" className="w-96 max-w-[calc(100vw-2rem)] max-h-[75vh] overflow-y-auto space-y-3">
         <p className="text-sm font-medium">iPhone Companion</p>
         <div role="radiogroup" aria-label={italian ? "Modalità iPhone" : "iPhone mode"} className="space-y-2">
           <label className="flex items-center gap-2 text-sm">
@@ -133,10 +162,26 @@ export function IPhoneCompanionComposerButton({ side = "top" }: { side?: "top" |
             <label className="block text-xs">Qwen3.8-27B GGUF
               <Input value={modelPath || acceleration?.modelPath || ""} onChange={(event) => setModelPath(event.target.value)} aria-label="Qwen3.8 GGUF path" />
             </label>
-            <label className="block text-xs">dflash2-v2-q4km-self16.gguf
-              <Input value={draftPath || acceleration?.draftPath || ""} onChange={(event) => setDraftPath(event.target.value)} placeholder="/…/dflash2-v2-q4km-self16.gguf" aria-label="DFlash2 GGUF path" />
+            <label className="block text-xs">{italian ? "DFlash2 scaricato" : "Downloaded DFlash2"}
+              <select className="mt-1 w-full rounded-md border bg-background p-2 text-sm" aria-label={italian ? "DFlash2 scaricato" : "Downloaded DFlash2"}
+                value={manualDraft ? "__manual__" : selectedDraft} disabled={busy || acceleration?.preparing}
+                onChange={(event) => {
+                  const manual = event.target.value === "__manual__";
+                  setManualDraft(manual);
+                  if (!manual) setDraftPath(event.target.value);
+                }}>
+                <option value="">{italian ? "Seleziona un draft scaricato…" : "Select a downloaded draft…"}</option>
+                {selectedDraft && !drafts.some((draft) => draft.path === selectedDraft) ? <option value={selectedDraft}>{italian ? "Draft salvato" : "Saved draft"}</option> : null}
+                {drafts.map((draft) => <option key={draft.path} value={draft.path}>{draft.repository ? `${draft.repository.split("/")[0]} · ` : ""}{draft.name} · {Math.round(draft.sizeBytes / 1024 ** 2)} MiB</option>)}
+                <option value="__manual__">{italian ? "Percorso locale manuale…" : "Manual local path…"}</option>
+              </select>
             </label>
-            <Button size="sm" disabled={busy || acceleration?.preparing || !acceleration?.ready || !(draftPath || acceleration?.draftPath)} onClick={() => void prepare()}>
+            {manualDraft ? <Input value={selectedDraft} onChange={(event) => setDraftPath(event.target.value)} placeholder="/…/draft.gguf" aria-label="DFlash2 GGUF path" /> : null}
+            {draftsError ? <p className="text-xs text-destructive" role="alert">{draftsError}</p>
+              : draftsLoading && drafts.length === 0 ? <p className="text-xs" role="status">{italian ? "Ricerca dei DFlash2 compatibili…" : "Finding compatible DFlash2 drafts…"}</p>
+              : drafts.length === 0 ? <p className="text-xs text-muted-foreground">{italian ? "Nessun DFlash2 compatibile scaricato. Attendi il download oppure scegli un file locale." : "No compatible DFlash2 downloaded. Wait for the download or select a local file."}</p> : null}
+            <p className="text-xs text-muted-foreground">{italian ? "Su Mac da 16 GB: cache q4 da 8k sul Mac, contesto restante su iPhone e draft sulla CPU se necessario. Il limite scelto (anche 50k) viene mantenuto; prestazioni da verificare via cavo." : "16 GB Macs: 8k q4 cache locally, remaining context on iPhone, CPU draft when needed. Your selected limit (including 50k) is preserved; wired performance needs verification."}</p>
+            <Button size="sm" disabled={busy || acceleration?.preparing || !acceleration?.ready || !selectedDraft || !(modelPath || acceleration?.modelPath)} onClick={() => void prepare()}>
               {italian ? "Prepara e copia via USB" : "Prepare and copy over USB"}
             </Button>
           </div> : null}

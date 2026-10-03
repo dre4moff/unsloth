@@ -206,6 +206,10 @@ class BackburnerManager:
         from core.companion.backburner_models import validate_profile
         validate_profile(self._model_reader(path))
 
+    def validate_draft(self, draft_path: str, model_path: str) -> None:
+        from core.companion.backburner_drafts import validate_draft
+        validate_draft(draft_path, self._model_reader(model_path))
+
     def runtime_directory(self) -> Path:
         """Materialize the attested runtime in its own versioned install root.
 
@@ -247,12 +251,13 @@ class BackburnerManager:
         if not re.fullmatch(r"[a-f0-9]{64}", str(source.get("sha256", ""))) or self.phone["memory"].get("source_sha256") != source.get("sha256"):
             raise ValueError("iPhone loaded a different tail. Finish preparation and restart its Speed page.")
         draft = self.draft_path or intent.dflash_draft_path or str(Path.home() / "Models/dflash2-v2-q4km-self16.gguf")
-        if not Path(draft).is_file() or Path(draft).name != "dflash2-v2-q4km-self16.gguf":
-            raise ValueError("Select the original dflash2-v2-q4km-self16.gguf draft model.")
+        from core.companion.backburner_profile import launch_profile, metal_budget
+        self.validate_draft(draft, intent.gguf_path)
         wired = int(_run(["/usr/sbin/sysctl", "-n", "iogpu.wired_limit_mb"]).strip())
-        if wired < 20000:
-            raise ValueError("Backburner's original profile requires: sudo sysctl iogpu.wired_limit_mb=20480 (after each reboot).")
-        return {"phone": self.phone.copy(), "draft": draft, "sourceSHA256": source["sha256"]}
+        physical = int(_run(["/usr/sbin/sysctl", "-n", "hw.memsize"]).strip())
+        profile = launch_profile(intent.gguf_path, draft, getattr(intent, "n_ctx", 65536), physical, wired,
+                                 metal_budget(physical, wired) if physical < 24 * 1024**3 else None)
+        return {"phone": self.phone.copy(), "draft": draft, "sourceSHA256": source["sha256"], "profile": profile}
 
     def require_selected_model(self, model_path: str, variant: str | None, intent) -> None:
         if self.mode != "speed":
@@ -317,8 +322,7 @@ class BackburnerManager:
             if not state["ready"]:
                 raise ValueError("Open Increase speed on an iPhone connected by a 10 Gb/s USB cable.")
             await asyncio.to_thread(self.validate_model, model_path)
-            if not Path(draft_path).expanduser().is_file() or Path(draft_path).name != "dflash2-v2-q4km-self16.gguf":
-                raise ValueError("The original DFlash2 draft GGUF was not found.")
+            await asyncio.to_thread(self.validate_draft, draft_path, model_path)
             template = VENDOR / "runtime/anekv/tmpl16k.mlmodelc"
             if not template.is_dir():
                 raise ValueError("This build is missing the original Neural Engine template.")

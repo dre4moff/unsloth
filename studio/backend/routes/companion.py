@@ -75,6 +75,12 @@ async def acceleration_mode(value: AccelerationModeRequest, _: str = Depends(get
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
+@router.get("/acceleration/drafts")
+async def acceleration_drafts(_: str = Depends(get_current_subject)):
+    from core.companion.backburner_drafts import local_drafts
+    return {"drafts": await asyncio.to_thread(local_drafts, backburner_manager.draft_path)}
+
+
 @router.post("/acceleration/prepare")
 async def acceleration_prepare(value: AccelerationPrepareRequest, _: str = Depends(get_current_subject), via_api_key: bool = Depends(authenticated_via_api_key)):
     from routes.provider_credentials import require_ui_session

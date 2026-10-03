@@ -36,6 +36,11 @@ export type AccelerationStatus = {
   author: string; sourceURL: string; engineCommit: string;
 };
 
+export type AccelerationDraft = { path: string; name: string; sizeBytes: number; repository: string | null; weightTypes: string[] };
+export async function loadAccelerationDrafts(): Promise<AccelerationDraft[]> {
+  return (await (await request("/acceleration/drafts")).json()).drafts;
+}
+
 export async function loadAccelerationStatus(): Promise<AccelerationStatus> {
   return (await request("/acceleration/status")).json();
 }

@@ -354,7 +354,8 @@ def test_preflight_rejects_stale_tail_for_other_quant_or_finetune(tmp_path, monk
     draft = tmp_path / "dflash2-v2-q4km-self16.gguf"; draft.write_bytes(b"draft")
     manager.draft_path = str(draft)
     monkeypatch.setattr(manager, "status", lambda: {"ready": True, "prepared": True})
-    monkeypatch.setattr(bb, "_run", lambda *args: b"20480")
+    monkeypatch.setattr(manager, "validate_draft", lambda *args: None)
+    monkeypatch.setattr(bb, "_run", lambda args: str(24 * 1024**3).encode() if args[-1] == "hw.memsize" else b"20480")
     intent = SimpleNamespace(gguf_path=str(path), dflash_draft_path=None)
     assert manager.preflight(intent)["sourceSHA256"] == "a" * 64
     manager.phone["memory"]["source_sha256"] = wrong_phone_sha
@@ -413,7 +414,10 @@ async def test_shutdown_terminates_owned_preparation_child(tmp_path, monkeypatch
     assert child.poll() is not None and manager._prepare_process is None
 
 
-def test_original_launch_profile_and_isolation(tmp_path, monkeypatch):
+@pytest.mark.parametrize("profile", [None, {"name": "memory-saving", "context": 8192,
+    "totalContext": 50000, "kv": "q4_0", "bytesPerToken": 18432, "batch": 128,
+    "ubatch": 64, "checkpoints": 1, "loadMode": "mmap", "draftMax": 3, "draftGpuLayers": 0}])
+def test_original_launch_profile_and_isolation(tmp_path, monkeypatch, profile):
     from core.companion import backburner_runtime as runtime
     from core.inference.llama_cpp import GgufLoadIntent
     manager = BackburnerManager()
@@ -423,7 +427,7 @@ def test_original_launch_profile_and_isolation(tmp_path, monkeypatch):
     phone = {"address": "169.254.1.2", "memory": {"sys_wired_mb": 4000, "avail_mb": 5000}}
     draft = tmp_path / "draft.gguf"; draft.write_bytes(b"draft")
     source_sha = "a" * 64
-    monkeypatch.setattr(manager, "preflight", lambda intent: {"phone": phone, "draft": str(draft), "sourceSHA256": source_sha})
+    monkeypatch.setattr(manager, "preflight", lambda intent: {"phone": phone, "draft": str(draft), "sourceSHA256": source_sha, **({"profile": profile} if profile else {})})
     monkeypatch.setattr(manager, "runtime_directory", lambda: tmp_path / "isolated-runtime")
     monkeypatch.setattr(runtime, "backburner_manager", manager)
     launches = []
@@ -438,13 +442,18 @@ def test_original_launch_profile_and_isolation(tmp_path, monkeypatch):
     _, launch = launches[0]; env = launch["env"]
     assert env["BIN"] == str(tmp_path / "isolated-runtime/bin")
     assert env["LLAMA_SPLIT_TAIL"] == "169.254.1.2:50060" and env["PHONE_KV"] == "169.254.1.2:50062"
-    assert env["CTX"] == "65536" and env["KV"] == "q8_0" and env["PROXY"] == "1"
+    local = 8192 if profile else 65536
+    kv = "q4_0" if profile else "q8_0"
+    assert env["CTX"] == str(local) and env["KV"] == kv and env["PROXY"] == "1"
+    if profile:
+        assert env["LOAD_MODE"] == "mmap" and env["SPLIT_UB"] == "64"
+        assert "-ngld 0" in env["SERVER_ARGS"] and "--spec-draft-n-max 3" in env["SERVER_ARGS"]
     assert "SPEC_TYPE" not in env and launch["start_new_session"] is True
     assert Path(env["CACHE_DIR"]).parent.name == backend._backburner_cache_identity
-    assert Path(env["CACHE_DIR"]).name == "q8_0"
-    expected = min(262144,65536+min((9400-4000)*1048576//34816//4096*4096,(5000-512)*1048576//34816//4096*4096))
+    assert Path(env["CACHE_DIR"]).name == kv
+    expected = 50000 if profile else min(262144,65536+min((9400-4000)*1048576//34816//4096*4096,(5000-512)*1048576//34816//4096*4096))
     assert int(env["CTX_TOTAL"]) == expected == backend._context_length
-    assert backend._effective_parallel_slots == 1 and backend._cache_type_kv == "q8_0"
+    assert backend._effective_parallel_slots == 1 and backend._cache_type_kv == kv
     assert backend._last_load_intent.n_ctx == 2048 and backend._last_load_intent.n_parallel == 8
     backend._llama_log_fh.close()
     backend.is_loaded = True

@@ -7,7 +7,7 @@ COMPANION_ROOT=${SCRIPT_DIR:h}
 PROJECT_DIR="$COMPANION_ROOT/Unsloth Companion"
 PROJECT_FILE="$PROJECT_DIR/Unsloth Companion.xcodeproj"
 RELEASE_DIR=${1:-"${COMPANION_ROOT:h}/release"}
-IPA_NAME="Unsloth-Companion_0.0.3_unsigned.ipa"
+IPA_NAME="Unsloth-Companion_0.0.4_unsigned.ipa"
 DEVELOPER_DIR_PATH=${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}
 DERIVED_DIR=$(mktemp -d /tmp/unsloth-companion-derived.XXXXXX)
 PACKAGE_DIR=$(mktemp -d /tmp/unsloth-companion-ipa.XXXXXX)
@@ -45,7 +45,7 @@ FRAMEWORK="$APP/Frameworks/llama.framework"
 # distribuzione, per non incorporare percorsi della macchina di compilazione.
 DEVELOPER_DIR="$DEVELOPER_DIR_PATH" xcrun strip -S -x "$EXECUTABLE"
 
-[[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist")" == "10" ]]
+[[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist")" == "11" ]]
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$APP/Info.plist")" == "18.6" ]]
 [[ "$(lipo -archs "$EXECUTABLE")" == "arm64" ]]
 [[ "$(lipo -archs "$FRAMEWORK/llama")" == "arm64" ]]

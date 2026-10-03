@@ -21,8 +21,12 @@ def load_backburner(backend, intent, cancel_event=None) -> bool:
     identity = backend._gguf_load_source_identity(intent.gguf_path)
     draft = Path(config["draft"]).expanduser().resolve()
     draft_stat = draft.stat()
+    profile = config.get("profile") or {"name": "original", "context": 65536, "kv": "q8_0",
+        "bytesPerToken": 34816, "batch": 2048, "ubatch": 256, "checkpoints": 3, "loadMode": "none"}
+    local, kv = profile["context"], profile["kv"]
     cache_identity = hashlib.sha256(json.dumps([
         config["sourceSHA256"], str(draft), draft_stat.st_size, draft_stat.st_mtime_ns,
+        profile,
     ]).encode()).hexdigest()
     if (getattr(backend, "_backburner_active", False) and backend.is_loaded
         and backend._gguf_load_identity == identity
@@ -44,15 +48,17 @@ def load_backburner(backend, intent, cancel_event=None) -> bool:
     if interpreter.is_symlink():
         interpreter.unlink()
     interpreter.symlink_to(sys.executable)
-    # Original defaults: 64k local q8_0; phone's free memory determines total.
+    # Use upstream's phone reserve and bytes/token for the selected cache type.
     mem = phone["memory"]
     wired, available = int(mem.get("sys_wired_mb", 0)), int(mem.get("avail_mb", 0))
     if not 0 < wired < 9400 or available <= 512:
         raise ValueError("iPhone has insufficient available memory for the original Backburner profile.")
-    share = min((9400-wired)*1048576//34816//4096*4096,
-                (available-512)*1048576//34816//4096*4096)
-    total = min(262144, 65536 + share)
-    if total <= 65536:
+    bpt = profile["bytesPerToken"]
+    share = min((9400-wired)*1048576//bpt//4096*4096,
+                (available-512)*1048576//bpt//4096*4096)
+    cap = min(262144, local + share)
+    total = profile.get("totalContext", cap)
+    if total > cap or (total > local and share <= 0):
         raise ValueError("iPhone has insufficient memory for remote KV pages.")
     backend.unload_model()
     with backend._lock:
@@ -81,12 +87,15 @@ def load_backburner(backend, intent, cancel_event=None) -> bool:
             }:
                 env.pop(key)
         env.update(BIN=str(runtime / "bin"), MODEL=intent.gguf_path,
-                   DRAFT=config["draft"], CTX="65536", CTX_TOTAL=str(total), KV="q8_0",
+                   DRAFT=config["draft"], CTX=str(local), CTX_TOTAL=str(total), KV=kv,
                    PORT=str(backend._port), PHONE="0", PHONE_IP=phone["address"],
                    LLAMA_SPLIT_TAIL=f'{phone["address"]}:50060',
                    PHONE_KV=f'{phone["address"]}:50062',
-                   CACHE_DIR=str(root / "cache" / cache_identity / "q8_0"), PROXY="1",
+                   CACHE_DIR=str(root / "cache" / cache_identity / kv), PROXY="1",
                    PATH=str(shim)+os.pathsep+env.get("PATH", "/usr/bin:/bin"))
+        if profile["name"] == "memory-saving":
+            env.update(LOAD_MODE="mmap", CACHE_RAM="0", CTX_CHECKPOINTS="1", SPLIT_UB="64",
+                       SERVER_ARGS=f'-b 128 -ub 64 --spec-draft-n-max 3 -ngld {profile["draftGpuLayers"]}')
         backend._read_gguf_metadata(intent.gguf_path)
         backend._api_key = None
         backend._stdout_lines = []
@@ -118,17 +127,17 @@ def load_backburner(backend, intent, cancel_event=None) -> bool:
         backend._kv_cache_context_total = total
         backend._effective_parallel_slots = 1
         backend._requested_n_parallel = 1
-        backend._n_batch = 2048
-        backend._n_ubatch = 256
-        backend._cache_type_kv = "q8_0"
-        backend._effective_cache_types = ("q8_0", "q8_0")
+        backend._n_batch = profile["batch"]
+        backend._n_ubatch = profile["ubatch"]
+        backend._cache_type_kv = kv
+        backend._effective_cache_types = (kv, kv)
         backend._gpu_offload_active = True
         backend._is_vision = False
         backend._is_audio = False
         backend._tensor_parallel = False
         backend._speculative_type = "draft-dflash"
         backend._spec_drafter_kind = "dflash"
-        backend._requested_n_ctx = 65536
+        backend._requested_n_ctx = local
         backend._launch_binary_revision = backend._binary_revision(str(runtime / "bin/llama-server"))
         backend._gguf_load_identity = identity
         backend._backburner_active = True

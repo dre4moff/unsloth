@@ -245,7 +245,7 @@
 "Phone-held context" = "Contesto su iPhone";
 "Waiting" = "In attesa";
 "On Mac, open Tools → iPhone → Increase speed. Prepare your Qwen3.8-27B GGUF (supported quantization, including abliterated/uncensored variants) and DFlash2 draft, then switch this page off and on after the USB transfer." = "Sul Mac apri Tools → iPhone → Aumenta velocità. Prepara il tuo GGUF Qwen3.8-27B (quantizzazione supportata, incluse varianti abliterate/uncensored) e il draft DFlash2, poi disattiva e riattiva questa pagina dopo il trasferimento USB.";
-"Long prompts are read in parallel. Below 64k context, writing speed remains the Mac's. Beyond 64k, iPhone holds old context and computes its attention." = "I prompt lunghi vengono letti in parallelo. Sotto 64k di contesto la velocità di scrittura dipende dal Mac. Oltre 64k iPhone conserva il contesto precedente e ne calcola l’attenzione.";
+"Long prompts are read in parallel while context fits on the Mac. iPhone holds older context beyond the Mac's local cache: 64k in the original profile, up to 8k in the 16 GB profile. A 50k total context is supported when phone memory allows." = "I prompt lunghi vengono letti in parallelo finché il contesto entra nel Mac. iPhone conserva il contesto precedente oltre la cache locale del Mac: 64k nel profilo originale, fino a 8k nel profilo da 16 GB. Sono supportati 50k totali se la memoria di iPhone lo permette.";
 "Credits" = "Crediti";
 "Backburner by StayLameBro" = "Backburner di StayLameBro";
 "Original MIT-licensed engine, kernels and protocols by StayLameBro. Integrated with a separate pinned runtime in Unsloth Companion." = "Motore, kernel e protocolli originali di StayLameBro con licenza MIT. Integrati in Unsloth Companion con un runtime separato e una versione fissata.";
