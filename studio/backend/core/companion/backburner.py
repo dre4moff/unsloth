@@ -197,20 +197,13 @@ class BackburnerManager:
                 "draftPath": self.draft_path, "author": UPSTREAM["author"],
                 "sourceURL": UPSTREAM["repository"], "engineCommit": UPSTREAM["engine_commit"]}
 
+    def _model_reader(self, path: str):
+        from core.companion.backburner_gguf import pinned_gguf
+        return pinned_gguf().GGUFReader(str(Path(path).expanduser()))
+
     def validate_model(self, path: str) -> None:
-        # The original algorithms assume this exact 64-layer hybrid architecture.
-        gguf_path = str(VENDOR / "llama.cpp" / "gguf-py")
-        if gguf_path not in sys.path:
-            sys.path.insert(0, gguf_path)
-        import gguf
-        reader = gguf.GGUFReader(str(Path(path).expanduser()))
-        def field(name):
-            item = reader.get_field(name)
-            return item.contents() if item else None
-        if (field("general.architecture") != "qwen35" or field("qwen35.block_count") != 64
-            or "qwen3.8" not in str(field("general.name")).lower()
-            or field("general.file_type") != 30):  # MOSTLY_IQ4_XS
-            raise ValueError("Backburner requires the original Qwen3.8-27B IQ4_XS GGUF profile.")
+        from core.companion.backburner_models import validate_profile
+        validate_profile(self._model_reader(path))
 
     def runtime_directory(self) -> Path:
         """Materialize the attested runtime in its own versioned install root.
@@ -250,7 +243,7 @@ class BackburnerManager:
         source = json.loads(marker.read_text())
         if source.get("file") != [str(Path(intent.gguf_path).resolve()), stat.st_size, stat.st_mtime_ns]:
             raise ValueError("The Mac model changed. Prepare its iPhone tail again.")
-        if self.phone["memory"].get("source_sha256") != source.get("sha256"):
+        if not re.fullmatch(r"[a-f0-9]{64}", str(source.get("sha256", ""))) or self.phone["memory"].get("source_sha256") != source.get("sha256"):
             raise ValueError("iPhone loaded a different tail. Finish preparation and restart its Speed page.")
         draft = self.draft_path or intent.dflash_draft_path or str(Path.home() / "Models/dflash2-v2-q4km-self16.gguf")
         if not Path(draft).is_file() or Path(draft).name != "dflash2-v2-q4km-self16.gguf":
@@ -258,7 +251,7 @@ class BackburnerManager:
         wired = int(_run(["/usr/sbin/sysctl", "-n", "iogpu.wired_limit_mb"]).strip())
         if wired < 20000:
             raise ValueError("Backburner's original profile requires: sudo sysctl iogpu.wired_limit_mb=20480 (after each reboot).")
-        return {"phone": self.phone.copy(), "draft": draft}
+        return {"phone": self.phone.copy(), "draft": draft, "sourceSHA256": source["sha256"]}
 
     def require_selected_model(self, model_path: str, variant: str | None, intent) -> None:
         if self.mode != "speed":
@@ -279,7 +272,7 @@ class BackburnerManager:
             intent = backend.last_load_intent
             if mode == "speed":
                 if intent is None or not backend.is_loaded:
-                    raise ValueError("Load Qwen3.8-27B IQ4_XS on the Mac before increasing speed.")
+                    raise ValueError("Load a compatible Qwen3.8-27B GGUF on the Mac before increasing speed.")
                 await asyncio.to_thread(self.preflight, intent)
                 if active_generations.count() or companion.has_pending_work():
                     raise ValueError("A task started while checking the iPhone. Finish it before switching.")
@@ -407,11 +400,15 @@ class BackburnerManager:
     def _prepare_files(self, model: str, template: Path, phone: dict) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
         mem = phone_command(phone, "mem")
-        # Same recommended tails as upstream: A19 L40; A18/A17 L52.
+        from core.companion.backburner_models import tail_layer, validate_profile
         device = str(mem.get("device_model", ""))
-        layer = 40 if device.startswith("iPhone18,") else 52
-        tail = self.root / f"tail-iq4xs-L{layer}-nohead.gguf"
+        reader = self._model_reader(model)
+        validate_profile(reader)
+        layer = tail_layer(reader, device)
+        del reader
         signature = [model, Path(model).stat().st_size, Path(model).stat().st_mtime_ns, layer]
+        identity = hashlib.sha256(json.dumps(signature).encode()).hexdigest()[:16]
+        tail = self.root / f"tail-{identity}-L{layer}-nohead.gguf"
         manifest = tail.with_suffix(".json")
         if not tail.is_file() or not manifest.is_file() or json.loads(manifest.read_text()) != signature:
             self.progress = f"Preparing the original iPhone tail (L{layer})…"

@@ -244,7 +244,7 @@
 "Last chunk" = "Ultimo blocco";
 "Phone-held context" = "Contesto su iPhone";
 "Waiting" = "In attesa";
-"On Mac, open Tools → iPhone → Increase speed. Prepare the original Qwen3.8-27B IQ4_XS model and DFlash2 draft, then switch this page off and on after the USB transfer." = "Sul Mac apri Tools → iPhone → Aumenta velocità. Prepara il modello originale Qwen3.8-27B IQ4_XS e il draft DFlash2, poi disattiva e riattiva questa pagina dopo il trasferimento USB.";
+"On Mac, open Tools → iPhone → Increase speed. Prepare your Qwen3.8-27B GGUF (supported quantization, including abliterated/uncensored variants) and DFlash2 draft, then switch this page off and on after the USB transfer." = "Sul Mac apri Tools → iPhone → Aumenta velocità. Prepara il tuo GGUF Qwen3.8-27B (quantizzazione supportata, incluse varianti abliterate/uncensored) e il draft DFlash2, poi disattiva e riattiva questa pagina dopo il trasferimento USB.";
 "Long prompts are read in parallel. Below 64k context, writing speed remains the Mac's. Beyond 64k, iPhone holds old context and computes its attention." = "I prompt lunghi vengono letti in parallelo. Sotto 64k di contesto la velocità di scrittura dipende dal Mac. Oltre 64k iPhone conserva il contesto precedente e ne calcola l’attenzione.";
 "Credits" = "Crediti";
 "Backburner by StayLameBro" = "Backburner di StayLameBro";

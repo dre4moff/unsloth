@@ -247,6 +247,7 @@ package-lock.json
 llama.cpp/
 !studio/backend/vendor/backburner/llama.cpp/
 !studio/backend/vendor/backburner/llama.cpp/**
+studio/backend/vendor/backburner/**/__pycache__/
 # Generated pinned runtimes are included in releases, rebuilt from UPSTREAM.json.
 studio/backend/vendor/backburner/runtime/bin/
 studio/backend/vendor/backburner/runtime/anekv/

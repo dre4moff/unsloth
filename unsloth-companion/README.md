@@ -1,6 +1,6 @@
 # Unsloth Companion open prototype
 
-Companion 0.0.2 adds a separate wired acceleration page using **Backburner by StayLameBro**. Agent and acceleration are mutually exclusive. Follow the [Backburner setup, requirements and validation notes](../docs/iphone-backburner.md); its original model profile is required, and physical cable/inference acceptance remains pending.
+Companion 0.0.3 adds a separate wired acceleration page using **Backburner by StayLameBro**. Agent and acceleration are mutually exclusive. Follow the [Backburner setup, requirements and validation notes](../docs/iphone-backburner.md); Qwen3.8-27B compatible derivatives and supported quantizations are accepted, and physical cable/inference acceptance remains pending.
 
 Unsloth Companion turns one or more iPhones into private, local co-processors for
 an offline LLM application. The desktop model remains the orchestrator, owns the

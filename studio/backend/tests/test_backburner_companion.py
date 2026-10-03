@@ -206,17 +206,130 @@ def test_incompatible_model_is_rejected(tmp_path):
     writer = gguf.GGUFWriter(str(path), "llama")
     writer.add_name("Other model"); writer.add_block_count(32); writer.add_file_type(30)
     writer.write_header_to_file(); writer.write_kv_data_to_file(); writer.write_tensors_to_file(); writer.close()
-    with pytest.raises(ValueError, match="original Qwen3.8"):
+    with pytest.raises(ValueError, match="requires Qwen3.8"):
         BackburnerManager().validate_model(str(path))
 
 
-def test_original_model_metadata_is_accepted(tmp_path):
-    import gguf
-    path = tmp_path / "original.gguf"
+def write_qwen(path, *, name="Qwen3.8-27B", file_type=30, nextn=0, changes=None, tensor_type="F32"):
+    from core.companion.backburner_gguf import pinned_gguf
+    gguf = pinned_gguf()
+    import numpy as np
+    from core.companion.backburner_models import PROFILE
     writer = gguf.GGUFWriter(str(path), "qwen35")
-    writer.add_name("Qwen3.8-27B"); writer.add_block_count(64); writer.add_file_type(30)
+    values = {f"qwen35.{key}": value for key, value in PROFILE.items()}
+    values.update({"qwen35.block_count": 64 + nextn, "qwen35.nextn_predict_layers": nextn})
+    values.update(changes or {})
+    writer.add_name(name)
+    if file_type is not None:
+        writer.add_file_type(file_type)
+    for key, value in values.items():
+        writer.add_uint32(key, value)
+    kind = gguf.GGMLQuantizationType[tensor_type]
+    block, size = gguf.GGML_QUANT_SIZES[kind]
+    data = np.zeros(5120 // block * size, dtype=np.uint8)
+    writer.add_tensor("blk.0.ffn_gate.weight", data, raw_dtype=kind)
     writer.write_header_to_file(); writer.write_kv_data_to_file(); writer.write_tensors_to_file(); writer.close()
+    return path
+
+
+def test_original_model_metadata_is_accepted(tmp_path):
+    path = write_qwen(tmp_path / "original.gguf")
     BackburnerManager().validate_model(str(path))
+
+
+@pytest.mark.parametrize("name", ["Qwen3.8-27B", "Huihui Qwen3.8 27B Abliterated", "Qwen3.8-27B uncensored", "Qwen-3.8-27B fine-tune"])
+@pytest.mark.parametrize("nextn", [0, 1])
+def test_derivatives_and_optional_mtp_are_accepted(tmp_path, name, nextn):
+    path = write_qwen(tmp_path / "renamed.gguf", name=name, file_type=26, nextn=nextn, tensor_type="IQ3_XXS")
+    BackburnerManager().validate_model(str(path))
+
+
+from core.companion.backburner_models import METAL_WEIGHT_TYPES, PROFILE, tail_layer
+
+
+@pytest.mark.parametrize("tensor_type", sorted(METAL_WEIGHT_TYPES))
+@pytest.mark.parametrize("file_type", [None, 26])
+def test_all_pinned_metal_weight_formats_ignore_filename_and_summary(tmp_path, tensor_type, file_type):
+    path = write_qwen(tmp_path / "arbitrary-name.gguf", file_type=file_type, tensor_type=tensor_type)
+    BackburnerManager().validate_model(str(path))
+
+
+@pytest.mark.parametrize("tensor_type", ["NVFP4", "TQ1_0", "Q8_1", "Q8_K", "I8", "F64"])
+def test_unsupported_weight_formats_fail_before_transfer(tmp_path, tensor_type):
+    path = write_qwen(tmp_path / "bad.gguf", tensor_type=tensor_type)
+    with pytest.raises(ValueError, match="cannot use these weight formats"):
+        BackburnerManager().validate_model(str(path))
+
+
+@pytest.mark.parametrize("key", list(PROFILE) + ["block_count", "nextn_predict_layers"])
+def test_incompatible_geometry_is_rejected_even_with_qwen_name(tmp_path, key):
+    path = write_qwen(tmp_path / "bad-geometry.gguf", changes={f"qwen35.{key}": 1})
+    with pytest.raises(ValueError, match="geometry|trunk layers"):
+        BackburnerManager().validate_model(str(path))
+
+
+@pytest.mark.parametrize("device,per_layer,expected", [("iPhone18,2", 200*1024**2, 40),
+    ("iPhone17,2", 200*1024**2, 52), ("iPhone18,2", 500*1024**2, 52), ("iPhone17,2", 500*1024**2, 60)])
+def test_tail_budget_keeps_original_splits_or_shortens_heavy_quants(device, per_layer, expected):
+    reader = SimpleNamespace(tensors=[SimpleNamespace(name=f"blk.{n}.ffn_up.weight", n_bytes=per_layer) for n in range(65)] +
+        [SimpleNamespace(name="output.weight", n_bytes=100*1024**3)])
+    assert tail_layer(reader, device) == expected
+
+
+def test_impossible_tail_is_rejected():
+    reader = SimpleNamespace(tensors=[SimpleNamespace(name="blk.63.ffn_up.weight", n_bytes=7*1024**3)])
+    with pytest.raises(ValueError, match="smallest iPhone tail"):
+        tail_layer(reader, "iPhone18,2")
+
+
+def test_sharded_model_requires_merge_before_tail_preparation(tmp_path):
+    path = write_qwen(tmp_path / "shard.gguf", changes={"split.count": 2})
+    with pytest.raises(ValueError, match="Merge the GGUF shards"):
+        BackburnerManager().validate_model(str(path))
+
+
+def test_pinned_reader_does_not_replace_or_use_installed_gguf(tmp_path):
+    import gguf
+    import sys
+    path = write_qwen(tmp_path / "new-format.gguf", tensor_type="Q2_0")
+    reader = BackburnerManager()._model_reader(str(path))
+    assert reader.tensors[0].tensor_type.name == "Q2_0"
+    assert sys.modules["gguf"] is gguf
+    assert type(reader).__module__ == "_unsloth_backburner_gguf.gguf_reader"
+
+
+@pytest.mark.parametrize("name", ["token_embd.weight", "output.weight"])
+def test_derivative_with_resized_draft_vocabulary_is_rejected(tmp_path, name):
+    from core.companion.backburner_models import validate_profile
+    path = write_qwen(tmp_path / "resized.gguf", name="Qwen3.8-27B Uncensored")
+    reader = BackburnerManager()._model_reader(str(path))
+    reader.tensors.append(SimpleNamespace(name=name, shape=[5120, 248321], tensor_type=SimpleNamespace(name="F16")))
+    with pytest.raises(ValueError, match="changed the vocabulary"):
+        validate_profile(reader)
+
+
+@pytest.mark.parametrize("wrong_phone_sha", [None, "b" * 64])
+def test_preflight_rejects_stale_tail_for_other_quant_or_finetune(tmp_path, monkeypatch, wrong_phone_sha):
+    path = write_qwen(tmp_path / "abliterated-IQ3.gguf", nextn=1, tensor_type="IQ3_XXS")
+    manager = BackburnerManager()
+    manager.phone = {"memory": {"source_sha256": "a" * 64}}
+    manager.root.mkdir(parents=True, exist_ok=True)
+    stat = path.stat()
+    (manager.root / "source.json").write_text(json.dumps({
+        "file": [str(path.resolve()), stat.st_size, stat.st_mtime_ns], "sha256": "a" * 64}))
+    draft = tmp_path / "dflash2-v2-q4km-self16.gguf"; draft.write_bytes(b"draft")
+    manager.draft_path = str(draft)
+    monkeypatch.setattr(manager, "status", lambda: {"ready": True, "prepared": True})
+    monkeypatch.setattr(bb, "_run", lambda *args: b"20480")
+    intent = SimpleNamespace(gguf_path=str(path), dflash_draft_path=None)
+    assert manager.preflight(intent)["sourceSHA256"] == "a" * 64
+    manager.phone["memory"]["source_sha256"] = wrong_phone_sha
+    with pytest.raises(ValueError, match="different tail"):
+        manager.preflight(intent)
+    manager.phone["memory"]["source_sha256"] = "a" * 64
+    path.touch()
+    with pytest.raises(ValueError, match="Mac model changed"):
+        manager.preflight(intent)
 
 
 @pytest.mark.parametrize("path,variant,accepted", [("org/model", "IQ4_XS", True),
@@ -274,7 +387,9 @@ def test_original_launch_profile_and_isolation(tmp_path, monkeypatch):
     monkeypatch.setenv("LLAMA_SPLIT_TAIL", "192.168.1.2:50060")
     monkeypatch.setenv("SPEC_TYPE", "draft-mtp")
     phone = {"address": "169.254.1.2", "memory": {"sys_wired_mb": 4000, "avail_mb": 5000}}
-    monkeypatch.setattr(manager, "preflight", lambda intent: {"phone": phone, "draft": "/draft.gguf"})
+    draft = tmp_path / "draft.gguf"; draft.write_bytes(b"draft")
+    source_sha = "a" * 64
+    monkeypatch.setattr(manager, "preflight", lambda intent: {"phone": phone, "draft": str(draft), "sourceSHA256": source_sha})
     monkeypatch.setattr(manager, "runtime_directory", lambda: tmp_path / "isolated-runtime")
     monkeypatch.setattr(runtime, "backburner_manager", manager)
     launches = []
@@ -291,10 +406,22 @@ def test_original_launch_profile_and_isolation(tmp_path, monkeypatch):
     assert env["LLAMA_SPLIT_TAIL"] == "169.254.1.2:50060" and env["PHONE_KV"] == "169.254.1.2:50062"
     assert env["CTX"] == "65536" and env["KV"] == "q8_0" and env["PROXY"] == "1"
     assert "SPEC_TYPE" not in env and launch["start_new_session"] is True
+    assert Path(env["CACHE_DIR"]).parent.name == backend._backburner_cache_identity
+    assert Path(env["CACHE_DIR"]).name == "q8_0"
     expected = min(262144,65536+min((9400-4000)*1048576//34816//4096*4096,(5000-512)*1048576//34816//4096*4096))
     assert int(env["CTX_TOTAL"]) == expected == backend._context_length
     assert backend._effective_parallel_slots == 1 and backend._cache_type_kv == "q8_0"
     assert backend._last_load_intent.n_ctx == 2048 and backend._last_load_intent.n_parallel == 8
+    backend._llama_log_fh.close()
+    backend.is_loaded = True
+    assert runtime.load_backburner(backend, intent) and len(launches) == 1
+    source_sha = "b" * 64
+    assert runtime.load_backburner(backend, intent) and len(launches) == 2
+    assert launches[0][1]["env"]["CACHE_DIR"] != launches[1][1]["env"]["CACHE_DIR"]
+    backend._llama_log_fh.close()
+    draft.write_bytes(b"changed draft")
+    assert runtime.load_backburner(backend, intent) and len(launches) == 3
+    assert launches[1][1]["env"]["CACHE_DIR"] != launches[2][1]["env"]["CACHE_DIR"]
     backend._llama_log_fh.close()
 
 

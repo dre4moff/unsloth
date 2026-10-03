@@ -1,3 +1,7 @@
+# Companion 0.0.3 — interchangeable Qwen target weights
+
+Backburner now accepts Qwen3.8-27B derivatives (including abliterated/uncensored), mixed/dynamic quantizations and optional MTP blocks. Compatibility checks use the actual pinned-engine tensor formats and 27B geometry. Tail weights retain their exact quantization; heavy tails use a later split to stay within conservative phone budgets. Mac SSD/KV caches are isolated by target content and draft identity. The dedicated phone page and Mac preparation instructions describe the selected compatible GGUF. The DFlash2 draft, author credit, isolated engine and exclusive Agent/Speed lifecycle remain the original profile.
+
 ## Companion 0.0.2 / Studio v0.1.800-mlx.36 (prerelease)
 
 Adds the dedicated Speed page and Mac Tools → iPhone selector for Backburner by StayLameBro. Agent and acceleration are exclusive. The Mac requires the exact iPhone USB device/interface to negotiate 10 Gb/s or faster; unknown speed and Wi-Fi do not qualify. The original Qwen3.8-27B IQ4_XS/DFlash2 profile and pinned, isolated engine are required. Native shutdown owns all workers and sockets; Agent settings are restored, and temporary suspension is not persisted over a Mac restart.

@@ -34,7 +34,7 @@ struct BackburnerView: View {
                     LabeledContent("Last chunk") { Text("\(acceleration.tokensPerSecond, specifier: "%.1f") tok/s") }
                     LabeledContent("Phone-held context", value: acceleration.heldKeys.formatted())
                     LabeledContent("Mac", value: acceleration.macPhase.isEmpty ? String(localized: "Waiting") : acceleration.macPhase)
-                    Text("On Mac, open Tools → iPhone → Increase speed. Prepare the original Qwen3.8-27B IQ4_XS model and DFlash2 draft, then switch this page off and on after the USB transfer.")
+                    Text("On Mac, open Tools → iPhone → Increase speed. Prepare your Qwen3.8-27B GGUF (supported quantization, including abliterated/uncensored variants) and DFlash2 draft, then switch this page off and on after the USB transfer.")
                         .font(.footnote).foregroundStyle(.secondary)
                     Text("Long prompts are read in parallel. Below 64k context, writing speed remains the Mac's. Beyond 64k, iPhone holds old context and computes its attention.")
                         .font(.footnote).foregroundStyle(.secondary)

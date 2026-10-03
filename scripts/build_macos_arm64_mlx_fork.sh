@@ -5,8 +5,8 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 release_dir="$repo_root/release"
-app_version="0.1.800-mlx.36"
-backend_version="2026.8.19+mlxcompaction8.companion20.kaggletpu9.backburner1.release36"
+app_version="0.1.800-mlx.37"
+backend_version="2026.8.19+mlxcompaction8.companion20.kaggletpu9.backburner1.release37"
 rust_toolchain="1.89.0"
 wheel_name="unsloth-${backend_version}-py3-none-any.whl"
 resource_dir="$repo_root/studio/src-tauri/resources/backend"
@@ -43,6 +43,8 @@ python3 -m py_compile \
     "$repo_root/studio/backend/hub/services/models/relocation.py" \
     "$repo_root/studio/backend/core/companion/manager.py" \
     "$repo_root/studio/backend/core/companion/backburner.py" \
+    "$repo_root/studio/backend/core/companion/backburner_models.py" \
+    "$repo_root/studio/backend/core/companion/backburner_gguf.py" \
     "$repo_root/studio/backend/core/companion/backburner_runtime.py" \
     "$repo_root/studio/backend/core/inference/inference.py" \
     "$repo_root/studio/backend/core/inference/kaggle_tpu.py" \
@@ -153,27 +155,28 @@ with zipfile.ZipFile(sys.argv[1]) as wheel:
     for rel, digest in runtime["files"].items():
         if hashlib.sha256(wheel.read(prefix + "runtime/" + rel)).hexdigest() != digest:
             raise SystemExit(f"Bundled Backburner runtime failed integrity: {rel}")
-    for rel in ("core/companion/backburner.py", "core/companion/backburner_runtime.py"):
+    for rel in ("core/companion/backburner.py", "core/companion/backburner_runtime.py",
+                "core/companion/backburner_models.py", "core/companion/backburner_gguf.py"):
         if "studio/backend/" + rel not in wheel.namelist():
             raise SystemExit(f"Missing Backburner integration: {rel}")
 PY
 if ! unzip -p "$built_wheel" studio/backend/core/inference/orchestrator.py \
-    | grep -Fq "def compact_chat_context"; then
+    | grep -F "def compact_chat_context" >/dev/null; then
     echo "Backend wheel does not contain MLX context compaction." >&2
     exit 1
 fi
 if ! unzip -p "$built_wheel" studio/backend/requirements/studio.txt \
-    | grep -Fxq "psutil==7.2.2"; then
+    | grep -Fx "psutil==7.2.2" >/dev/null; then
     echo "Backend wheel does not contain the required psutil runtime pin." >&2
     exit 1
 fi
 if ! unzip -p "$built_wheel" studio/backend/requirements/studio.txt \
-    | grep -Fq "kaggle==2.2.4"; then
+    | grep -F "kaggle==2.2.4" >/dev/null; then
     echo "Backend wheel does not contain the Kaggle CLI runtime pin." >&2
     exit 1
 fi
 if ! unzip -p "$built_wheel" studio/backend/requirements/studio.txt \
-    | grep -Fxq "websockets>=15.0.1"; then
+    | grep -Fx "websockets>=15.0.1" >/dev/null; then
     echo "Backend wheel does not contain the interactive Kaggle websocket runtime dependency." >&2
     exit 1
 fi
@@ -196,22 +199,24 @@ for bundled_kaggle_file in \
     fi
 done
 if ! unzip -p "$built_wheel" studio/backend/core/inference/providers.py \
-    | grep -Fq '"kaggle_tpu": {'; then
+    | grep -F '"kaggle_tpu": {' >/dev/null; then
     echo "Backend wheel does not register the Kaggle TPU provider." >&2
     exit 1
 fi
 if ! unzip -p "$built_wheel" studio/backend/utils/_studio_release_build.py \
-    | grep -Fq "STUDIO_RELEASE_VERSION = \"v$app_version\""; then
+    | grep -F "STUDIO_RELEASE_VERSION = \"v$app_version\"" >/dev/null; then
     echo "Backend wheel release stamp does not match v$app_version." >&2
     exit 1
 fi
 if ! unzip -p "$built_wheel" studio/backend/routes/companion.py \
-    | grep -Fq 'async def status'; then
+    | grep -F 'async def status' >/dev/null; then
     echo "Backend wheel does not contain the iPhone Companion API." >&2
     exit 1
 fi
+# Read the entire unzip stream: grep -q can close it early and trigger SIGPIPE
+# under pipefail, falsely reporting a missing marker in a valid wheel.
 if ! unzip -p "$built_wheel" studio/backend/main.py \
-    | grep -Fq 'app.include_router(companion_router, prefix = "/api/companion"'; then
+    | grep -F 'app.include_router(companion_router, prefix = "/api/companion"' >/dev/null; then
     echo "Backend wheel does not register the iPhone Companion API." >&2
     exit 1
 fi
@@ -351,12 +356,12 @@ if [ "$(plutil -extract CFBundleDisplayName raw "$app_path/Contents/Info.plist")
     exit 1
 fi
 if ! plutil -extract NSLocalNetworkUsageDescription raw "$app_path/Contents/Info.plist" \
-    | grep -Fq "iPhone Companion"; then
+    | grep -F "iPhone Companion" >/dev/null; then
     echo "Release is missing the iPhone Companion local-network privacy description." >&2
     exit 1
 fi
 if ! plutil -extract NSBonjourServices xml1 -o - "$app_path/Contents/Info.plist" \
-    | grep -Fq '<string>_unsloth-cp._tcp</string>'; then
+    | grep -F '<string>_unsloth-cp._tcp</string>' >/dev/null; then
     echo "Release is missing the iPhone Companion Bonjour service declaration." >&2
     exit 1
 fi

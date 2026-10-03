@@ -244,7 +244,7 @@
 "Last chunk" = "Last chunk";
 "Phone-held context" = "Phone-held context";
 "Waiting" = "Waiting";
-"On Mac, open Tools → iPhone → Increase speed. Prepare the original Qwen3.8-27B IQ4_XS model and DFlash2 draft, then switch this page off and on after the USB transfer." = "On Mac, open Tools → iPhone → Increase speed. Prepare the original Qwen3.8-27B IQ4_XS model and DFlash2 draft, then switch this page off and on after the USB transfer.";
+"On Mac, open Tools → iPhone → Increase speed. Prepare your Qwen3.8-27B GGUF (supported quantization, including abliterated/uncensored variants) and DFlash2 draft, then switch this page off and on after the USB transfer." = "On Mac, open Tools → iPhone → Increase speed. Prepare your Qwen3.8-27B GGUF (supported quantization, including abliterated/uncensored variants) and DFlash2 draft, then switch this page off and on after the USB transfer.";
 "Long prompts are read in parallel. Below 64k context, writing speed remains the Mac's. Beyond 64k, iPhone holds old context and computes its attention." = "Long prompts are read in parallel. Below 64k context, writing speed remains the Mac's. Beyond 64k, iPhone holds old context and computes its attention.";
 "Credits" = "Credits";
 "Backburner by StayLameBro" = "Backburner by StayLameBro";

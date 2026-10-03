@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "name": "Unsloth Companion 0.0.2 / Backburner release manifest",
-  "updatedAt": "2026-10-03T04:59:48.336717+00:00",
+  "name": "Unsloth Companion 0.0.3 / interchangeable Qwen Backburner release manifest",
+  "updatedAt": "2026-10-03T10:05:11.315334+00:00",
   "runtime": {
     "project": "ggml-org/llama.cpp",
     "commit": "3173a56471c1753650cd806694145ffd6dcace67",
@@ -105,9 +105,41 @@
     "runtime_files_verified": 7,
     "minimum_macos": "14.0",
     "standard_updater_isolated": true,
-    "deviceFrameworkSHA256": "8ed6305d4abfe3b687d6dfec8b686af33cbea0aef93af8f962b035c1e7b99fde"
+    "deviceFrameworkSHA256": "8ed6305d4abfe3b687d6dfec8b686af33cbea0aef93af8f962b035c1e7b99fde",
+    "quantizations_interchangeable": true,
+    "derivatives_supported": true,
+    "packaged_python_sources_identical": 574,
+    "supportedWeightTypes": [
+      "BF16",
+      "F16",
+      "F32",
+      "IQ1_M",
+      "IQ1_S",
+      "IQ2_S",
+      "IQ2_XS",
+      "IQ2_XXS",
+      "IQ3_S",
+      "IQ3_XXS",
+      "IQ4_NL",
+      "IQ4_XS",
+      "MXFP4",
+      "Q1_0",
+      "Q2_0",
+      "Q2_K",
+      "Q3_K",
+      "Q4_0",
+      "Q4_1",
+      "Q4_K",
+      "Q5_0",
+      "Q5_1",
+      "Q5_K",
+      "Q6_K",
+      "Q8_0",
+      "TQ2_0"
+    ],
+    "deviceFrameworkUnchangedSince002": true
   },
-  "releaseArtifacts": {
+  "historicalCompanion002Artifacts": {
     "iphoneCompanion": {
       "name": "Unsloth-Companion_0.0.2_unsigned.ipa",
       "sha256": "386298a12fea79a709472b61923d47d0d2dea434c76eec5f8bc08ad35717c7a7",
@@ -141,7 +173,7 @@
       "size_bytes": 162755933
     }
   },
-  "verification": {
+  "historicalCompanion002Verification": {
     "backend_pytest_passed": 285,
     "backburner_pytest_passed": 40,
     "desktop_companion_unittest_passed": 18,
@@ -157,5 +189,98 @@
     "swift_test_execution_reason": "No installed simulator runtime; physical iPhone unavailable",
     "physical_usb_inference_performance_verified": false,
     "releaseChannel": "prerelease"
+  },
+  "releaseArtifacts": {
+    "iphoneCompanion": {
+      "name": "Unsloth-Companion_0.0.3_unsigned.ipa",
+      "sha256": "45e0d2bf2266aaad257ebe3f89eee9432f4556ecadea0b96e38520959df17c42",
+      "size_bytes": 6455110,
+      "version": "0.0.3",
+      "build": "10",
+      "minimum_ios": "18.6",
+      "architecture": "arm64",
+      "signing": "ad-hoc, user resigning required",
+      "increased_memory_entitlement": true,
+      "native_payload_sections_match_pinned_build": 26
+    },
+    "macOSDMG": {
+      "name": "Unsloth_0.1.800-mlx.37_aarch64.dmg",
+      "sha256": "3e37d62a44a22ee2584e3dd6dd7e8fb742e9e6e82e52560bd71a50dab9c2ad2e",
+      "size_bytes": 208289766,
+      "mounted_app_identical": true,
+      "hdiutil_verify_passed": true
+    },
+    "macOSExecutable": {
+      "name": "unsloth-studio",
+      "sha256": "06a11504ac0d497ae0b41acd1b3c2dd5bdd7839072db0b2733eb7ef15d191030",
+      "size_bytes": 59518256
+    },
+    "desktopBackendWheel": {
+      "name": "unsloth-2026.8.19+mlxcompaction8.companion20.kaggletpu9.backburner1.release37-py3-none-any.whl",
+      "sha256": "93c84ea1ae982b6f09723ffa61e1101cb18b47fbe2de0ab3ed9f8d6e69886f64",
+      "size_bytes": 162772671
+    }
+  },
+  "verification": {
+    "backend_pytest_passed": 376,
+    "backburner_pytest_passed": 131,
+    "desktop_companion_unittest_passed": 18,
+    "frontend_node_tests_passed": 4099,
+    "frontend_typecheck_build_passed": true,
+    "targeted_eslint_passed": true,
+    "localization_parity_passed": true,
+    "ios_device_build_passed": true,
+    "ios_simulator_build_for_testing_passed": true,
+    "swift_tests_executed": false,
+    "physical_usb_inference_performance_verified": false,
+    "releaseChannel": "prerelease",
+    "installedTarget": {
+      "bytes": 10442827296,
+      "metadata_validated": true,
+      "tensor_types": {
+        "IQ4_XS": 33,
+        "F32": 360,
+        "IQ2_S": 72,
+        "IQ3_S": 97,
+        "IQ2_XS": 32,
+        "IQ1_S": 4,
+        "IQ1_M": 4,
+        "BF16": 96,
+        "Q2_K": 28,
+        "IQ2_XXS": 30,
+        "Q4_K": 19,
+        "IQ3_XXS": 83,
+        "Q6_K": 8
+      },
+      "tensor_count": 866,
+      "split_a19": 40,
+      "split_a18": 52,
+      "main_quant_summary": 26,
+      "trunk_layers": 64,
+      "mtp_layers": 1,
+      "filename": "Huihui-Qwen3.8-27B-abliterated-GSQ-RCO-IQ3_XXS-mtp.gguf",
+      "tail_bytes": 3806119584,
+      "tail_tensors_byte_identical": 319,
+      "tail_trunk_layers": 24,
+      "mtp_excluded": true,
+      "head_excluded": true,
+      "original_file_preserved": true,
+      "physical_transfer_performed": false
+    },
+    "installedTargetMacNativeTest": {
+      "performed": true,
+      "engine_commit": "f8c76832b9bb7710db52143d9c89adcda5402718",
+      "model_filename": "Huihui-Qwen3.8-27B-abliterated-GSQ-RCO-IQ3_XXS-mtp.gguf",
+      "mac_cpu": "Apple M2 Pro",
+      "metal_model_load_passed": true,
+      "prefill_and_generation_passed": true,
+      "prompt_tokens": 507,
+      "generated_tokens": 8,
+      "context": 1024,
+      "ubatch": 256,
+      "draft_and_phone_used": false,
+      "original_64k_phone_profile_tested": false,
+      "performance_benchmark": false
+    }
   }
 }

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import hashlib
+import json
 import shutil
 import socket
 import subprocess
@@ -17,9 +19,14 @@ from core.companion.backburner import VENDOR, backburner_manager, phone_command
 def load_backburner(backend, intent, cancel_event=None) -> bool:
     config = backburner_manager.preflight(intent)  # rejects BEFORE replacing a model
     identity = backend._gguf_load_source_identity(intent.gguf_path)
+    draft = Path(config["draft"]).expanduser().resolve()
+    draft_stat = draft.stat()
+    cache_identity = hashlib.sha256(json.dumps([
+        config["sourceSHA256"], str(draft), draft_stat.st_size, draft_stat.st_mtime_ns,
+    ]).encode()).hexdigest()
     if (getattr(backend, "_backburner_active", False) and backend.is_loaded
         and backend._gguf_load_identity == identity
-        and backend._backburner_draft == config["draft"]):
+        and getattr(backend, "_backburner_cache_identity", None) == cache_identity):
         return True
     phone = config["phone"]
     root = backburner_manager.root
@@ -78,7 +85,7 @@ def load_backburner(backend, intent, cancel_event=None) -> bool:
                    PORT=str(backend._port), PHONE="0", PHONE_IP=phone["address"],
                    LLAMA_SPLIT_TAIL=f'{phone["address"]}:50060',
                    PHONE_KV=f'{phone["address"]}:50062',
-                   CACHE_DIR=str(root / "cache/q8_0"), PROXY="1",
+                   CACHE_DIR=str(root / "cache" / cache_identity / "q8_0"), PROXY="1",
                    PATH=str(shim)+os.pathsep+env.get("PATH", "/usr/bin:/bin"))
         backend._read_gguf_metadata(intent.gguf_path)
         backend._api_key = None
@@ -126,4 +133,5 @@ def load_backburner(backend, intent, cancel_event=None) -> bool:
         backend._gguf_load_identity = identity
         backend._backburner_active = True
         backend._backburner_draft = config["draft"]
+        backend._backburner_cache_identity = cache_identity
     return True

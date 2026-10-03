@@ -127,10 +127,10 @@ export function IPhoneCompanionComposerButton({ side = "top" }: { side?: "top" |
           {italian ? "Usa il subagente nelle chat" : "Use subagent in chats"}
         </label> : <p className="text-xs text-muted-foreground">{italian ? "Subagenti sospesi. Il motore originale usa una richiesta alla volta." : "Subagents paused. The original engine serves one request at a time."}</p>}
         {cableAvailable ? <>
-          <p className="text-xs text-muted-foreground">{italian ? "Apri la pagina Velocità su iPhone. Profilo originale: Qwen3.8-27B IQ4_XS e DFlash2. Accelera soprattutto la lettura dei prompt." : "Open Speed on iPhone. Original profile: Qwen3.8-27B IQ4_XS and DFlash2. Mostly speeds up prompt reading."}</p>
+          <p className="text-xs text-muted-foreground">{italian ? "Apri la pagina Velocità su iPhone. Qwen3.8-27B e varianti compatibili (anche abliterate), con quantizzazioni supportate e DFlash2. Accelera soprattutto la lettura dei prompt." : "Open Speed on iPhone. Qwen3.8-27B and compatible derivatives (including abliterated), with supported quantizations and DFlash2. Mostly speeds up prompt reading."}</p>
           {!speed ? <Button variant="outline" size="sm" onClick={() => setSetup(!setup)}>{italian ? "Prepara iPhone" : "Prepare iPhone"}</Button> : null}
           {setup && !speed ? <div className="space-y-2">
-            <label className="block text-xs">Qwen3.8-27B IQ4_XS GGUF
+            <label className="block text-xs">Qwen3.8-27B GGUF
               <Input value={modelPath || acceleration?.modelPath || ""} onChange={(event) => setModelPath(event.target.value)} aria-label="Qwen3.8 GGUF path" />
             </label>
             <label className="block text-xs">dflash2-v2-q4km-self16.gguf
