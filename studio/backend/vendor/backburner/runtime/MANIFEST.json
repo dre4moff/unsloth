@@ -1,5 +1,5 @@
 {
-  "engineCommit": "f8c76832b9bb7710db52143d9c89adcda5402718",
+  "engineCommit": "6aa70f4dd84f8aa3fefe9cd4cd807f5c43582fc8",
   "template": "Original kv_N16384_R48_fp16_pfix_cinput; coremltools 9.0 / numpy 2.2.6",
   "files": {
     "anekv/tmpl16k.mlmodelc/analytics/coremldata.bin": "accfa7ba5a1f5b5f58fe9494c56959493923e3e336d356e215bf564e296da519",
@@ -7,11 +7,7 @@
     "anekv/tmpl16k.mlmodelc/metadata.json": "4bfeb17cc0beb6a8bc4de23578fc5fe57e5874612567a9c3b823a6114ace9edb",
     "anekv/tmpl16k.mlmodelc/model.mil": "cb86014639010081c51ac564515e88669f68aca559637dbeba8a82f3aecf5e44",
     "anekv/tmpl16k.mlmodelc/weights/weight.bin": "b179e2248a180db5c658056dc2cd73d887d600d65065c9e49327a06b18315fcc",
-    "bin/llama-quantize": "b8dff9bc027125473cc02fb12a017077e0b94a4bfd4943346e8d4b4637053956",
-    "bin/llama-server": "c461ff8d9ac834089c481e6bd5ce90e862e633b30c8384d1fb7ac9003844e150"
-  },
-  "macLifecyclePatch": {
-    "name": "backburner-mac-remote-shutdown.patch",
-    "sha256": "87a0a63249e42b58774607c26e0b70d07b7fda1bafcd4815d9c62e597bbe8061"
+    "bin/llama-quantize": "a3a52e868989a3a65391df82e317a422478d6a6b13d33a9ce74196f8487d7ee5",
+    "bin/llama-server": "0e7470212d08531ed895ad207e35e46694b5bb4dcecb2914f6847e76a2c63760"
   }
 }

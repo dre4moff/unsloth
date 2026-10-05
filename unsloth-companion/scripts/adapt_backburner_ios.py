@@ -173,7 +173,12 @@ static int bb_setenv(const char *key, const char *value, int overwrite) {
 static int bb_socket(int domain, int type, int protocol) {
     std::lock_guard<std::mutex> lk(bb_socket_mu);
     if (!bb_active) { errno = ECANCELED; return -1; }
-    int fd = ::socket(domain,type,protocol); if (fd >= 0) bb_sockets.insert(fd); return fd;
+    int fd = ::socket(domain,type,protocol);
+    if (fd >= 0) {
+        int one = 1; ::setsockopt(fd,SOL_SOCKET,SO_NOSIGPIPE,&one,sizeof(one));
+        bb_sockets.insert(fd);
+    }
+    return fd;
 }
 static int bb_accept(int srv, sockaddr *addr, socklen_t *len) {
     // Darwin shutdown(SHUT_RDWR) does not wake accept() on a listening socket.
@@ -193,6 +198,7 @@ static int bb_accept(int srv, sockaddr *addr, socklen_t *len) {
             // Darwin inherits O_NONBLOCK from the listener. The unchanged
             // upstream recv/send framing requires a blocking client socket.
             ::fcntl(fd,F_SETFL,::fcntl(fd,F_GETFL) & ~O_NONBLOCK);
+            int one = 1; ::setsockopt(fd,SOL_SOCKET,SO_NOSIGPIPE,&one,sizeof(one));
             bb_sockets.insert(fd);
         }
         return fd;

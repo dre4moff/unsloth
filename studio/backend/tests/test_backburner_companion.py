@@ -92,7 +92,8 @@ def test_discovery_includes_usb_network_descendant_properties(monkeypatch, speed
         assert phone["speedGbps"] == 10
 
 
-@pytest.mark.parametrize("version,magic,length,expected", [(3, PATN, 72, True),
+@pytest.mark.parametrize("version,magic,length,expected", [(4, PATN, 72, True),
+                                                          (3, PATN, 72, False),
                                                           (2, PATN, 72, False),
                                                           (3, 0, 72, False),
                                                           (3, PATN, 1000000000, False)])
@@ -343,13 +344,15 @@ def test_derivative_with_resized_draft_vocabulary_is_rejected(tmp_path, name):
 
 
 @pytest.mark.parametrize("wrong_phone_sha", [None, "b" * 64])
-def test_preflight_rejects_stale_tail_for_other_quant_or_finetune(tmp_path, monkeypatch, wrong_phone_sha):
+@pytest.mark.parametrize("previous_preparation", [False, True])
+def test_preflight_rejects_stale_tail_for_other_quant_or_finetune(tmp_path, monkeypatch, wrong_phone_sha, previous_preparation):
     path = write_qwen(tmp_path / "abliterated-IQ3.gguf", nextn=1, tensor_type="IQ3_XXS")
     manager = BackburnerManager()
     manager.phone = {"memory": {"source_sha256": "a" * 64}}
-    manager.root.mkdir(parents=True, exist_ok=True)
+    prepared_root = manager.root.parent / bb.UPSTREAM["compatible_preparation_engine"] if previous_preparation else manager.root
+    prepared_root.mkdir(parents=True, exist_ok=True)
     stat = path.stat()
-    (manager.root / "source.json").write_text(json.dumps({
+    (prepared_root / "source.json").write_text(json.dumps({
         "file": [str(path.resolve()), stat.st_size, stat.st_mtime_ns], "sha256": "a" * 64}))
     draft = tmp_path / "dflash2-v2-q4km-self16.gguf"; draft.write_bytes(b"draft")
     manager.draft_path = str(draft)
@@ -425,6 +428,7 @@ def test_original_launch_profile_and_isolation(tmp_path, monkeypatch, profile):
     monkeypatch.setenv("LLAMA_SPLIT_TAIL", "192.168.1.2:50060")
     monkeypatch.setenv("LLAMA_SPLIT_MIN", "99999")
     monkeypatch.setenv("SPEC_TYPE", "draft-mtp")
+    monkeypatch.setenv("PA_REPLY_TIMEOUT_S", "99999")
     phone = {"address": "169.254.1.2", "memory": {"sys_wired_mb": 4000, "avail_mb": 5000}}
     draft = tmp_path / "draft.gguf"; draft.write_bytes(b"draft")
     source_sha = "a" * 64
@@ -453,11 +457,44 @@ def test_original_launch_profile_and_isolation(tmp_path, monkeypatch, profile):
     else:
         assert "LLAMA_SPLIT_MIN" not in env  # original serve.sh owns its 512 default
     assert "SPEC_TYPE" not in env and launch["start_new_session"] is True
+    assert env["PA_REPLY_TIMEOUT_S"] == "15"
     assert Path(env["CACHE_DIR"]).parent.name == backend._backburner_cache_identity
     assert Path(env["CACHE_DIR"]).name == kv
     expected = 50000 if profile else min(262144,65536+min((9400-4000)*1048576//34816//4096*4096,(5000-512)*1048576//34816//4096*4096))
     assert int(env["CTX_TOTAL"]) == expected == backend._context_length
     assert backend._effective_parallel_slots == 1 and backend._cache_type_kv == kv
+    # The same capacity used by generation must drive compaction: the local
+    # 8k ring is a storage tier, not the conversation's logical limit.
+    from core.inference import llama_cpp, checkpoint
+    monkeypatch.setattr(checkpoint, "enabled", lambda: True)
+    monkeypatch.setattr(llama_cpp, "_archive_is_degraded", lambda: False)
+    instruction = "Standing instruction for the rest of this task: always end every reply with STATUS::IPHONE42."
+    messages = [{"role": "system", "content": "Be helpful."},
+                {"role": "user", "content": instruction},
+                {"role": "assistant", "content": "Understood."}]
+    for index in range(6):
+        messages += [{"role": "user", "content": f"Part {index}."},
+                     {"role": "assistant", "content": "Evidence: " + "x" * 2000}]
+    count = lambda fitted: sum(len(str(m.get("content", ""))) for m in fitted)
+    def fit(branch, **extra):
+        return llama_cpp._fit_with_instruction_pins(branch,
+            context_length=backend._effective_context_length, max_tokens=512,
+            count_tokens=count, can_reset=True, **extra)
+    fitted, notice = fit(messages)
+    assert count(messages) > local if profile else count(messages) < local
+    assert fitted is messages and notice is None
+    oversized = messages[:-2] + [
+        {"role": "user", "content": "Gather the older details."},
+        {"role": "assistant", "content": "Recorded: " + "x" * expected},
+        {"role": "user", "content": "Continue."}]
+    fitted, notice = fit(oversized)
+    assert notice["fits"] and notice["checkpoint_started"]
+    assert instruction in fitted[0]["content"] and count(fitted) < expected - 512
+    next_turn = oversized + [{"role": "assistant", "content": "Continuing."},
+                            {"role": "user", "content": "Next step."}]
+    continued, replay = fit(next_turn, sticky_dropped=notice["dropped_messages"])
+    assert not replay["checkpoint_started"]
+    assert any(m.get("content") == "Continuing." for m in continued)
     assert backend._last_load_intent.n_ctx == 2048 and backend._last_load_intent.n_parallel == 8
     backend._llama_log_fh.close()
     backend.is_loaded = True
@@ -503,6 +540,25 @@ def test_original_serve_script_preserves_small_batch_split_threshold(tmp_path):
     ubatch = int(args[len(args) - 1 - args[::-1].index("-ub") + 1])
     offloaded = ((batch + ubatch - 1) // ubatch - 1) * ubatch
     assert 0 < actual["min"] <= offloaded < batch
+
+
+def test_engine_update_preserves_draft_selection_without_reusing_old_kv(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    manager = BackburnerManager()
+    old = manager.root.parent / bb.UPSTREAM["compatible_preparation_engine"]
+    old.mkdir(parents=True)
+    marker = old / "configuration.json"
+    marker.write_text(json.dumps({"draftPath": "/selected/dflash.gguf"}))
+    saved = marker.read_bytes()
+    (old / "cache").mkdir()
+    manager.status(refresh=False)
+    assert manager.draft_path == "/selected/dflash.gguf" and marker.read_bytes() == saved
+    assert manager._saved_preparation_file("cache") == manager.root / "cache"
+    manager.root.mkdir()
+    (manager.root / "configuration.json").write_text(json.dumps({"draftPath": "/new/dflash.gguf"}))
+    manager.draft_path = None
+    manager.status(refresh=False)
+    assert manager.draft_path == "/new/dflash.gguf" and marker.read_bytes() == saved
 
 
 @run_async

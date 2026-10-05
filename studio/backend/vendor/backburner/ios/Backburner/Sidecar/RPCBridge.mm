@@ -21,6 +21,8 @@
 #include "../../../phone-attn/phone-attn.h"
 #include "../../../phone-attn/pa-metal.mm"
 #include "../../../phone-attn/pa-ane.mm"
+#include "CableOnly.h"
+#import <Security/Security.h>
 
 #import <Metal/Metal.h>
 #import <CoreML/CoreML.h>
@@ -41,7 +43,47 @@
 extern "C" int sme2_available(void);
 extern "C" int sme_bench(int argc, char **argv);
 
+// ---- Wi-Fi pairing (Tunnel.swift / WifiTunnel.swift) ----
+// One 32-byte key in this device's Keychain (never in Documents, which Finder and Files can read; never in a backup:
+// ThisDeviceOnly). `pair` on :50061 makes a new one and hands it to the Mac, over the cable only; `unpair` deletes it and the
+// Wi-Fi listener closes. Without the key nothing on Wi-Fi gets past the tunnel's first message.
+static NSDictionary *wifi_key_query(void) {
+    return @{ (__bridge id)kSecClass : (__bridge id)kSecClassGenericPassword,
+              (__bridge id)kSecAttrService : @"backburner.wifi-tunnel", (__bridge id)kSecAttrAccount : @"pairing-key" };
+}
+static NSData *wifi_key_load(void) {
+    NSMutableDictionary *q = [wifi_key_query() mutableCopy];
+    q[(__bridge id)kSecReturnData] = @YES;
+    q[(__bridge id)kSecMatchLimit] = (__bridge id)kSecMatchLimitOne;
+    CFTypeRef out = NULL;
+    if (SecItemCopyMatching((__bridge CFDictionaryRef)q, &out) != errSecSuccess || !out) return nil;
+    NSData *d = (__bridge_transfer NSData *)out;
+    return d.length == 32 ? d : nil;
+}
+static NSData *wifi_key_new(void) {
+    NSMutableData *k = [NSMutableData dataWithLength:32];
+    if (SecRandomCopyBytes(kSecRandomDefault, 32, k.mutableBytes) != errSecSuccess) return nil;
+    SecItemDelete((__bridge CFDictionaryRef)wifi_key_query());
+    NSMutableDictionary *a = [wifi_key_query() mutableCopy];
+    a[(__bridge id)kSecValueData] = k;
+    a[(__bridge id)kSecAttrAccessible] = (__bridge id)kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly;
+    return SecItemAdd((__bridge CFDictionaryRef)a, NULL) == errSecSuccess ? k : nil;
+}
+static std::mutex g_wifi_mu;
+static std::string g_wifi_status = "not paired";
+static thread_local bool g_conn_via_cable = false;   // the control-port connection being served came over the cable
+
 @implementation SidecarRPC
+
++ (nullable NSData *)wifiKey {
+    return wifi_key_load();
+}
+
++ (void)setWifiTunnelStatus:(NSString *)status {
+    std::lock_guard<std::mutex> lk(g_wifi_mu);
+    g_wifi_status = status.UTF8String ?: "";
+}
+
 
 + (NSString *)cableAddress {
     // USB NCM gives this phone one link-local IPv4. Wi-Fi, cellular, and every
@@ -65,6 +107,30 @@ extern "C" int sme_bench(int argc, char **argv);
             continue;
         }
         found = ip;
+        break;
+    }
+    freeifaddrs(ifs);
+    return found;
+}
+
+// The phone's Wi-Fi IPv4 (the interface iOS types as Wi-Fi infrastructure), or empty. Reported over the cable in `mem` so
+// scripts/check-phone-exposure.sh can confirm, from the Mac, that the raw ports refuse Wi-Fi.
++ (NSString *)wifiAddress {
+    struct ifaddrs *ifs = NULL;
+    if (getifaddrs(&ifs) != 0) {
+        return @"";
+    }
+    NSString *found = @"";
+    for (struct ifaddrs *p = ifs; p; p = p->ifa_next) {
+        if (!p->ifa_addr || p->ifa_addr->sa_family != AF_INET) {
+            continue;
+        }
+        if (bb::if_functional_type(p->ifa_name) != IFRTYPE_FUNCTIONAL_WIFI_INFRA) {
+            continue;
+        }
+        char buf[INET_ADDRSTRLEN] = {0};
+        inet_ntop(AF_INET, &((struct sockaddr_in *)p->ifa_addr)->sin_addr, buf, sizeof(buf));
+        found = [NSString stringWithUTF8String:buf];
         break;
     }
     freeifaddrs(ifs);
@@ -124,11 +190,10 @@ extern "C" int sme_bench(int argc, char **argv);
     return @{ @"rxBytes" : @(rx), @"txBytes" : @(tx), @"rxPackets" : @(rxp), @"txPackets" : @(txp) };
 }
 
-// ggml's RPC server binds a single address and then blocks in accept. On iOS,
-// [::] is V6ONLY, so the IPv4 listener the Mac already uses cannot also take
-// link-local IPv6. A second socket splices v6 clients onto 127.0.0.1, which
-// the real server accepts. One Metal backend, both families, and a dropped
-// client just returns the server to accept.
+// ggml's RPC server has no authentication and lets its client read and write the phone's GPU memory, and it binds a single
+// address and blocks in accept, so no filter can be added inside it. It listens on 127.0.0.1:(port + 1000) only, and this
+// gate owns the public port on IPv4 and IPv6: every connection must pass the USB-cable check (CableOnly.h) and is then
+// spliced to the loopback server, one thread per connection. Wi-Fi goes through the paired, encrypted tunnel instead.
 static int connect_local_v4(int port) {
     for (int attempt = 0; attempt < 50; attempt++) {
         int fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -194,43 +259,60 @@ static void splice_pair(int a, int b) {
     }
 }
 
-struct v6_proxy_arg { int port; };
+struct rpc_gate_arg { int port, family; };
+static constexpr int RPC_INTERNAL_OFFSET = 1000;
 
-static void *v6_proxy_main(void *raw) {
-    std::unique_ptr<v6_proxy_arg> arg((v6_proxy_arg *)raw);
-    int port = arg->port;
-    int srv = socket(AF_INET6, SOCK_STREAM, 0);
+static void *rpc_gate_main(void *raw) {
+    std::unique_ptr<rpc_gate_arg> arg((rpc_gate_arg *)raw);
+    const int port = arg->port, fam = arg->family;
+    int srv = socket(fam, SOCK_STREAM, 0);
     if (srv < 0) {
         return nullptr;
     }
     int one = 1;
     setsockopt(srv, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
-    setsockopt(srv, IPPROTO_IPV6, IPV6_V6ONLY, &one, sizeof(one));
-    struct sockaddr_in6 addr = {};
-    addr.sin6_family = AF_INET6;
-    addr.sin6_port = htons((uint16_t)port);
-    addr.sin6_addr = in6addr_any;
-    if (bind(srv, (struct sockaddr *)&addr, sizeof(addr)) != 0 || listen(srv, 4) != 0) {
-        fprintf(stderr, "v6 rpc listener failed: %s\n", strerror(errno));
+    int rc;
+    if (fam == AF_INET6) {
+        setsockopt(srv, IPPROTO_IPV6, IPV6_V6ONLY, &one, sizeof(one));
+        struct sockaddr_in6 addr = {};
+        addr.sin6_family = AF_INET6;
+        addr.sin6_port = htons((uint16_t)port);
+        addr.sin6_addr = in6addr_any;   // cable-gated below
+        rc = bind(srv, (struct sockaddr *)&addr, sizeof(addr));
+    } else {
+        struct sockaddr_in addr = {};
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons((uint16_t)port);
+        addr.sin_addr.s_addr = htonl(INADDR_ANY);   // cable-gated below
+        rc = bind(srv, (struct sockaddr *)&addr, sizeof(addr));
+    }
+    if (rc != 0 || listen(srv, 4) != 0) {
+        fprintf(stderr, "rpc gate (%s) :%d failed: %s\n", fam == AF_INET6 ? "v6" : "v4", port, strerror(errno));
         close(srv);
         return nullptr;
     }
-    fprintf(stderr, "v6 rpc listener on [::]:%d (spliced to 127.0.0.1)\n", port);
+    fprintf(stderr, "rpc gate (%s) on :%d -> 127.0.0.1:%d, cable only\n", fam == AF_INET6 ? "v6" : "v4", port, port + RPC_INTERNAL_OFFSET);
     while (true) {
         int client = accept(srv, nullptr, nullptr);
         if (client < 0) {
             // a USB replug fails accept (e.g. ECONNABORTED): keep listening instead of leaving the port dead until relaunch
-            if (errno != EINTR) { fprintf(stderr, "v6 rpc accept: %s (retrying)\n", strerror(errno)); usleep(100000); }
+            if (errno != EINTR) { fprintf(stderr, "rpc gate accept: %s (retrying)\n", strerror(errno)); usleep(100000); }
             continue;
         }
-        int upstream = connect_local_v4(port);
-        if (upstream < 0) {
+        std::string why;
+        if (!bb::cable_accept(client, why)) {
+            fprintf(stderr, "rpc gate: refused %s\n", why.c_str());
             close(client);
             continue;
         }
-        splice_pair(client, upstream);
-        close(client);
-        close(upstream);
+        std::thread([client, port] {
+            int upstream = connect_local_v4(port + RPC_INTERNAL_OFFSET);
+            if (upstream >= 0) {
+                splice_pair(client, upstream);
+                close(upstream);
+            }
+            close(client);
+        }).detach();
     }
     close(srv);
     return nullptr;
@@ -348,6 +430,7 @@ static std::atomic<pa::ane_engine *> g_pa_ane { nullptr };   // phone-attn's ANE
         }
         return "";
     };
+    srv.set_accept_filter(bb::cable_accept);   // the USB cable (and the in-app Wi-Fi tunnel on loopback) only
     // A missing model is not fatal: HELLO retries the load, so the user can copy tail.gguf later.
     srv.load();
     std::string err = srv.serve(port);
@@ -374,12 +457,14 @@ static std::atomic<pa::ane_engine *> g_pa_ane { nullptr };   // phone-attn's ANE
 + (NSString *)startHost:(NSString *)host port:(int)port cacheDir:(NSString *)cacheDir {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        auto *arg = new v6_proxy_arg{ port };
-        pthread_t thread;
-        if (pthread_create(&thread, nullptr, v6_proxy_main, arg) == 0) {
-            pthread_detach(thread);
-        } else {
-            delete arg;
+        for (int fam : { AF_INET, AF_INET6 }) {
+            auto *arg = new rpc_gate_arg{ port, fam };
+            pthread_t thread;
+            if (pthread_create(&thread, nullptr, rpc_gate_main, arg) == 0) {
+                pthread_detach(thread);
+            } else {
+                delete arg;
+            }
         }
     });
 
@@ -416,10 +501,9 @@ static std::atomic<pa::ane_engine *> g_pa_ane { nullptr };   // phone-attn's ANE
         return @"ggml_backend_rpc_start_server missing";
     }
 
-    std::string host_string(host.UTF8String);
-    std::string endpoint = host_string.find(':') == std::string::npos
-        ? host_string + ":" + std::to_string(port)
-        : "[" + host_string + "]:" + std::to_string(port);
+    // loopback only, whatever `host` says: the gate above is the only way in (see rpc_gate_main)
+    (void)host;
+    std::string endpoint = "127.0.0.1:" + std::to_string(port + RPC_INTERNAL_OFFSET);
     unsigned n_threads = std::max(1u, (unsigned)[[NSProcessInfo processInfo] processorCount] / 2);
     fn(endpoint.c_str(), cacheDir.UTF8String, n_threads, devices.size(), devices.data());
     return @"rpc server returned";
@@ -492,7 +576,37 @@ static id<MLFeatureProvider> ane_input(MLModel *m, double *flops, int *S_out) {
 static NSDictionary *ane_cmd(NSArray<NSString *> *a) {
     NSString *op = a.count ? a[0] : @"";
     NSMutableDictionary *r = ane_mem();
+    // every argument that names a file must stay inside Documents, and fetch may only download from the Mac over the cable
+    // (CableOnly.h; tests/security/cable-policy-test.cpp)
+    {
+        int path_arg = -1;
+        if ([op isEqualToString:@"fetch"] && a.count >= 3) path_arg = 2;
+        if ([op isEqualToString:@"load"] && a.count >= 3) path_arg = 2;
+        if ([op isEqualToString:@"plan"] && a.count >= 2) path_arg = 1;
+        if ([op isEqualToString:@"tailane"] && a.count >= 4) path_arg = 1;
+        if (path_arg >= 0 && !bb::safe_doc_path(std::string(a[path_arg].UTF8String ?: ""))) {
+            r[@"error"] = @"refused: the path must be relative to Documents ([A-Za-z0-9._-] names, no '..' or hidden names)";
+            return r;
+        }
+        if ([op isEqualToString:@"fetch"] && a.count >= 3 && !bb::fetch_url_ok(std::string(a[1].UTF8String ?: ""))) {
+            r[@"error"] = @"refused: fetch downloads only from http://169.254.x.y (the Mac on the cable)";
+            return r;
+        }
+    }
     r[@"op"] = op;
+    // pair: a new Wi-Fi pairing key, returned once, over the cable only (scripts/phone-wifi.sh pair). unpair: delete it.
+    if ([op isEqualToString:@"pair"] || [op isEqualToString:@"unpair"]) {
+        if (!g_conn_via_cable) { r[@"error"] = @"refused: pairing works over the USB cable only"; return r; }
+        if ([op isEqualToString:@"unpair"]) {
+            SecItemDelete((__bridge CFDictionaryRef)wifi_key_query());
+            r[@"paired"] = @NO;
+            return r;
+        }
+        NSData *k = wifi_key_new();
+        if (!k) { r[@"error"] = @"could not store a key in the Keychain"; return r; }
+        return @{ @"op" : op, @"paired" : @YES, @"wifi_key" : [k base64EncodedStringWithOptions:0], @"wifi_port" : @50070,
+                  @"wifi_ip" : [SidecarRPC wifiAddress] };
+    }
     if ([op isEqualToString:@"mac"] && a.count >= 2) {
         bool activate = false;
         {
@@ -531,6 +645,15 @@ static NSDictionary *ane_cmd(NSArray<NSString *> *a) {
         { std::lock_guard<std::mutex> lk2(g_pa_status.mu); r[@"pa_big"] = [NSString stringWithUTF8String:g_pa_status.last_big.c_str()] ?: @"";
           r[@"pa_dec"] = [NSString stringWithUTF8String:g_pa_status.last_dec.c_str()] ?: @"";
           r[@"pa_calls"] = @(g_pa_status.attn_calls); r[@"pa_held"] = @(g_pa_status.held_keys); }
+        // the connection gate (CableOnly.h): scripts/check-phone-exposure.sh reads these
+        { auto & g = bb::stats(); std::lock_guard<std::mutex> lk3(g.mu);
+          r[@"gate_allowed"] = @(g.allowed.load()); r[@"gate_denied"] = @(g.denied.load());
+          r[@"gate_last_denied"] = [NSString stringWithUTF8String:g.last_denied.c_str()] ?: @"";
+          r[@"cable_if"] = [NSString stringWithUTF8String:g.cable_if.c_str()] ?: @"";
+          r[@"cable_if_type"] = @(g.cable_if_type == ~0u ? -1 : (int) g.cable_if_type); }
+        r[@"wifi_ip"] = [SidecarRPC wifiAddress];
+        r[@"wifi_paired"] = @(wifi_key_load() != nil);
+        { std::lock_guard<std::mutex> lk4(g_wifi_mu); r[@"wifi_tunnel"] = [NSString stringWithUTF8String:g_wifi_status.c_str()] ?: @""; }
         return r;
     }
     // fetch URL DEST: download URL (the Mac, over the USB link) to Documents/DEST, creating directories
@@ -812,7 +935,7 @@ static void *ane_server_main(void *raw) {
     struct sockaddr_in addr = {};
     addr.sin_family = AF_INET;
     addr.sin_port = htons((uint16_t)port);
-    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);   // cable-gated after accept
     if (bind(srv, (struct sockaddr *)&addr, sizeof(addr)) != 0 || listen(srv, 2) != 0) {
         fprintf(stderr, "ane bench listen :%d failed: %s\n", port, strerror(errno));
         return nullptr;
@@ -820,9 +943,19 @@ static void *ane_server_main(void *raw) {
     fprintf(stderr, "ane bench on :%d\n", port);
     while (true) {
         int fd = accept(srv, nullptr, nullptr);
-        if (fd < 0) {   // survive a USB replug (see the v6 rpc listener)
+        if (fd < 0) {   // survive a USB replug (see the rpc gate)
             if (errno != EINTR) { fprintf(stderr, "ane bench accept: %s (retrying)\n", strerror(errno)); usleep(100000); }
             continue;
+        }
+        {
+            std::string why;
+            if (!bb::cable_accept(fd, why)) {   // the USB cable (and the in-app Wi-Fi tunnel on loopback) only
+                fprintf(stderr, "control port: refused %s\n", why.c_str());
+                close(fd);
+                continue;
+            }
+            // pair / unpair need the cable itself, not the Wi-Fi tunnel (which arrives on loopback)
+            g_conn_via_cable = why.size() >= 7 && why.compare(why.size() - 7, 7, ": cable") == 0;
         }
         std::string buf;
         char c;
@@ -863,6 +996,7 @@ static void *ane_server_main(void *raw) {
                 g_pa_status.state = "gpu on";
             }
             pa::server srv(&g_pa_status, [](const std::string & s) { fprintf(stderr, "[phone-attn] %s\n", s.c_str()); }, 2, eng);
+            srv.set_accept_filter(bb::cable_accept);   // the USB cable (and the in-app Wi-Fi tunnel on loopback) only
             // ANE page engine (docs/ANE.md): on when Documents/anekv/tmpl16k.mlmodelc exists (scripts/phone-ane.sh
             // pushes it) and PA_ANE != 0. PA_ANE_MB (default 6000): the most page-model memory (67 MB per 16k keys x layer); in practice the wired-memory guard
             // (PA_WIRED_MAX_MB 9400 - 800) decides: 3-4 pages per layer. 140k (75.5k phone keys): 3 pages 176 ms/token, 2 pages 208, none 279.

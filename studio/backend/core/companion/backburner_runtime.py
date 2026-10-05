@@ -13,7 +13,7 @@ import threading
 from dataclasses import replace
 from pathlib import Path
 
-from core.companion.backburner import VENDOR, backburner_manager, phone_command
+from core.companion.backburner import UPSTREAM, VENDOR, backburner_manager, phone_command
 
 
 def load_backburner(backend, intent, cancel_event=None) -> bool:
@@ -26,7 +26,7 @@ def load_backburner(backend, intent, cancel_event=None) -> bool:
     local, kv = profile["context"], profile["kv"]
     cache_identity = hashlib.sha256(json.dumps([
         config["sourceSHA256"], str(draft), draft_stat.st_size, draft_stat.st_mtime_ns,
-        profile,
+        profile, UPSTREAM["engine_commit"],
     ]).encode()).hexdigest()
     if (getattr(backend, "_backburner_active", False) and backend.is_loaded
         and backend._gguf_load_identity == identity
@@ -84,6 +84,7 @@ def load_backburner(backend, intent, cancel_event=None) -> bool:
             if key.startswith(("LLAMA_", "GGML_", "SPEC_")) or key in {
                 "SERVER_ARGS", "PHONE_DRAFT", "CTX_TOTAL", "KV", "SME", "MM_SME", "SPLIT_UB",
                 "LOAD_MODE", "CACHE_RAM", "CTX_CHECKPOINTS", "PROXY", "PORT", "BIN", "DRAFT", "MODEL",
+                "PA_REPLY_TIMEOUT_S",
             }:
                 env.pop(key)
         env.update(BIN=str(runtime / "bin"), MODEL=intent.gguf_path,
@@ -91,7 +92,7 @@ def load_backburner(backend, intent, cancel_event=None) -> bool:
                    PORT=str(backend._port), PHONE="0", PHONE_IP=phone["address"],
                    LLAMA_SPLIT_TAIL=f'{phone["address"]}:50060',
                    PHONE_KV=f'{phone["address"]}:50062',
-                   CACHE_DIR=str(root / "cache" / cache_identity / kv), PROXY="1",
+                   CACHE_DIR=str(root / "cache" / cache_identity / kv), PROXY="1", PA_REPLY_TIMEOUT_S="15",
                    PATH=str(shim)+os.pathsep+env.get("PATH", "/usr/bin:/bin"))
         if profile["name"] == "memory-saving":
             env.update(LOAD_MODE=profile["loadMode"], CACHE_RAM="0",

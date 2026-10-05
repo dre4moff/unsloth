@@ -61,8 +61,9 @@ cmake -B build-ios-sidecar -G Xcode \
   -DCMAKE_OSX_SYSROOT=iphoneos \
   -DCMAKE_OSX_ARCHITECTURES=arm64 \
   -DCMAKE_XCODE_ATTRIBUTE_SUPPORTED_PLATFORMS=iphoneos \
-  -DCMAKE_C_FLAGS="-Wno-macro-redefined -Wno-shorten-64-to-32 -g" \
-  -DCMAKE_CXX_FLAGS="-Wno-macro-redefined -Wno-shorten-64-to-32 -g" \
+  -DCMAKE_C_FLAGS="-Wno-macro-redefined -Wno-shorten-64-to-32 -g -ffile-prefix-map=${LLAMA}=llama.cpp" \
+  -DCMAKE_CXX_FLAGS="-Wno-macro-redefined -Wno-shorten-64-to-32 -g -ffile-prefix-map=${LLAMA}=llama.cpp" \
+  -DCMAKE_OBJC_FLAGS="-ffile-prefix-map=${LLAMA}=llama.cpp" \
   -S .
 cmake --build build-ios-sidecar --config Release -j "${JOBS}" -- -quiet
 
@@ -159,7 +160,7 @@ echo "xcframework → ${FW}/llama.xcframework"
 
 echo "building the SME2 attention kernel for iOS"
 xcrun -sdk iphoneos clang -c -O3 -isysroot "$(xcrun --sdk iphoneos --show-sdk-path)" -target arm64-apple-ios16.4 \
-  -mcpu=apple-a18 -DSME_BENCH_MAIN -DSME_BENCH_NO_MAIN "${ROOT}/scripts/sme/sme_attn.c" -o "${IOS}/Sidecar/sme_attn_ios.o"
+  -mcpu=apple-a18 -ffile-prefix-map="${ROOT}"=. -DSME_BENCH_MAIN -DSME_BENCH_NO_MAIN "${ROOT}/scripts/sme/sme_attn.c" -o "${IOS}/Sidecar/sme_attn_ios.o"
 echo "archiving the app (no debugger, no DDI)"
 cd "${IOS}"
 mkdir -p "${ROOT}/ios/build"

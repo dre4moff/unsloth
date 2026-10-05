@@ -8,37 +8,38 @@ work_root="${UNSLOTH_BACKBURNER_BUILD_ROOT:-/private/tmp/unsloth-backburner-runt
 engine="$work_root/llama.cpp"
 commit="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["engine_commit"])' "$vendor/UPSTREAM.json")"
 mkdir -p "$work_root"
-if [ ! -d "$engine/.git" ]; then
+if [ ! -e "$engine/.git" ]; then
     git init "$engine"
     git -C "$engine" remote add origin https://github.com/StayLameBro/backburner-llama.cpp.git
 fi
 git -C "$engine" fetch --depth 1 origin "$commit"
 git -C "$engine" checkout --detach "$commit"
 test "$(git -C "$engine" rev-parse HEAD)" = "$commit"
-patch="$repo_root/unsloth-companion/scripts/patches/backburner-mac-remote-shutdown.patch"
-# Mac-only lifecycle fix: join remote attention before static mutex destruction.
-# The device framework, kernels and wire protocols remain pinned upstream.
-if ! git -C "$engine" apply --reverse --check "$patch" 2>/dev/null; then
-    git -C "$engine" apply --check "$patch"
-    git -C "$engine" apply "$patch"
-fi
+# Backburner 0.0.4 includes bounded remote-worker shutdown upstream.
+# Build its engine unchanged; both sides use the same v4 protocol header.
+cmp "$vendor/phone-attn/phone-attn.h" "$engine/ggml/src/ggml-metal/phone-attn.h"
+source_map="-ffile-prefix-map=$repo_root=unsloth -ffile-prefix-map=$work_root=backburner"
 cmake -S "$engine" -B "$work_root/mac" -DCMAKE_BUILD_TYPE=Release \
     -DBUILD_SHARED_LIBS=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_UI=OFF \
     -DLLAMA_USE_PREBUILT_UI=OFF -DLLAMA_UI_GZIP=OFF -DLLAMA_OPENSSL=OFF \
-    -DGGML_NATIVE=OFF -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0
+    -DGGML_NATIVE=OFF -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 \
+    -DCMAKE_C_FLAGS="$source_map" -DCMAKE_CXX_FLAGS="$source_map" -DCMAKE_OBJC_FLAGS="$source_map"
 cmake --build "$work_root/mac" --target llama-server llama-quantize -j "${UNSLOTH_BACKBURNER_BUILD_JOBS:-6}"
 mkdir -p "$vendor/runtime/bin"
 cp "$work_root/mac/bin/llama-server" "$work_root/mac/bin/llama-quantize" "$vendor/runtime/bin/"
 codesign -f -s - "$vendor/runtime/bin/llama-server"
 codesign -f -s - "$vendor/runtime/bin/llama-quantize"
-git -C "$engine" apply --reverse "$patch"
+if rg -a -l -F "${HOME:?}" "$vendor/runtime/bin"; then
+    echo "Backburner Mac binaries contain a build-machine home path." >&2; exit 1
+fi
 if [ "${1:-}" = "--mac-only" ]; then
-    python3 - "$vendor" "$patch" <<'MAC_MANIFEST'
+    python3 - "$vendor" <<'MAC_MANIFEST'
 import hashlib, json, sys
 from pathlib import Path
-vendor, patch = map(Path, sys.argv[1:]); root = vendor / 'runtime'
+vendor = Path(sys.argv[1]); root = vendor / 'runtime'
 manifest = json.loads((root / 'MANIFEST.json').read_text())
-manifest['macLifecyclePatch'] = {'name': patch.name, 'sha256': hashlib.sha256(patch.read_bytes()).hexdigest()}
+manifest['engineCommit'] = json.loads((vendor / 'UPSTREAM.json').read_text())['engine_commit']
+manifest.pop('macLifecyclePatch', None)
 for path in (root / 'bin').iterdir():
     if path.is_file(): manifest['files'][str(path.relative_to(root))] = hashlib.sha256(path.read_bytes()).hexdigest()
 (root / 'MANIFEST.json').write_text(json.dumps(manifest, indent=2) + '\n')
@@ -56,7 +57,8 @@ cmake -S "$engine" -B "$work_root/ios" -G Xcode \
     -DLLAMA_BUILD_SERVER=OFF -DLLAMA_BUILD_MTMD=OFF -DLLAMA_OPENSSL=OFF \
     -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DGGML_METAL_TARGET_OS=ios \
     -DGGML_BLAS_DEFAULT=ON -DGGML_OPENMP=OFF -DGGML_NATIVE=OFF -DGGML_RPC=ON \
-    -DGGML_RPC_RDMA=OFF -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO
+    -DGGML_RPC_RDMA=OFF -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
+    -DCMAKE_C_FLAGS="$source_map" -DCMAKE_CXX_FLAGS="$source_map" -DCMAKE_OBJC_FLAGS="$source_map"
 cmake --build "$work_root/ios" --config Release -j 6 -- -quiet
 sdkroot="$(xcrun --sdk iphoneos --show-sdk-path)"
 phone_sme=(sme_ws_new sme_attn_partial sme_pipe_new sme_attn_pipe sme_pipe_worker sme_pipe_worker2 sme_pipe_helper sme_pipe_softmax_helper sme_pipe_controller sme_timing sme_t_pack sme_t_pv sme_t_qk sme_t_sm sme_t_upd sme2_available sme_bench)
@@ -64,11 +66,13 @@ sme_names=()
 for symbol in "${phone_sme[@]}"; do sme_names+=("-D${symbol}=bb_${symbol}"); done
 xcrun -sdk iphoneos clang -c -O3 -isysroot "$sdkroot" -target arm64-apple-ios18.6 \
     -mcpu=apple-a18 -DSME_BENCH_MAIN -DSME_BENCH_NO_MAIN \
+    "-ffile-prefix-map=$repo_root=unsloth" \
     "${sme_names[@]}" \
     "$vendor/scripts/sme/sme_attn.c" -o "$work_root/sme.o"
 xcrun -sdk iphoneos clang++ -c -std=c++17 -O3 -fobjc-arc -arch arm64 \
     -mios-version-min=18.6 -isysroot "$sdkroot" \
     -I"$engine/include" -I"$engine/ggml/include" \
+    "-ffile-prefix-map=$work_root=backburner" \
     "${sme_names[@]}" \
     "$native/ios/Backburner/Sidecar/RPCBridge.mm" -o "$work_root/bridge.o"
 framework="$work_root/Backburner.framework"
@@ -99,9 +103,12 @@ xcrun libtool -static -o "$work_root/combined.a" "${libraries[@]}"
 xcrun -sdk iphoneos clang++ -dynamiclib -arch arm64 -mios-version-min=18.6 \
     -isysroot "$sdkroot" "$work_root/bridge.o" "$work_root/sme.o" \
     -Wl,-force_load,"$work_root/combined.a" -Wl,-exported_symbols_list,"$work_root/exports.txt" \
-    -framework Foundation -framework Metal -framework Accelerate -framework CoreML \
+    -framework Foundation -framework Metal -framework Accelerate -framework CoreML -framework Security \
     -install_name @rpath/Backburner.framework/Backburner -o "$framework/Backburner"
 xcrun strip -S -x "$framework/Backburner"
+if rg -a -l -F "${HOME:?}" "$framework/Backburner"; then
+    echo "Backburner iPhone framework contains a build-machine home path." >&2; exit 1
+fi
 sim_framework="$work_root/simulator/Backburner.framework"
 mkdir -p "$sim_framework/Headers" "$sim_framework/Modules"
 cp "$framework/Headers/Backburner.h" "$sim_framework/Headers/"
@@ -118,6 +125,9 @@ cat > "$work_root/simulator.mm" <<'SIM'
 + (BOOL)servicesRunning { return NO; }
 + (NSString *)cableAddress { return @""; }
 + (NSString *)deviceModel { return @"Simulator"; }
++ (NSData *)wifiKey { return nil; }
++ (void)setWifiTunnelStatus:(NSString *)status { (void)status; }
++ (NSString *)wifiAddress { return @""; }
 + (NSDictionary *)metalStats { return @{}; }
 + (NSDictionary *)memoryStats { return @{}; }
 + (NSDictionary *)linkStats { return @{}; }
@@ -140,19 +150,29 @@ xcrun -sdk iphonesimulator clang++ -dynamiclib -fobjc-arc -arch arm64 -arch x86_
 output="$repo_root/unsloth-companion/Unsloth Companion/Unsloth Companion/Vendor/Backburner.xcframework"
 if [ -d "$output" ]; then /usr/bin/trash "$output"; fi
 xcodebuild -create-xcframework -framework "$framework" -framework "$sim_framework" -output "$output"
-coreml_python="${UNSLOTH_BACKBURNER_COREML_PYTHON:-python3}"
-"$coreml_python" "$vendor/phone-attn/ane-kv/build.py" "$work_root/ane-template" \
-    --keys 16384 --rows 48 --wq fp16 --pfix --center input
-mkdir -p "$vendor/runtime/anekv"
-ditto "$work_root/ane-template/kv_N16384_R48_fp16_pfix_cinput.mlmodelc" "$vendor/runtime/anekv/tmpl16k.mlmodelc"
-python3 - "$vendor" "$patch" <<'MANIFEST'
+if [ "${1:-}" != "--reuse-template" ]; then
+    coreml_python="${UNSLOTH_BACKBURNER_COREML_PYTHON:-python3}"
+    "$coreml_python" "$vendor/phone-attn/ane-kv/build.py" "$work_root/ane-template" \
+        --keys 16384 --rows 48 --wq fp16 --pfix --center input
+    mkdir -p "$vendor/runtime/anekv"
+    ditto "$work_root/ane-template/kv_N16384_R48_fp16_pfix_cinput.mlmodelc" "$vendor/runtime/anekv/tmpl16k.mlmodelc"
+else
+    # The template generator is unchanged in 0.0.4. Verify every existing byte.
+    python3 - "$vendor/runtime" <<'TEMPLATE'
+import hashlib, json, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+for rel, digest in json.loads((root / 'MANIFEST.json').read_text())['files'].items():
+    if rel.startswith('anekv/') and hashlib.sha256((root / rel).read_bytes()).hexdigest() != digest:
+        raise SystemExit(f'ANE template integrity check failed: {rel}')
+TEMPLATE
+fi
+python3 - "$vendor" <<'MANIFEST'
 import hashlib, json, sys
 from pathlib import Path
 vendor = Path(sys.argv[1]); root = vendor / 'runtime'
-patch = Path(sys.argv[2])
 meta = json.loads((vendor / 'UPSTREAM.json').read_text())
 manifest = {'engineCommit': meta['engine_commit'],
-            'macLifecyclePatch': {'name': patch.name, 'sha256': hashlib.sha256(patch.read_bytes()).hexdigest()},
             'template': 'Original kv_N16384_R48_fp16_pfix_cinput; coremltools 9.0 / numpy 2.2.6',
             'files': {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()
                       for p in sorted(root.rglob('*')) if p.is_file() and p.name != 'MANIFEST.json'}}

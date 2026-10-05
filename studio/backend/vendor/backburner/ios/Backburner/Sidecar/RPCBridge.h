@@ -3,11 +3,20 @@
 NS_ASSUME_NONNULL_BEGIN
 
 @interface SidecarRPC : NSObject
+/// ggml RPC server: listens on 127.0.0.1:(port + 1000) only; a cable-only gate owns `port` (`host` is ignored).
 /// Blocking. Call off the main thread. Returns nil on clean exit (it does not return while listening).
 + (nullable NSString *)startHost:(NSString *)host port:(int)port cacheDir:(NSString *)cacheDir
     NS_SWIFT_NAME(start(host:port:cacheDir:));
 /// The USB-cable address only: one 169.254 IPv4, or empty. Wi-Fi and IPv6 are not returned.
 + (NSString *)cableAddress;
+
+/// The Wi-Fi pairing key (32 bytes, this device's Keychain), or nil when not paired. See Tunnel.swift.
++ (nullable NSData *)wifiKey;
+/// What the Wi-Fi tunnel is doing, for the control port's `mem` report.
++ (void)setWifiTunnelStatus:(NSString *)status;
+
+/// The Wi-Fi IPv4 address, or empty (diagnostics: the exposure check connects to it from the Mac).
++ (NSString *)wifiAddress;
 
 /// Metal device stats: deviceName, allocatedBytes, recommendedWorkingSetBytes, hasUnifiedMemory.
 + (NSDictionary<NSString *, id> *)metalStats;
@@ -27,7 +36,7 @@ NS_ASSUME_NONNULL_BEGIN
 /// Tail worker status: state, detail, model, chunks, tokens, sessions, lastChunkMs, lastTokS.
 + (NSDictionary<NSString *, id> *)tailStatus;
 
-/// Hardware model string (utsname.machine), for the Bonjour TXT record.
+/// Hardware model string (utsname.machine).
 + (NSString *)deviceModel;
 @end
 

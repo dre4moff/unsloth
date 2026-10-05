@@ -58,6 +58,19 @@ Then continue with step 4 of the README's Setup (the phone's half of the model).
 phone and a Mac running AltServer are on the same Wi-Fi, or tap *Refresh All* in AltStore. Free accounts can have 3 sideloaded
 apps at a time (AltStore counts as one).
 
+## Keeping it in front
+
+Backburner works only while it is open and in front: iOS doesn't let an iPhone app use its GPU in the background. The app
+keeps the screen from locking on its own and dims itself, but the side button still locks it. Below 64k that costs nothing
+but speed (the Mac takes the work back); past 64k the phone holds the oldest part of the conversation, and a phone that stops
+answering for 15 s stops the server. Guided Access locks the phone into Backburner and can turn the side button off:
+
+1. Settings → Accessibility → Guided Access: turn it on (and set a passcode).
+2. Open Backburner and triple-click the side button.
+3. Options → turn off **Side Button**, then Start.
+
+Triple-click again (and enter the passcode) to leave.
+
 ## With Xcode (developer team id)
 
 ```bash

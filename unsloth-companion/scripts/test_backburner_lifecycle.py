@@ -20,7 +20,8 @@ def main():
     with tempfile.TemporaryDirectory(prefix="unsloth-backburner-lifecycle-") as home:
         text = source.read_text()
         start = text.index('+ (NSString *)cableAddress {')
-        end = text.index('\n+ (NSDictionary', start)
+        # Replace this method only; 0.0.4 adds wifiAddress between it and stats.
+        end = text.index('\n}\n', start) + 3
         text = text[:start] + '+ (NSString *)cableAddress { return @"127.0.0.1"; }\n' + text[end:]
         text = text.replace('NSHomeDirectory()', '@"' + home + '"')
         text = text.replace('os_proc_available_memory()', '(size_t(8ull << 30))')
@@ -37,7 +38,7 @@ def main():
                         str(test_source), str(repo / "unsloth-companion/tests/BackburnerLifecycleHarness.mm"), str(sme),
                         *map(str, sorted((work / "mac").rglob("*.a"))),
                         "-framework", "Foundation", "-framework", "Metal", "-framework", "Accelerate",
-                        "-framework", "CoreML", "-framework", "IOKit", "-o", str(output)], check=True)
+                        "-framework", "CoreML", "-framework", "Security", "-framework", "IOKit", "-o", str(output)], check=True)
         subprocess.run([str(output)], check=True, timeout=180)
 
 

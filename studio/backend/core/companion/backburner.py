@@ -26,7 +26,7 @@ from typing import Any
 VENDOR = Path(__file__).resolve().parents[2] / "vendor" / "backburner"
 UPSTREAM = json.loads((VENDOR / "UPSTREAM.json").read_text())
 PATN = 0x4E544150
-PATN_VERSION = 3
+PATN_VERSION = 4
 
 
 def _run(args: list[str], timeout: float = 8) -> bytes:
@@ -171,10 +171,24 @@ class BackburnerManager:
         from utils.paths.storage_roots import studio_root
         return studio_root() / "backburner" / UPSTREAM["engine_commit"]
 
+    def _saved_preparation_file(self, name: str) -> Path:
+        """Keep compatible tail identity and draft selection across engine updates.
+
+        Runtime binaries and KV caches always use the new engine's own root.
+        The existing preflight still checks the target file and phone content SHA.
+        """
+        current = self.root / name
+        previous = UPSTREAM.get("compatible_preparation_engine")
+        if name in {"source.json", "configuration.json"} and not current.exists() and previous:
+            old = self.root.parent / previous / name
+            if old.is_file():
+                return old
+        return current
+
     def status(self, refresh: bool = True) -> dict:
         if self.draft_path is None:
             try:
-                self.draft_path = json.loads((self.root / "configuration.json").read_text()).get("draftPath")
+                self.draft_path = json.loads(self._saved_preparation_file("configuration.json").read_text()).get("draftPath")
             except (OSError, ValueError):
                 pass
         if refresh and time.monotonic() - self._checked > 3:
@@ -242,7 +256,7 @@ class BackburnerManager:
             raise ValueError("This build is missing the pinned Backburner engine.")
         self.validate_model(intent.gguf_path)
         stat = Path(intent.gguf_path).stat()
-        marker = self.root / "source.json"
+        marker = self._saved_preparation_file("source.json")
         if not marker.is_file():
             raise ValueError("Prepare this model's iPhone tail before increasing speed.")
         source = json.loads(marker.read_text())
