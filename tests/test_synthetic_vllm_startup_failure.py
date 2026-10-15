@@ -89,8 +89,8 @@ class _FakeProcess:
         return self._returncode
 
 
-# Every kit built here, kept alive past the end of the test that made it so the
-# fixture below, and not the dying test frame, decides when it is collected.
+# Every kit built here, kept alive past the end of the test that made it so the fixture below, and not the dying test
+# frame, decides when it is collected.
 _LIVE_KITS = []
 
 
@@ -299,12 +299,13 @@ def test_the_failure_path_is_not_a_bare_return_any_more():
     assert not re.search(r"terminate_tree\(self\.vllm_process\)\s*\n\s*return", source)
 
 
+# Both waits bound work by ELAPSED time.
+
+
 # --- the timeout is a deadline, not a number of laps ----------------------
 # Both waits bound work by ELAPSED time. Attempt counts and flat poll intervals
 # only agree with that when each attempt is instant, which is exactly what the
 # failing cases below are not.
-
-
 class _RecordingCapture(_FakeCapture):
     """Remembers every timeout it was asked to wait for."""
 
@@ -361,7 +362,7 @@ def test_the_metrics_wait_is_bounded_by_time_not_by_attempts(monkeypatch):
 
     calls = {"n": 0}
 
-    def stalled_check():
+    def stalled_check(port = 8000):
         calls["n"] += 1
         clock["now"] += 5.0
         return False
@@ -427,7 +428,7 @@ def test_the_metrics_wait_accepts_an_unbounded_timeout():
     """Same arithmetic, same fix, pinned so the helper is not left half done."""
     calls = {"n": 0}
 
-    def check():
+    def check(port = 8000):
         calls["n"] += 1
         return calls["n"] >= 3
 

@@ -445,7 +445,7 @@ async def test_background_job_publishes_and_releases_repo(model, monkeypatch):
     assert result["phase"] == "queued"
     await asyncio.gather(*list(move._tasks))
     result = move.status("org/model", "owner")
-    assert result["phase"] == "completed", result
+    assert result["phase"] == "completed", result.get("error")
     assert Path(result["destination"]).is_dir()
     assert not model[0].exists()
     assert published and reservations == ["org/model"]

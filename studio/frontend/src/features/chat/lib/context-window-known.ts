@@ -4,30 +4,24 @@
 // its own plain module so the node suite can drive it: chat-page.tsx pulls in the whole chat runtime
 
 export type KnownContextWindowInput = {
-  // the resident GGUF's n_ctx; null for external providers and non-GGUF models
-  ggufContextLength: number | null;
+  // the window the resident backend serves; null where none sizes one
+  loadedContextLength: number | null;
   // a load in flight still carries the outgoing model's window
   modelLoading: boolean;
   isExternalModel: boolean;
-  // saved capability for a remote connection; null when unknown
-  externalContextLength?: number | null;
   // what /api/inference/status holds; undefined before the first read
   residentCheckpoint: string | null | undefined;
 };
 
 // the recount that fills the bar stands down for images, audio, Deep Research and a busy backend
 export function hasKnownContextWindow({
-  ggufContextLength,
+  loadedContextLength,
   modelLoading,
   isExternalModel,
-  externalContextLength,
   residentCheckpoint,
 }: KnownContextWindowInput): boolean {
-  if (modelLoading) return false;
-  if (isExternalModel) {
-    return externalContextLength != null && externalContextLength > 0;
-  }
-  if (ggufContextLength == null || ggufContextLength <= 0) return false;
+  if (modelLoading || isExternalModel) return false;
+  if (loadedContextLength == null || loadedContextLength <= 0) return false;
   // matches chatModelLoaded: undefined is "status not read yet", not "evicted"
   return residentCheckpoint !== null;
 }

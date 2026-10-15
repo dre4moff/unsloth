@@ -13,9 +13,11 @@ import {
 } from "@/components/ui/dialog";
 import { useT } from "@/i18n";
 import {
-  ArrowRight01Icon,
   DocumentAttachmentIcon,
 } from "@hugeicons/core-free-icons";
+import {
+  ChevronRightIcon,
+} from "lucide-react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { ReactElement } from "react";
 
@@ -40,7 +42,7 @@ export function DocumentUploadRedirectDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         className="sm:max-w-lg"
-        overlayClassName="bg-background/45 supports-backdrop-filter:backdrop-blur-[1px]"
+        overlayClassName="bg-background/45"
       >
         <DialogHeader className="gap-3">
           <div className="flex items-center gap-2">
@@ -83,7 +85,7 @@ export function DocumentUploadRedirectDialog({
           </Button>
           <Button type="button" onClick={onOpenLearningRecipes}>
             {t("studio.dataset.documentRedirect.openAction")}
-            <HugeiconsIcon icon={ArrowRight01Icon} className="size-4" />
+            <ChevronRightIcon className="size-4" />
           </Button>
         </DialogFooter>
       </DialogContent>

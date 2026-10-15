@@ -554,7 +554,7 @@ def test_ltx2_flow_shift_defaults_to_auto():
     flux = DiffusionLoraConfig(
         base_model = "black-forest-labs/FLUX.1-dev", data_dir = "d", output_dir = "o"
     ).normalized()
-    assert flux.flow_shift == 1.0
+    assert flux.flow_shift is None
 
 
 def test_ltx2_rejects_fp16_before_loading():
@@ -580,7 +580,7 @@ def _run_cfg(base_model: str, tmp_path) -> DiffusionLoraConfig:
 def test_a_video_run_publishes_no_adapter_into_the_image_lora_catalog(tmp_path, monkeypatch):
     # loras/diffusion is scanned by the Images LoRA picker alone, and core/inference/video.py has
     # no LoRA surface at all, so mirroring a video adapter there copies a large file into a
-    # catalog nothing can load and reports a catalog_path Studio cannot deploy.
+    # catalog nothing can load and reports a catalog_path Unsloth cannot deploy.
     from pathlib import Path
 
     catalog = tmp_path / "loras" / "diffusion"

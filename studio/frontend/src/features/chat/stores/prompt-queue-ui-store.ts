@@ -10,18 +10,21 @@ export type PromptQueueUIEntry = {
   local: boolean;
   temporary: boolean;
   dispatched: boolean;
+  paused: boolean;
 };
 
 export type PromptQueueUIItemStatus =
   | "queued"
   | "next"
   | "waiting"
-  | "running";
+  | "running"
+  | "paused";
 
 export type PromptQueueUIItem = {
   id: string;
   runId: string;
   prompt: string;
+  attachmentNames?: string[];
   position: number;
   total: number;
   status: PromptQueueUIItemStatus;

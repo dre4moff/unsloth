@@ -9,14 +9,21 @@ from __future__ import annotations
 import struct
 from pathlib import Path
 from typing import Iterable, Mapping
+from unittest.mock import patch
+
+
+import pytest
 
 from utils.models.gguf_metadata import (
+    is_gguf_embedding_architecture,
+    is_gguf_embedding_model,
     is_mmproj_by_metadata,
     mmproj_accepts_image,
     pairing_score,
     read_gguf_architecture,
     read_gguf_context_length,
     read_gguf_general_metadata,
+    read_gguf_nextn_predict_layers,
     read_gguf_staged_dims,
     read_mmproj_audio_capability,
 )
@@ -64,12 +71,14 @@ def _write_synthetic_gguf(
     path: Path,
     general_strings: Mapping[str, str],
     *,
+    tensor_names: Iterable[str] | None = None,
     extra_uint32: Mapping[str, int] | None = None,
     extra_uint64: Mapping[str, int] | None = None,
     extra_string_arrays: Mapping[str, Iterable[str]] | None = None,
     extra_bools: Mapping[str, bool] | None = None,
 ) -> Path:
-    """Minimal GGUF: header + KV body, no tensors."""
+    """Minimal GGUF header with optional tensor-table entries and no tensor data."""
+    tensor_names = list(tensor_names or ())
     extra_uint32 = extra_uint32 or {}
     extra_uint64 = extra_uint64 or {}
     extra_string_arrays = extra_string_arrays or {}
@@ -92,15 +101,22 @@ def _write_synthetic_gguf(
         body += _enc_kv_string_array(k, v)
     for k, v in extra_bools.items():
         body += _enc_kv_bool(k, v)
+    tensor_info = b""
+    for name in tensor_names:
+        tensor_info += _enc_string(name)
+        tensor_info += struct.pack("<I", 1)  # n_dimensions
+        tensor_info += struct.pack("<Q", 1)  # dimensions
+        tensor_info += struct.pack("<I", 0)  # GGML_TYPE_F32
+        tensor_info += struct.pack("<Q", 0)  # data offset
     header = struct.pack(
         "<IIQQ",
         _GGUF_MAGIC,
         3,  # version
-        0,  # tensor_count
+        len(tensor_names),
         kv_count,
     )
     path.parent.mkdir(parents = True, exist_ok = True)
-    path.write_bytes(header + body)
+    path.write_bytes(header + body + tensor_info)
     return path
 
 
@@ -154,6 +170,52 @@ def test_context_length_ignores_foreign_arch_key(tmp_path: Path):
         extra_uint32 = {"qwen2.context_length": 8192},
     )
     assert read_gguf_context_length(str(p)) is None
+
+
+def test_nextn_predict_layers_uses_the_active_architecture_namespace(tmp_path: Path, monkeypatch):
+    embedded = _write_synthetic_gguf(
+        tmp_path / "embedded.gguf",
+        {"general.architecture": "qwen35"},
+        extra_uint32 = {
+            "qwen35.nextn_predict_layers": 1,
+            "qwen3.nextn_predict_layers": 9,
+        },
+    )
+    headless = _write_synthetic_gguf(
+        tmp_path / "headless.gguf",
+        {"general.architecture": "qwen35"},
+        extra_uint64 = {"qwen35.nextn_predict_layers": 0},
+    )
+    absent = _write_synthetic_gguf(
+        tmp_path / "absent.gguf",
+        {"general.architecture": "qwen35"},
+        extra_uint32 = {"qwen3.nextn_predict_layers": 7},
+    )
+    malformed = tmp_path / "malformed.gguf"
+    malformed.write_bytes(b"not a GGUF")
+
+    reversed_order = tmp_path / "reversed.gguf"
+    reversed_body = _enc_kv_uint32("qwen35.nextn_predict_layers", 2) + _enc_kv_string(
+        "general.architecture", "qwen35"
+    )
+    reversed_order.write_bytes(struct.pack("<IIQQ", _GGUF_MAGIC, 3, 0, 2) + reversed_body)
+
+    assert read_gguf_nextn_predict_layers(str(embedded)) == 1
+    assert read_gguf_nextn_predict_layers(str(headless)) == 0
+    assert read_gguf_nextn_predict_layers(str(absent)) is None
+    assert read_gguf_nextn_predict_layers(str(malformed)) is None
+
+    assert read_gguf_nextn_predict_layers(str(reversed_order)) == 2
+
+    # Verify the file-identity cache.
+    import utils.models.gguf_metadata as metadata
+
+    monkeypatch.setattr(
+        metadata,
+        "_parse_gguf_arch_uints",
+        lambda *_args, **_kwargs: pytest.fail("cached NextN metadata was reparsed"),
+    )
+    assert read_gguf_nextn_predict_layers(str(embedded)) == 1
 
 
 # --- read_gguf_staged_dims (one pass: context + layer + moe counts) ----
@@ -308,51 +370,226 @@ def test_is_mmproj_by_metadata_signals():
     assert is_mmproj_by_metadata({"general.basename": "foo"}) is None
     assert is_mmproj_by_metadata({}) is None
     assert is_mmproj_by_metadata(None) is None
+    # llama.cpp's projector arch; ggml-org's SmolVLM projector says "clip-vision".
+    assert is_mmproj_by_metadata({"general.architecture": "clip", "general.type": "clip-vision"})
+    assert (
+        is_mmproj_by_metadata({"general.architecture": "llama", "general.type": "model"}) is False
+    )
 
 
 # --- pairing_score -----------------------------------------------------
 
 
-def test_pairing_score_base_model_url_match():
-    weight = {
-        "general.base_model.0.repo_url": "https://huggingface.co/Qwen/Qwen3.5-9B",
-    }
-    mmproj = {
-        "general.base_model.0.repo_url": "https://huggingface.co/Qwen/Qwen3.5-9B",
-    }
-    assert pairing_score(weight, mmproj) == 100
+def _md(
+    url = None,
+    basename = None,
+    org = None,
+):
+    keys = (
+        "general.base_model.0.repo_url",
+        "general.basename",
+        "general.base_model.0.organization",
+    )
+    return {k: v for k, v in zip(keys, (url, basename, org)) if v is not None}
 
 
-def test_pairing_score_base_model_url_mismatch():
-    weight = {
-        "general.base_model.0.repo_url": "https://huggingface.co/Qwen/Qwen3.5-9B",
-    }
-    mmproj = {
-        "general.base_model.0.repo_url": "https://huggingface.co/google/gemma-3-9B",
-    }
-    assert pairing_score(weight, mmproj) == -1
+# 100: same base repo, 90: derivative repo with matching basename, 80/60: basename fallbacks, -1: mismatch.
+@pytest.mark.parametrize(
+    "weight, mmproj, expected",
+    [
+        pytest.param(
+            _md(url = "https://huggingface.co/Qwen/Qwen3.5-9B"),
+            _md(url = "https://huggingface.co/Qwen/Qwen3.5-9B"),
+            100,
+            id = "base_model_url_match",
+        ),
+        pytest.param(
+            _md(url = "https://huggingface.co/Qwen/Qwen3.5-9B"),
+            _md(url = "https://huggingface.co/google/gemma-3-9B"),
+            -1,
+            id = "base_model_url_mismatch",
+        ),
+        pytest.param(
+            _md(
+                url = "https://huggingface.co/lmstudio-community/gemma-4-26B-A4B-it-GGUF",
+                basename = "gemma-4-26B-A4B-it",
+            ),
+            _md(
+                url = "https://huggingface.co/google/gemma-4-26B-A4B-it",
+                basename = "gemma-4-26B-A4B-it",
+            ),
+            90,
+            id = "base_model_url_derivative_repack_match",
+        ),
+        pytest.param(
+            _md(
+                url = "https://huggingface.co/vendor/gemma-4-26B-A4B-it-qat-q4_0-uncensored-heretic",
+                basename = "gemma-4-26B-A4B-it",
+            ),
+            _md(
+                url = "https://huggingface.co/google/gemma-4-26B-A4B-it",
+                basename = "gemma-4-26B-A4B-it",
+            ),
+            90,
+            id = "base_model_url_derivative_quant_match",
+        ),
+        pytest.param(
+            _md(url = "https://github.com/acme/Model-VL-GGUF", basename = "Model-VL"),
+            _md(url = "https://gitlab.example.com/acme/Model-VL", basename = "Model-VL"),
+            90,
+            id = "derivative_url_handles_non_hf_hosts",
+        ),
+        pytest.param(
+            _md(url = "https://gitlab.example.com/acme/models/Model-VL-GGUF", basename = "Model-VL"),
+            _md(url = "https://gitlab.example.com/acme/models/Model-VL", basename = "Model-VL"),
+            90,
+            id = "derivative_url_handles_nested_namespaces",
+        ),
+        pytest.param(
+            _md(url = "acme/Model-VL-GGUF", basename = "Model-VL"),
+            _md(url = "acme/Model-VL", basename = "Model-VL"),
+            90,
+            id = "derivative_url_handles_bare_repo_ids",
+        ),
+        pytest.param(
+            _md(url = "acme.ai/Model-GGUF", basename = "Model"),
+            _md(url = "acme.ai/Model", basename = "Model"),
+            90,
+            id = "derivative_url_handles_dotted_bare_owner",
+        ),
+        pytest.param(
+            _md(
+                url = "https://huggingface.co/google/gemma-4-26B-A4B-it",
+                basename = "gemma-4-26B-A4B-it",
+            ),
+            _md(url = "https://huggingface.co/google/gemma-4-26B", basename = "gemma-4-26B"),
+            -1,
+            id = "derivative_url_rejects_basename_mismatch",
+        ),
+        pytest.param(
+            _md(url = "https://huggingface.co/Qwen/Qwen3.5-9B/"),
+            _md(url = "https://huggingface.co/Qwen/Qwen3.5-9B"),
+            100,
+            id = "base_model_url_trailing_slash_normalised",
+        ),
+        pytest.param(
+            _md(url = "http://huggingface.co/Qwen/Qwen3.5-9B.GIT"),
+            _md(url = "https://huggingface.co/Qwen/Qwen3.5-9B"),
+            100,
+            id = "base_model_url_scheme_and_git_normalised",
+        ),
+        pytest.param(
+            _md(url = "https://huggingface.co/acme/Model"),
+            _md(url = "acme/Model"),
+            100,
+            id = "hosted_and_bare_repo_ids_match",
+        ),
+        pytest.param(
+            _md(url = "https://github.com/acme/Model"),
+            _md(url = "acme/Model"),
+            -1,
+            id = "non_hf_url_and_bare_repo_ids_do_not_match",
+        ),
+        pytest.param(
+            _md(url = "https://huggingface.co/vendor/model-v2-GGUF"),
+            _md(url = "https://huggingface.co/vendor/model"),
+            -1,
+            id = "derivative_url_requires_basename_evidence",
+        ),
+        pytest.param(
+            _md(url = "https://huggingface.co/Qwen/Qwen3.5-9B", basename = "Qwen3.5"),
+            _md(url = "https://huggingface.co/Qwen/Qwen3.5", basename = "Qwen3.5"),
+            -1,
+            id = "rejects_arbitrary_slug_prefix",
+        ),
+        pytest.param(
+            _md(url = "org/ModelGGUF", basename = "Model"),
+            _md(url = "other/Model", basename = "Model"),
+            -1,
+            id = "rejects_qualifier_without_separator",
+        ),
+        pytest.param(
+            _md(url = "https://git.example.com/Org/Model", basename = "Model"),
+            _md(url = "https://git.example.com/org/model", basename = "Model"),
+            -1,
+            id = "preserves_case_sensitive_repo_paths",
+        ),
+        pytest.param(
+            _md(url = "Org/Model", basename = "Model"),
+            _md(url = "org/Model", basename = "Model"),
+            -1,
+            id = "preserves_case_sensitive_bare_repo_ids",
+        ),
+        pytest.param(
+            _md(url = "https://huggingface.co/org/model", basename = "model"),
+            _md(url = "https://huggingface.co/other/model-ft", basename = "model"),
+            -1,
+            id = "rejects_derivative_projector_for_base_weight",
+        ),
+        pytest.param(
+            _md(basename = "Nanonets-Ocr-S", org = "Nanonets"),
+            _md(basename = "Nanonets-Ocr-S", org = "Nanonets"),
+            80,
+            id = "basename_plus_org_fallback",
+        ),
+    ],
+)
+def test_pairing_score(weight, mmproj, expected):
+    assert pairing_score(weight, mmproj) == expected
 
 
-def test_pairing_score_base_model_url_trailing_slash_normalised():
-    weight = {
-        "general.base_model.0.repo_url": "https://huggingface.co/Qwen/Qwen3.5-9B/",
-    }
-    mmproj = {
-        "general.base_model.0.repo_url": "https://huggingface.co/Qwen/Qwen3.5-9B",
-    }
-    assert pairing_score(weight, mmproj) == 100
+@pytest.mark.parametrize(
+    "left,right",
+    [
+        (
+            "https://huggingface.co/google/gemma-4-12B-it",
+            "https://huggingface.co/google/gemma-4-12b-it",
+        ),
+        (
+            "HTTPS://HUGGINGFACE.CO/Google/Gemma-4-12B-it.git/",
+            "http://huggingface.co/google/gemma-4-12b-it",
+        ),
+        ("https://huggingface.co/Google/Gemma-4-12B-it", "google/gemma-4-12b-it"),
+        ("Google/Gemma-4-12B-it", "https://huggingface.co/google/gemma-4-12b-it"),
+    ],
+)
+def test_pairing_score_hf_repo_case_insensitive(left, right):
+    key = "general.base_model.0.repo_url"
+    assert pairing_score({key: left}, {key: right}) == 100
 
 
-def test_pairing_score_basename_plus_org_fallback():
-    weight = {
-        "general.basename": "Nanonets-Ocr-S",
-        "general.base_model.0.organization": "Nanonets",
-    }
-    mmproj = {
-        "general.basename": "Nanonets-Ocr-S",
-        "general.base_model.0.organization": "Nanonets",
-    }
-    assert pairing_score(weight, mmproj) == 80
+@pytest.mark.parametrize("host", ["huggingface.co", "huggingface.co.example.com"])
+def test_pairing_score_rejects_distinct_hf_repositories(host):
+    key = "general.base_model.0.repo_url"
+    assert (
+        pairing_score(
+            {key: f"https://{host}/google/gemma-4-12B-it"},
+            {key: f"https://{host}/google/gemma-4-27b-it"},
+        )
+        == -1
+    )
+
+
+def test_pairing_score_preserves_case_on_hf_lookalike_host():
+    key = "general.base_model.0.repo_url"
+    assert (
+        pairing_score(
+            {key: "https://huggingface.co.example.com/Google/Model"},
+            {key: "https://huggingface.co.example.com/google/model"},
+        )
+        == -1
+    )
+
+
+def test_pairing_score_preserves_case_in_hf_file_paths():
+    key = "general.base_model.0.repo_url"
+    assert (
+        pairing_score(
+            {key: "https://huggingface.co/google/model/blob/main/Config.json"},
+            {key: "https://huggingface.co/google/model/blob/main/config.json"},
+        )
+        == -1
+    )
 
 
 def test_pairing_score_basename_only_fallback():
@@ -563,3 +800,101 @@ def test_declared_audio_false_is_not_an_audio_claim(tmp_path: Path):
     """A vision projector writing audio=False is still a vision tower."""
     p = _projector(tmp_path, **{"clip.has_vision_encoder": True, "clip.has_audio_encoder": False})
     assert mmproj_accepts_image(p) is True
+
+
+def test_is_gguf_embedding_architecture_recognises_encoder_arches():
+    assert is_gguf_embedding_architecture("nomic-bert")
+    assert is_gguf_embedding_architecture("NOMIC-BERT-MOE")
+    assert not is_gguf_embedding_architecture("bert")
+    assert not is_gguf_embedding_architecture("llama")
+    assert not is_gguf_embedding_architecture(None)
+
+
+def test_is_gguf_embedding_model_from_architecture(tmp_path: Path):
+    p = _write_synthetic_gguf(
+        tmp_path / "nomic.gguf",
+        {"general.architecture": "nomic-bert"},
+    )
+    assert is_gguf_embedding_model(str(p)) is True
+
+
+def test_is_gguf_embedding_model_from_name_hint(tmp_path: Path):
+    p = _write_synthetic_gguf(
+        tmp_path / "Qwen3-Embedding-4B-Q4_K_M.gguf",
+        {"general.architecture": "qwen3"},
+    )
+    with patch("utils.models.model_config.is_embedding_model") as remote_classifier:
+        assert (
+            is_gguf_embedding_model(str(p), model_identifier = "unsloth/Qwen3-Embedding-4B") is True
+        )
+    remote_classifier.assert_not_called()
+
+
+def test_is_gguf_embedding_model_ignores_owner_name_hint(tmp_path: Path):
+    p = _write_synthetic_gguf(
+        tmp_path / "Llama-3-Q4_K_M.gguf",
+        {"general.architecture": "llama"},
+    )
+    with patch("utils.models.model_config.is_embedding_model") as remote_classifier:
+        assert (
+            is_gguf_embedding_model(str(p), model_identifier = "embedding-lab/Llama-3-GGUF") is False
+        )
+    remote_classifier.assert_not_called()
+
+
+def test_is_gguf_embedding_model_from_intrinsic_name_hints(tmp_path: Path):
+    for index, (key, value) in enumerate(
+        (
+            ("general.name", "Qwen3 Embedding 4B"),
+            ("general.basename", "Qwen3-Embedding"),
+        )
+    ):
+        p = _write_synthetic_gguf(
+            tmp_path / f"model-{index}.gguf",
+            {"general.architecture": "qwen3", key: value},
+        )
+        assert is_gguf_embedding_model(str(p), model_identifier = "local/model") is True
+
+
+def test_is_gguf_embedding_model_excludes_reranker_without_pooling(tmp_path: Path):
+    p = _write_synthetic_gguf(
+        tmp_path / "bge-reranker-v2-m3-Q4_K_M.gguf",
+        {"general.architecture": "bert", "general.name": "Bge M3"},
+    )
+    assert (
+        is_gguf_embedding_model(str(p), model_identifier = "gpustack/bge-reranker-v2-m3-GGUF")
+        is False
+    )
+
+
+def test_is_gguf_embedding_model_rejects_generic_bert_without_pooling(tmp_path: Path):
+    p = _write_synthetic_gguf(
+        tmp_path / "bge-small-en-v1.5.gguf",
+        {"general.architecture": "bert", "general.name": "Bge Small Encoder"},
+    )
+    # No classifier head proves this is not a reranker, but it cannot tell us
+    # whether the missing pooling strategy should be CLS or MEAN.
+    assert is_gguf_embedding_model(str(p), model_identifier = "local/bge-small") is False
+
+
+def test_is_gguf_embedding_model_excludes_unnamed_encoder_classifier_heads(tmp_path: Path):
+    for index, classifier_tensor in enumerate(("cls.weight", "cls.output.weight")):
+        p = _write_synthetic_gguf(
+            tmp_path / f"model-{index}.gguf",
+            {"general.architecture": "modern-bert", "general.name": "MS MARCO Encoder"},
+            tensor_names = (classifier_tensor,),
+        )
+        assert is_gguf_embedding_model(str(p), model_identifier = "local/model") is False
+
+
+def test_is_gguf_embedding_model_checks_every_split_for_classifier_head(tmp_path: Path):
+    first = _write_synthetic_gguf(
+        tmp_path / "model-00001-of-00002.gguf",
+        {"general.architecture": "modern-bert"},
+    )
+    _write_synthetic_gguf(
+        tmp_path / "model-00002-of-00002.gguf",
+        {"general.architecture": "modern-bert"},
+        tensor_names = ("cls.weight",),
+    )
+    assert is_gguf_embedding_model(str(first), model_identifier = "local/model") is False

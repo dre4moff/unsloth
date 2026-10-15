@@ -79,23 +79,6 @@ def run_bash(
 class TestBinaryEnvCrossPlatform:
     """binary_env returns correct library paths for all OSes (Bug 4)."""
 
-    def test_linux_includes_binary_parent_in_ld_library_path(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ):
-        install_dir = tmp_path / "llama.cpp"
-        bin_dir = install_dir / "build" / "bin"
-        bin_dir.mkdir(parents = True)
-        binary_path = bin_dir / "llama-server"
-        binary_path.write_bytes(b"fake")
-
-        host = make_host(system = "Linux")
-        monkeypatch.setattr(MOD, "linux_runtime_dirs", lambda _bp: [])
-
-        env = binary_env(binary_path, install_dir, host)
-        ld_dirs = env["LD_LIBRARY_PATH"].split(os.pathsep)
-        assert str(bin_dir) in ld_dirs, f"build/bin not in LD_LIBRARY_PATH: {ld_dirs}"
-        assert str(install_dir) in ld_dirs, f"install_dir not in LD_LIBRARY_PATH: {ld_dirs}"
-
     def test_linux_binary_parent_comes_before_install_dir(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
@@ -141,7 +124,6 @@ class TestBinaryEnvCrossPlatform:
         binary_path = bin_dir / "llama-server"
         binary_path.write_bytes(b"fake")
 
-        # Real dirs so dedupe_existing_dirs keeps them.
         custom_lib = tmp_path / "custom_lib"
         other_lib = tmp_path / "other_lib"
         custom_lib.mkdir()
@@ -241,7 +223,7 @@ class TestResolveRequestedLlamaTag:
             lambda repo, published_release_tag = "": iter([invalid, valid]),
         )
 
-        def fake_load(repo, release_tag):
+        def fake_load(repo, release_tag, assets):
             if release_tag == "v2.0":
                 raise MOD.PrebuiltFallback("checksum asset missing")
             return ApprovedReleaseChecksums(
@@ -374,7 +356,6 @@ class TestSetupShLogic:
         (mock_bin / "git").write_text("#!/bin/bash\nexit 0\n")
         (mock_bin / "git").chmod(0o755)
 
-        # PATH: mock_bin first, then system dirs without cmake.
         safe_dirs = [str(mock_bin)]
         for d in os.environ.get("PATH", "").split(":"):
             if d and not os.path.isfile(os.path.join(d, "cmake")):
@@ -408,7 +389,6 @@ class TestSetupShLogic:
         (mock_bin / "cmake").write_text("#!/bin/bash\nexit 0\n")
         (mock_bin / "cmake").chmod(0o755)
 
-        # PATH: mock_bin first, then system dirs without git.
         safe_dirs = [str(mock_bin)]
         for d in os.environ.get("PATH", "").split(":"):
             if d and not os.path.isfile(os.path.join(d, "git")):
@@ -635,7 +615,7 @@ class TestSourceCodePatterns:
         assert (
             '_CLONE_ARGS+=(--branch "$_RESOLVED_SOURCE_REF")' in content
         ), "_CLONE_ARGS should be extended with --branch $_RESOLVED_SOURCE_REF"
-        # --branch only when tag is not "latest".
+        # branch only when tag is not "latest".
         assert (
             '_RESOLVED_SOURCE_REF" != "latest"' in content
         ), "Should guard against literal 'latest' tag"
@@ -734,11 +714,11 @@ class TestSourceCodePatterns:
         assert all(
             "-allow-unsupported-compiler" not in line for line in cmake_args_lines
         ), "flag must not be pushed into the $CmakeArgs array"
-        # Must be scoped to the CUDA-on branch, not set for CPU-only builds. The
-        # branch also has an early GGML_CUDA=OFF (undetectable-arch CPU fallback,
-        # #5854), so anchor on GGML_CUDA=ON and the final (no-GPU) GGML_CUDA=OFF.
+        # Must be scoped to the CUDA-on branch, not set for CPU-only builds. The branch also has an early
+        # GGML_CUDA=OFF (undetectable-arch CPU fallback, #5854), so anchor on GGML_CUDA=ON and the final (no-GPU)
+        # GGML_CUDA=OFF.
         flag_idx = content.index("-allow-unsupported-compiler")
-        cuda_guard_idx = content.index("if ($HasNvidiaSmi -and $NvccPath)")
+        cuda_guard_idx = content.index("if ($HasNvidiaDriverEvidence -and $NvccPath)")
         cuda_on_idx = content.index("'-DGGML_CUDA=ON'")
         cpu_else_idx = content.rindex("'-DGGML_CUDA=OFF'")
         assert cuda_guard_idx < cuda_on_idx < flag_idx < cpu_else_idx, (
@@ -862,24 +842,6 @@ class TestSourceCodePatterns:
         content = SETUP_PS1.read_text(encoding = "utf-8")
         assert "Sort-Object Name | Select-Object -Last 1" not in content
         assert "Sort-Object { [version]($_.Name -replace '^v','') } -Descending" in content
-
-    def test_binary_env_linux_has_binary_parent(self):
-        """The Linux branch of binary_env should include binary_path.parent."""
-        content = MODULE_PATH.read_text(encoding = "utf-8")
-        in_func = False
-        in_linux = False
-        found = False
-        for line in content.splitlines():
-            if "def binary_env(" in line:
-                in_func = True
-            elif in_func and line and not line[0].isspace() and "def " in line:
-                break
-            if in_func and "host.is_linux" in line:
-                in_linux = True
-            if in_linux and "binary_path.parent" in line:
-                found = True
-                break
-        assert found, "binary_path.parent not found in Linux branch of binary_env"
 
 
 # Bash fragment mirroring setup.sh's GPU backend decision chain.

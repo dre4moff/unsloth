@@ -15,6 +15,46 @@ from pathlib import Path
 # The backend uses "from utils..." imports; ensure the backend dir is on sys.path.
 import sys
 
+
+def _shared_setup_1(monkeypatch):
+    monkeypatch.setattr(
+        tl,
+        "latest_transformers_supports",
+        lambda _t: {"pypi_version": "5.15.0", "supported_in_pypi": True, "supported_in_main": True},
+    )
+
+
+def _shared_setup_2(monkeypatch):
+    monkeypatch.setattr(tl, "_disabled", lambda: False)
+    monkeypatch.setattr(tl, "_env_offline", lambda: False)
+    monkeypatch.setattr(tl, "_config_model_types", lambda tier: {"llama"})
+    monkeypatch.setattr(tl, "_hardcoded_model_types", lambda: frozenset())
+
+
+def _shared_setup_3(monkeypatch):
+    cfg = {
+        "model_type": "zz_new_wrapper",
+        "text_config": {"model_type": "zz_new_llm"},
+    }
+    monkeypatch.setattr(tl, "_load_config_json", lambda *a, **k: cfg)
+
+
+def _shared_setup_4(monkeypatch):
+    monkeypatch.setattr(
+        tv,
+        "_ensure_venv_dir",
+        lambda *a: (_ for _ in ()).throw(AssertionError("must not install")),
+    )
+
+
+def _shared_setup_5(monkeypatch, tmp_path):
+    venv_dir = tmp_path / ".venv_t5_latest"
+    venv_dir.mkdir()
+    (venv_dir / tv._LATEST_PIN_MARKER).write_text("5.13.0")
+    monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(venv_dir))
+    return venv_dir
+
+
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
@@ -105,6 +145,8 @@ def _fake_urlopen_factory(counter: dict):
             return _FakeResponse(_MAIN_ONLY_SOURCE.encode())
         if "/main/" in url and url.endswith("configuration_auto.py"):
             return _FakeResponse(b"CONFIG_MAPPING_NAMES = {}\n")
+        if url == f"{tl._MAIN_RAW}/src/transformers/__init__.py":
+            return _FakeResponse(b'__version__ = "5.14.0.dev0"\n')
         raise AssertionError(f"unexpected URL fetched: {url}")
 
     return _fake_urlopen
@@ -221,6 +263,7 @@ class TestLatestTransformersSupports:
             "pypi_version": "5.13.0",
             "supported_in_pypi": True,
             "supported_in_main": True,
+            "main_version": "5.14.0.dev0",
         }
 
     def test_dev_only_arch_reported_main_only(self, monkeypatch):
@@ -228,6 +271,7 @@ class TestLatestTransformersSupports:
         result = latest_transformers_supports("dev_only_arch")
         assert result["supported_in_pypi"] is False
         assert result["supported_in_main"] is True
+        assert result["main_version"] == "5.14.0.dev0"
 
     def test_unknown_everywhere(self, monkeypatch):
         monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen_factory({}))
@@ -278,6 +322,29 @@ class TestLatestTransformersSupports:
         first_total = counter["__total__"]
         latest_transformers_supports("brandnew_arch")
         assert counter["__total__"] > first_total
+
+    def test_pre_main_version_snapshot_refetches(self, monkeypatch):
+        # A snapshot written before main_version existed must not hide the main install.
+        counter = {}
+        monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen_factory(counter))
+        latest_transformers_supports("brandnew_arch")
+        old = dict(tl._memory_snapshot, schema = 1)
+        old.pop("main_version")
+        tl.clear_caches()
+        tl._save_snapshot_file(old)
+        result = latest_transformers_supports("dev_only_arch")
+        assert result["main_version"] == "5.14.0.dev0"
+
+    def test_failed_main_version_lookup_retries_after_backoff(self):
+        snapshot = {"main_checked": True, "main_version": None, "fetched_at": time.time()}
+        assert tl._snapshot_is_fresh(snapshot)
+        snapshot["fetched_at"] -= tl._FAILURE_BACKOFF_SECONDS + 1
+        assert not tl._snapshot_is_fresh(snapshot)
+        snapshot["main_version"] = "5.14.0.dev0"
+        assert tl._snapshot_is_fresh(snapshot)
+        # A failed main mapping fetch is retried after the same backoff.
+        snapshot["main_checked"] = False
+        assert not tl._snapshot_is_fresh(snapshot)
 
     def test_corrupt_disk_cache_ignored(self, monkeypatch, tmp_path: Path):
         counter = {}
@@ -336,6 +403,7 @@ class TestCheckUpgradeForModel:
             "pypi_version": "5.13.0",
             "supported_in_pypi": True,
             "supported_in_main": True,
+            "main_version": "5.14.0.dev0",
         }
 
     def test_dev_only_type_signals_main_only(self, tmp_path: Path, monkeypatch):
@@ -533,37 +601,22 @@ class TestLatestVenvProvisioning:
 
     def test_ensure_latest_rejects_bad_version(self, tmp_path: Path, monkeypatch):
         monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(tmp_path / ".venv_t5_latest"))
-        monkeypatch.setattr(
-            tv,
-            "_ensure_venv_dir",
-            lambda *a: (_ for _ in ()).throw(AssertionError("must not install")),
-        )
+        _shared_setup_4(monkeypatch)
         assert ensure_latest_transformers_venv("5.13.0 && curl evil") is False
 
     def test_ensure_latest_offline_refuses(self, tmp_path: Path, monkeypatch):
         monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(tmp_path / ".venv_t5_latest"))
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")
-        monkeypatch.setattr(
-            tv,
-            "_ensure_venv_dir",
-            lambda *a: (_ for _ in ()).throw(AssertionError("must not install")),
-        )
+        _shared_setup_4(monkeypatch)
         assert ensure_latest_transformers_venv("5.13.0") is False
 
     def test_unpinned_sidecar_never_installs(self, tmp_path: Path, monkeypatch):
         monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(tmp_path / ".venv_t5_latest"))
-        monkeypatch.setattr(
-            tv,
-            "_ensure_venv_dir",
-            lambda *a: (_ for _ in ()).throw(AssertionError("must not install")),
-        )
+        _shared_setup_4(monkeypatch)
         assert tv._ensure_venv_t5_latest_exists() is False
 
     def test_pinned_sidecar_repairs_with_same_version(self, tmp_path: Path, monkeypatch):
-        venv_dir = tmp_path / ".venv_t5_latest"
-        venv_dir.mkdir()
-        (venv_dir / tv._LATEST_PIN_MARKER).write_text("5.13.0")
-        monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(venv_dir))
+        venv_dir = _shared_setup_5(monkeypatch, tmp_path)
         monkeypatch.setattr(tv, "_venv_dir_is_valid", lambda *a: False)
         recorded = {}
 
@@ -608,17 +661,11 @@ class TestLatestTierRouting:
         assert tv._probe_tier_order() == tv._PROBE_TIER_ORDER
 
     def test_probe_order_includes_provisioned_latest(self, tmp_path: Path, monkeypatch):
-        venv_dir = tmp_path / ".venv_t5_latest"
-        venv_dir.mkdir()
-        (venv_dir / tv._LATEST_PIN_MARKER).write_text("5.13.0")
-        monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(venv_dir))
+        venv_dir = _shared_setup_5(monkeypatch, tmp_path)
         assert tv._probe_tier_order() == tv._PROBE_TIER_ORDER + ("latest",)
 
     def test_activation_prepends_latest_dir(self, tmp_path: Path, monkeypatch):
-        venv_dir = tmp_path / ".venv_t5_latest"
-        venv_dir.mkdir()
-        (venv_dir / tv._LATEST_PIN_MARKER).write_text("5.13.0")
-        monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(venv_dir))
+        venv_dir = _shared_setup_5(monkeypatch, tmp_path)
         monkeypatch.setattr(tv, "get_transformers_tier", lambda *a, **k: "latest")
         monkeypatch.setattr(tv, "_ensure_venv_t5_latest_exists", lambda: True)
         old_sys_path = list(sys.path)
@@ -727,6 +774,74 @@ class TestInstallLatestTransformers:
         assert result["success"] is True
         assert recorded["extras"] == ("tokenizers==0.23.0",)
 
+    def test_main_version_installs_after_consent(self, monkeypatch):
+        monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen_factory({}))
+        monkeypatch.setattr(tl, "compat_plan", lambda v: ((), []))
+        recorded = {}
+
+        def _fake_ensure(
+            version,
+            extra_packages = (),
+            before_swap = None,
+        ):
+            recorded["version"] = version
+            recorded["source"] = tv._install_source(f"transformers=={version}")
+            return True
+
+        monkeypatch.setattr(tl, "_resolve_main_commit", lambda: "a" * 40)
+        monkeypatch.setattr(tl, "_fetch_main_version", lambda ref = "main": "5.14.0.dev0")
+        monkeypatch.setattr(tl, "ensure_latest_transformers_venv", _fake_ensure)
+        monkeypatch.setattr(tl, "latest_venv_pinned_version", lambda: "5.14.0.dev0")
+        result = install_latest_transformers("5.14.0.dev0")
+        assert result["success"] is True and "(main)" in result["message"]
+        assert recorded["version"] == "5.14.0.dev0"
+        # The archive is the commit whose version was checked, not the moving branch.
+        assert recorded["source"].endswith(f"/archive/{'a' * 40}.zip")
+        assert tv._install_source("transformers==5.14.0.dev0").endswith("refs/heads/main.zip")
+
+    def test_main_moved_since_check_rejected(self, monkeypatch):
+        monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen_factory({}))
+        seen = iter(["5.14.0.dev0", "5.15.0.dev0"])
+        monkeypatch.setattr(tl, "_fetch_main_version", lambda ref = "main": next(seen))
+        monkeypatch.setattr(tl, "_resolve_main_commit", lambda: "b" * 40)
+        monkeypatch.setattr(
+            tl,
+            "ensure_latest_transformers_venv",
+            lambda v, extra_packages = (), before_swap = None: (_ for _ in ()).throw(
+                AssertionError("must not install")
+            ),
+        )
+        result = install_latest_transformers("5.14.0.dev0")
+        assert result["success"] is False and "no longer" in result["message"]
+        assert result["latest_main_version"] == "5.15.0.dev0"
+
+    def test_unresolvable_main_commit_rejected(self, monkeypatch):
+        monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen_factory({}))
+        monkeypatch.setattr(tl, "_resolve_main_commit", lambda: None)
+        monkeypatch.setattr(
+            tl,
+            "ensure_latest_transformers_venv",
+            lambda v, extra_packages = (), before_swap = None: (_ for _ in ()).throw(
+                AssertionError("must not install")
+            ),
+        )
+        result = install_latest_transformers("5.14.0.dev0")
+        assert result["success"] is False and "Could not check" in result["message"]
+
+    def test_stale_main_version_rejected(self, monkeypatch):
+        monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen_factory({}))
+        monkeypatch.setattr(
+            tl,
+            "ensure_latest_transformers_venv",
+            lambda v, extra_packages = (), before_swap = None: (_ for _ in ()).throw(
+                AssertionError("must not install")
+            ),
+        )
+        result = install_latest_transformers("5.12.0.dev0")
+        assert result["success"] is False
+        # Retry needs the current main, else it re-sends the stale dev version forever.
+        assert result["latest_main_version"] == "5.14.0.dev0"
+
 
 class TestCompatPlan:
     def _patch_env(self, monkeypatch, requires, installed):
@@ -780,6 +895,26 @@ class TestCompatPlan:
         self._patch_env(monkeypatch, ["huggingface-hub>=2.1"], {"huggingface-hub": "0.36.2"})
         extras, blockers = tl.compat_plan("5.99.0")
         assert blockers == ["huggingface-hub>=2.1"]
+
+    def test_sidecar_hub_shadowed_by_base_env_pins(self, monkeypatch):
+        self._patch_env(
+            monkeypatch,
+            ["huggingface-hub<2.0,>=1.31.0"],
+            {"huggingface-hub": "1.32.0", "hf-xet": "1.5.2"},
+        )
+        extras, blockers = tl.compat_plan("5.18.0")
+        assert blockers == []
+        assert extras == ("huggingface-hub==1.32.0", "hf-xet==1.5.2")
+
+    def test_dev_version_reads_main_setup_py(self, monkeypatch):
+        monkeypatch.setattr(
+            tl,
+            "_fetch_requires_dist",
+            lambda v: (_ for _ in ()).throw(AssertionError("dev builds are not on PyPI")),
+        )
+        monkeypatch.setattr(tl, "_fetch_main_requires", lambda: ["numpy>=99.0"])
+        extras, blockers = tl.compat_plan("5.14.0.dev0")
+        assert blockers == ["numpy>=99.0"]
 
     def test_unfetchable_requires_dist_blocks_install(self, monkeypatch):
         # Proceeding unverified could pin a sidecar whose imports crash workers.
@@ -941,11 +1076,7 @@ def test_upgrade_check_ignores_nested_known_types(monkeypatch):
 def test_upgrade_check_requires_primary_supported(monkeypatch):
     """Latest supporting only a nested type must not prompt: routing still
     cannot load the primary, so the install would not fix the model."""
-    cfg = {
-        "model_type": "zz_new_wrapper",
-        "text_config": {"model_type": "zz_new_llm"},
-    }
-    monkeypatch.setattr(tl, "_load_config_json", lambda *a, **k: cfg)
+    _shared_setup_3(monkeypatch)
     monkeypatch.setattr(
         tl,
         "latest_transformers_supports",
@@ -962,11 +1093,7 @@ def test_upgrade_check_requires_every_missing_type(monkeypatch):
     """Primary supported but a nested backbone missing from latest -> no prompt
     (CONFIG_MAPPING would still fail on the sub-config); all supported -> signal
     carries the primary type."""
-    cfg = {
-        "model_type": "zz_new_wrapper",
-        "text_config": {"model_type": "zz_new_llm"},
-    }
-    monkeypatch.setattr(tl, "_load_config_json", lambda *a, **k: cfg)
+    _shared_setup_3(monkeypatch)
     monkeypatch.setattr(
         tl,
         "latest_transformers_supports",
@@ -1079,11 +1206,7 @@ def test_upgrade_check_mixed_pypi_main_reports_dev_only(monkeypatch):
     """Primary in the PyPI release but a nested type only on main: no install
     may be offered (CONFIG_MAPPING would fail on the nested sub-config), so the
     aggregate must read as main-only."""
-    cfg = {
-        "model_type": "zz_new_wrapper",
-        "text_config": {"model_type": "zz_new_llm"},
-    }
-    monkeypatch.setattr(tl, "_load_config_json", lambda *a, **k: cfg)
+    _shared_setup_3(monkeypatch)
     monkeypatch.setattr(
         tl,
         "latest_transformers_supports",
@@ -1383,3 +1506,156 @@ def test_a_truncated_source_fails_the_lookup_instead_of_shrinking_the_map(monkey
     with _BodyServer(truncated) as server:
         monkeypatch.setattr(tl, "_RAW_URL", server.url + "?{ref}{name}")
         assert tl._fetch_remote_model_types("v5.15.0") is None
+
+
+def _hardware_module(device):
+    """Stand in for utils.hardware, whose import needs real hardware."""
+    import enum
+
+    module = _types.ModuleType("utils.hardware")
+
+    class DeviceType(str, enum.Enum):
+        CUDA = "cuda"
+        XPU = "xpu"
+        MLX = "mlx"
+        CPU = "cpu"
+
+    module.DeviceType = DeviceType
+    module.get_device = lambda: DeviceType(device)
+    return module
+
+
+@pytest.fixture(autouse = True)
+def _transformers_backend_host(monkeypatch):
+    """Pin a transformers-loading device so these tests do not depend on the
+    host: on MLX the upgrade check short-circuits by design."""
+    monkeypatch.setitem(sys.modules, "utils.hardware", _hardware_module("cuda"))
+
+
+@pytest.mark.parametrize("device", ["cuda", "cpu", "xpu"])
+def test_transformers_backends_still_get_the_upgrade_offer(device, monkeypatch):
+    monkeypatch.setitem(sys.modules, "utils.hardware", _hardware_module(device))
+    _shared_setup_2(monkeypatch)
+    monkeypatch.setattr(tl, "_load_config_json", lambda *a, **k: {"model_type": "brandnew_arch"})
+    _shared_setup_1(monkeypatch)
+
+    offered = tl.check_upgrade_for_model("org/brandnew")
+
+    assert offered is not None and offered["model_type"] == "brandnew_arch"
+
+
+def test_mlx_host_is_never_offered_a_transformers_upgrade(monkeypatch):
+    """MLX picks its backend from hardware and never falls back to transformers,
+    so no install can make an architecture loadable there. Same inputs as the
+    transformers-backend test above, which does get an offer."""
+    _shared_setup_2(monkeypatch)
+    monkeypatch.setattr(tl, "_load_config_json", lambda *a, **k: {"model_type": "muse_glimmer"})
+    _shared_setup_1(monkeypatch)
+
+    monkeypatch.setitem(sys.modules, "utils.hardware", _hardware_module("cuda"))
+    assert tl.check_upgrade_for_model("mlx-community/Muse-Glimmer-30B-4bit") is not None
+
+    monkeypatch.setitem(sys.modules, "utils.hardware", _hardware_module("mlx"))
+    assert tl.check_upgrade_for_model("mlx-community/Muse-Glimmer-30B-4bit") is None
+
+
+def _bnb(model_type):
+    return {
+        "model_type": model_type,
+        "quantization_config": {"quant_method": "bitsandbytes", "load_in_4bit": True},
+    }
+
+
+def test_mlx_still_offers_the_upgrade_for_a_bitsandbytes_repo(monkeypatch):
+    """mlx-lm cannot read bnb weights, so the MLX loader dequantizes them through
+    ``AutoModelForCausalLM.from_pretrained``. That call is transformers building the
+    architecture, and on a brand-new type it raises the very unrecognized-architecture
+    error this offer fixes -- so a bnb repo keeps the offer even on MLX."""
+    _shared_setup_2(monkeypatch)
+    _shared_setup_1(monkeypatch)
+    monkeypatch.setitem(sys.modules, "utils.hardware", _hardware_module("mlx"))
+
+    # Control: the same architecture unquantized is MLX's own to load, and is skipped.
+    monkeypatch.setattr(tl, "_load_config_json", lambda *a, **k: {"model_type": "muse_glimmer"})
+    assert tl.check_upgrade_for_model("mlx-community/Muse-Glimmer-30B-4bit") is None
+
+    # A third-party bnb build of it goes through transformers, so the offer is real.
+    monkeypatch.setattr(tl, "_load_config_json", lambda *a, **k: _bnb("muse_glimmer"))
+    offered = tl.check_upgrade_for_model("someorg/Muse-Glimmer-30B-bnb-4bit")
+    assert offered is not None and offered["model_type"] == "muse_glimmer"
+
+
+def test_mlx_skips_the_unsloth_bnb_repo_it_swaps_for_a_base(monkeypatch):
+    """An ``unsloth/*-bnb-4bit`` id is remapped to its full-precision base before
+    the loader looks at the weights, so MLX quantizes it and transformers is never
+    asked to build it. Those keep the skip -- they are most of the bnb rows Studio
+    suggests on a Mac, and offering an install for them is the annoyance this
+    short-circuit exists to remove."""
+    _shared_setup_2(monkeypatch)
+    monkeypatch.setattr(tl, "_load_config_json", lambda *a, **k: _bnb("muse_glimmer"))
+    _shared_setup_1(monkeypatch)
+    monkeypatch.setitem(sys.modules, "utils.hardware", _hardware_module("mlx"))
+
+    for remapped in (
+        "unsloth/Muse-Glimmer-30B-unsloth-bnb-4bit",
+        "unsloth/Muse-Glimmer-30B-bnb-4bit",
+    ):
+        assert tl.check_upgrade_for_model(remapped) is None
+
+    # Same suffix, different owner: not remapped, so it still goes to transformers.
+    assert tl.check_upgrade_for_model("someorg/Muse-Glimmer-30B-bnb-4bit") is not None
+
+
+def test_upgrade_offer_survives_a_broken_hardware_import(monkeypatch):
+    """Detection is best effort: failing it must not silence a real offer."""
+    broken = _types.ModuleType("utils.hardware")
+
+    def _raise():
+        raise RuntimeError("no hardware")
+
+    broken.get_device = _raise
+    broken.DeviceType = object()
+    monkeypatch.setitem(sys.modules, "utils.hardware", broken)
+
+    assert tl._architecture_cannot_come_from_transformers() is False
+
+
+def test_fetch_main_requires_parses_setup_py(monkeypatch):
+    setup_py = textwrap.dedent(
+        """
+        _deps = [
+            "huggingface-hub>=1.31.0,<2.0",
+            "numpy>=1.17",
+            "pytest>=7.2.0",
+            "tokenizers>=0.22.0,<=0.23.0",
+        ]
+
+        install_requires = [
+            deps["huggingface-hub"],
+            deps["numpy"],
+            deps["tokenizers"],
+        ]
+        """
+    )
+    monkeypatch.setattr(tl, "_fetch_text", lambda url: setup_py)
+    assert tl._fetch_main_requires() == [
+        "huggingface-hub>=1.31.0,<2.0",
+        "numpy>=1.17",
+        "tokenizers>=0.22.0,<=0.23.0",
+    ]
+
+
+def test_fetch_main_requires_reads_the_pinned_commit(monkeypatch):
+    seen = []
+    monkeypatch.setattr(tl, "_fetch_text", lambda url: seen.append(url))
+    tl._fetch_main_requires()
+    with tv.transformers_main_at("e" * 40):
+        tl._fetch_main_requires()
+    assert seen[0].endswith("/main/setup.py") and seen[1].endswith(f"/{'e' * 40}/setup.py")
+
+
+def test_fetch_main_version_requires_dev_string(monkeypatch):
+    monkeypatch.setattr(tl, "_fetch_text", lambda url: '__version__ = "5.18.0"\n')
+    assert tl._fetch_main_version() is None
+    monkeypatch.setattr(tl, "_fetch_text", lambda url: '__version__ = "5.19.0.dev0"\n')
+    assert tl._fetch_main_version() == "5.19.0.dev0"

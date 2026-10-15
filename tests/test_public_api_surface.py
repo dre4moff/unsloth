@@ -56,8 +56,6 @@ def _accepts(callable_obj, kwargs: set[str]) -> tuple[bool, set[str]]:
 
 
 # FastLanguageModel: headline class.
-
-
 def test_fast_language_model_class_present():
     unsloth = pytest.importorskip("unsloth")
     if not hasattr(unsloth, "FastLanguageModel"):
@@ -108,9 +106,6 @@ def test_fast_language_model_for_inference_callable():
         )
 
 
-# FastVisionModel.
-
-
 def test_fast_vision_model_class_and_methods():
     unsloth = pytest.importorskip("unsloth")
     if not hasattr(unsloth, "FastVisionModel"):
@@ -146,8 +141,6 @@ def test_fast_vision_model_get_peft_model_vision_kwargs():
 
 
 # FastModel: modern unified entry point.
-
-
 def test_fast_model_class_and_methods():
     unsloth = pytest.importorskip("unsloth")
     if not hasattr(unsloth, "FastModel"):
@@ -176,8 +169,6 @@ def test_fast_model_from_pretrained_kwargs():
 
 
 # Bf16 helper alias (renamed once already; keep both accepted).
-
-
 def test_is_bf16_supported_or_alias_callable():
     """is_bf16_supported or the legacy is_bfloat16_supported alias must remain importable."""
     unsloth = pytest.importorskip("unsloth")
@@ -188,4 +179,37 @@ def test_is_bf16_supported_or_alias_callable():
             "DRIFT DETECTED: neither unsloth.is_bf16_supported nor "
             "unsloth.is_bfloat16_supported is callable; dtype probing "
             "in 50+ notebooks fails."
+        )
+
+
+# FastDecisionModel: decision model (Laya) fine-tuning, called like the other Fast*Model classes.
+def test_fast_decision_model_follows_the_fast_model_api():
+    unsloth = pytest.importorskip("unsloth")
+    if getattr(unsloth, "_IS_MLX", False):
+        pytest.skip("FastDecisionModel is a stub on MLX")
+    cls = getattr(unsloth, "FastDecisionModel", None)
+    if cls is None or not hasattr(unsloth, "DecisionTrainer"):
+        pytest.fail(
+            "DRIFT DETECTED: unsloth.FastDecisionModel or unsloth.DecisionTrainer is missing."
+        )
+    methods = [
+        m
+        for m in ("from_pretrained", "get_peft_model", "for_inference", "for_training")
+        if not callable(getattr(cls, m, None))
+    ]
+    load = {"model_name", "max_seq_length", "dtype", "load_in_4bit", "full_finetuning"}
+    peft = {
+        "r",
+        "lora_alpha",
+        "lora_dropout",
+        "target_modules",
+        "bias",
+        "use_gradient_checkpointing",
+    }
+    load -= _signature_param_names(getattr(cls, "from_pretrained", None))
+    peft -= _signature_param_names(getattr(cls, "get_peft_model", None))
+    if methods or load or peft:
+        pytest.fail(
+            f"DRIFT DETECTED: FastDecisionModel is missing methods {methods}, from_pretrained "
+            f"kwargs {sorted(load)} or get_peft_model kwargs {sorted(peft)}."
         )

@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   sttEngineForRepoId,
@@ -11,19 +10,16 @@ import {
 } from "../src/features/audio/stt-artifacts.ts";
 import { detectCapabilities } from "../src/features/model-picker/components/model-selector/model-capabilities.ts";
 
-const pageSource = readFileSync(
-  new URL("../src/features/audio/audio-page.tsx", import.meta.url),
-  "utf8",
-);
-const catalogSource = readFileSync(
-  new URL("../src/features/audio/catalog.ts", import.meta.url),
-  "utf8",
-);
+import { readSrc } from "./helpers/kit.ts";
+import { readAudioWorkspaceSource } from "./helpers/audio-workspace.ts";
+
+const pageSource = readAudioWorkspaceSource();
+const catalogSource = readSrc("features/audio/catalog.ts");
 
 test("Hub discovery follows the active audio mode", () => {
   assert.match(
     pageSource,
-    /speak: \["text-to-speech"\],[\s\S]*transcribe: \["automatic-speech-recognition"\]/,
+    /speak: \["text-to-speech", "text-to-audio"\],[\s\S]*transcribe: \["automatic-speech-recognition"\]/,
   );
   assert.match(pageSource, /task=\{HUB_TASKS_BY_MODE\[mode\]\}/);
 });
@@ -56,4 +52,23 @@ test("ASR names carry the audio capability badge", () => {
     detectCapabilities({ id: "unslothai/Qwen3-ASR-0.6B-GGUF" }).audio,
     true,
   );
+});
+
+test("Search Hub from an audio picker carries the page's pipeline tasks", () => {
+  const selector = readSrc(
+    "features/model-picker/components/model-selector.tsx",
+  );
+  assert.match(
+    selector,
+    /search: \{\s*tab: "discover",\s*capability: hubCapability,\s*audioTask:\s*hubCapability === "audio" && linkedTask \? \[linkedTask\]\.flat\(\) : undefined,\s*\}/,
+  );
+  // The picker task is a tag or a tag list; the hub param is always a list.
+  const asParam = (task: string | readonly string[]) => [task].flat();
+  assert.deepEqual(asParam(["text-to-speech", "text-to-audio"]), [
+    "text-to-speech",
+    "text-to-audio",
+  ]);
+  assert.deepEqual(asParam("automatic-speech-recognition"), [
+    "automatic-speech-recognition",
+  ]);
 });

@@ -25,10 +25,11 @@ const { mergeBackendRecommendedInference } = await import(
 
 const A = "unsloth/model-a";
 const B = "unsloth/model-b";
+const STATUS_CONTEXT_LENGTH = 131072;
 const STATUS = {
   inference: { temperature: 0.9 },
   is_gguf: true,
-  context_length: 131072,
+  context_length: STATUS_CONTEXT_LENGTH,
 } as never;
 
 /** Every field this file varies is set explicitly: the store is a module
@@ -66,6 +67,7 @@ test("with the memory off, the saved shared settings still reach a new model", a
       response: STATUS,
       modelId: B,
       presetSource: s.activePresetSource,
+      loadedContextLength: STATUS_CONTEXT_LENGTH,
     }),
     { fromModelDefaults: true },
   );
@@ -127,6 +129,7 @@ test("a pre-hydration edit survives on an install that has no model map", async 
       response: STATUS,
       modelId: A,
       presetSource: s2.activePresetSource,
+      loadedContextLength: STATUS_CONTEXT_LENGTH,
     }),
     { fromModelDefaults: true },
   );
@@ -210,4 +213,33 @@ test("a model left before hydration keeps the globals it was running with", asyn
   const { params } = useChatRuntimeStore.getState();
   assert.equal(params.temperature, 0.33);
   assert.equal(params.systemPrompt, "A's prompt");
+});
+
+// #10671: the global set A inherits records its Max as Max, as every other
+// snapshot of a model on Max does.
+test("a model left before hydration on Max inherits Max, not its window", async () => {
+  const { REMEMBERED_MAX_TOKENS_MAX } = await import(
+    "../src/features/chat/lib/per-model-params.ts"
+  );
+  settingsHttp.settings = { inferenceParams: { maxTokens: 30000 } };
+  reset({ checkpoint: A, maxTokens: 30000 });
+  settingsHttp.hold();
+  const hydrating = useChatRuntimeStore.getState().hydratePersistedSettings();
+  const resident = useChatRuntimeStore.getState();
+  resident.setParams(
+    { ...resident.params, checkpoint: A, maxTokens: 30000 },
+    { fromModelDefaults: true, maxTokensCap: 30000 },
+  );
+  const store = useChatRuntimeStore.getState();
+  store.setParams(
+    { ...store.params, checkpoint: B, maxTokens: 8192 },
+    { fromModelDefaults: true },
+  );
+  settingsHttp.release?.();
+  await hydrating;
+
+  assert.equal(
+    useChatRuntimeStore.getState().paramsByModel[A]?.maxTokens,
+    REMEMBERED_MAX_TOKENS_MAX,
+  );
 });

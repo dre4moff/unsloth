@@ -233,3 +233,20 @@ def test_generator_wrapper_emits_initial_visible_plan(monkeypatch, tmp_path):
     assert events[0]["type"] == "turn_plan"
     assert events[0]["steps"][0]["status"] == "in_progress"
     assert events[1] == {"type": "content", "text": "done"}
+
+
+def test_prompt_annotation_preserves_media_and_original_messages(monkeypatch, tmp_path):
+    from core.inference.turn_checkpoint import ActiveTurnCheckpoint
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    media = {"type": "input_audio", "input_audio": {"data": "AAAA", "format": "wav"}}
+    question = {"role": "user", "content": [{"type": "text", "text": "Transcribe this."}, media]}
+    state = ActiveTurnCheckpoint.start([question], thread_id = "media-preservation")
+    assert state is not None
+    state.record_tool("web_search", {"query": "evidence"}, "Result")
+    annotated = state.inject([question], max_chars=600)
+    assert annotated[0]["content"][:2] == question["content"]
+    assert annotated[0]["content"][1] is media
+    assert len(question["content"]) == 2
+    assert "<active_turn_checkpoint>" in annotated[0]["content"][-1]["text"]
+    assert len(annotated[0]["content"][-1]["text"]) <= 600
+    state.finish("completed")

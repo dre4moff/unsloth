@@ -420,7 +420,8 @@ async def test_shutdown_terminates_owned_preparation_child(tmp_path, monkeypatch
 @pytest.mark.parametrize("profile", [None, {"name": "memory-saving", "context": 8192,
     "totalContext": 50000, "kv": "q4_0", "bytesPerToken": 18432, "batch": 128,
     "ubatch": 64, "splitMinTokens": 64, "checkpoints": 1, "loadMode": "mmap", "draftMax": 3, "draftGpuLayers": 0}])
-def test_original_launch_profile_and_isolation(tmp_path, monkeypatch, profile):
+@pytest.mark.parametrize("lifecycle_state", ["active", "stopped_before_spawn", "stopped_at_publish"])
+def test_original_launch_profile_and_isolation(tmp_path, monkeypatch, profile, lifecycle_state):
     from core.companion import backburner_runtime as runtime
     from core.inference.llama_cpp import GgufLoadIntent
     manager = BackburnerManager()
@@ -440,10 +441,19 @@ def test_original_launch_profile_and_isolation(tmp_path, monkeypatch, profile):
     backend = SimpleNamespace(_lock=threading.Lock(), _cancel_event=threading.Event(), is_loaded=False,
                               _gguf_load_source_identity=lambda path: path, unload_model=lambda: None,
                               _find_free_port=lambda: 32150, _read_gguf_metadata=lambda path: None,
-                              _record_server_pid=lambda pid: None, _drain_stdout=lambda: None,
+                              _note_server_pid=lambda pid: None, _drain_stdout=lambda: None,
+                              _spawn_lock=threading.Lock(), _spawn_is_stale=lambda: lifecycle_state == "stopped_before_spawn",
+                              _publish_healthy=lambda: lifecycle_state != "stopped_at_publish",
                               _wait_for_health=lambda **kwargs: True, _binary_revision=lambda path: (path,))
     intent = GgufLoadIntent("model", gguf_path="/model.gguf", n_ctx=2048, n_parallel=8)
-    assert runtime.load_backburner(backend, intent)
+    loaded = runtime.load_backburner(backend, intent)
+    if lifecycle_state != "active":
+        assert not loaded
+        assert len(launches) == (0 if lifecycle_state == "stopped_before_spawn" else 1)
+        assert not getattr(backend, "_backburner_active", False)
+        backend._llama_log_fh.close()
+        return
+    assert loaded
     _, launch = launches[0]; env = launch["env"]
     assert env["BIN"] == str(tmp_path / "isolated-runtime/bin")
     assert env["LLAMA_SPLIT_TAIL"] == "169.254.1.2:50060" and env["PHONE_KV"] == "169.254.1.2:50062"

@@ -15,7 +15,10 @@ export {
   listCachedGguf,
   listCachedModels,
   deleteCachedDataset,
+  DELETABLE_LOCAL_SOURCES,
   deleteCachedModel,
+  deleteLocalModel,
+  revealLocalModel,
   fetchDeleteImpact,
   fetchOrphanCompanions,
   invalidateGgufVariantsCache,
@@ -48,9 +51,11 @@ export {
   localSourceLabel,
   normalizeCapabilities,
   normalizeModelFormat,
-  normalizeRuntime,
-  normalizeTimestamp,
 } from "./view-models";
+export {
+  epochMillisecondsToSeconds,
+  normalizeTimestamp,
+} from "./inventory-timestamps";
 export {
   resolveInventoryResource,
   type InventoryResourceFormatHint,
@@ -59,6 +64,7 @@ export {
 export {
   dedupeSameSourceHubCacheRows,
   findCompleteHfCacheLocalRow,
+  partialSetFromRows,
 } from "./inventory-dedupe";
 export {
   fetchInventorySource,

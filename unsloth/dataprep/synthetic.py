@@ -1,11 +1,8 @@
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
-#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-#
 #     http://www.apache.org/licenses/LICENSE-2.0
-#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -15,22 +12,39 @@
 __all__ = [
     "SyntheticDataKit",
 ]
+import socket
 import subprocess
 import threading
 from collections import deque
 import time
 import os
+import importlib.util as _importlib_util
+
+
+def _hf_transfer_importable() -> bool:
+    # huggingface_hub < 1.0 raises on every download when the flag is on and the package is
+    # missing (it is optional, and absent on Windows on ARM). find_spec never imports it, and
+    # raises ValueError for a sys.modules stub whose __spec__ is None.
+    try:
+        return _importlib_util.find_spec("hf_transfer") is not None
+    except (ImportError, ValueError):
+        return False
+
 
 _OFFLINE_VALS = {"1", "true", "yes", "on"}
-if not (
-    os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in _OFFLINE_VALS
-    or os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower() in _OFFLINE_VALS
+# An explicit value is the caller's (Studio sets "0" for its Xet fallback), as in unsloth_zoo.
+if (
+    "HF_HUB_ENABLE_HF_TRANSFER" not in os.environ
+    and not (
+        os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in _OFFLINE_VALS
+        or os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower() in _OFFLINE_VALS
+    )
+    and _hf_transfer_importable()
 ):
     os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
 import requests
 import torch
 import gc
-import time
 import re
 from unsloth_zoo.log import logger
 import numpy as np
@@ -174,7 +188,38 @@ def _remaining(deadline):
     return None if deadline is None else deadline - time.monotonic()
 
 
+def _port_is_free(port):
+    """Whether `vllm serve --port port` could bind, probed the way vLLM binds (all interfaces, SO_REUSEADDR)."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        if os.name != "nt":
+            # On Windows SO_REUSEADDR lets a bind steal a port in use, so the probe would always pass.
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            s.bind(("", port))
+        except OSError:
+            return False
+    return True
+
+
+def _pick_vllm_port(port):
+    """`port` as given, else 8000, else a free port when 8000 is taken (Studio in the Unsloth Docker image)."""
+    if port is not None:
+        return int(port)
+    if _port_is_free(SyntheticDataKit.port):
+        return SyntheticDataKit.port
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("", 0))
+        free = s.getsockname()[1]
+    print(
+        f"Unsloth: port {SyntheticDataKit.port} is in use, so the vLLM server will use port {free}."
+    )
+    return free
+
+
 class SyntheticDataKit:
+    # Kept as the class default so kits built without __init__ still have a port.
+    port = 8000
+
     def __init__(
         self,
         model_name = "unsloth/Llama-3.1-8B-Instruct-unsloth-bnb-4bit",
@@ -183,7 +228,8 @@ class SyntheticDataKit:
         float8_kv_cache = False,
         conservativeness = 1.0,
         token = None,
-        timeout = 1200,  # maybe this is not enough for large models if we need to download
+        timeout = 1200,
+        port = None,
         **kwargs,
     ):
         assert type(model_name) is str
@@ -232,7 +278,6 @@ class SyntheticDataKit:
             elif dtype_val == torch.float32:
                 dtype_val = "float32"
             engine_args["dtype"] = dtype_val
-            # Convert torch dtype to valid CLI string
             if hasattr(dtype_val, "name"):
                 engine_args["dtype"] = dtype_val.name
             elif isinstance(dtype_val, str) and dtype_val.startswith("torch."):
@@ -246,17 +291,19 @@ class SyntheticDataKit:
         if "model" in engine_args:
             del engine_args["model"]
 
+        # Picked here, not before the model download, so a released fallback port is not left free for minutes.
+        self.port = _pick_vllm_port(port)
         subprocess_commands = [
             "vllm",
             "serve",
             str(model_name),
+            "--port",
+            str(self.port),
         ]
         for key, value in engine_args.items():
             flag = key.replace("_", "-")
             if key == "compilation_config":
-                # [TODO] Unsure why subprocess doesn't process json properly
-                # Also -O3 breaks on T4!
-                # subprocess_commands += ["-O3",]
+                # -O3 breaks on T4.
                 continue
             which = str(value).replace("torch.", "")
             if which == "True":
@@ -265,10 +312,8 @@ class SyntheticDataKit:
                     "--" + flag,
                 ]
             elif which == "False":
-                # Ignore flag
                 pass
             elif which == "None":
-                # Ignore flag
                 pass
             else:
                 subprocess_commands += [
@@ -282,7 +327,9 @@ class SyntheticDataKit:
             stderr = subprocess.PIPE,
             start_new_session = True,
         )
-        ready_re = re.compile(r"Starting vLLM API server(?:\s+\d+)?\s+on\b")
+        # both "Starting vLLM API server on" (<= 0.18) and "Starting vLLM server on"
+        # (0.19), with the optional server index some versions insert
+        ready_re = re.compile(r"Starting vLLM(?:\s+API)?\s+server(?:\s+\d+)?\s+on\b")
         self.vllm_process = vllm_process
         self.stdout_capture = PipeCapture(
             vllm_process.stdout,
@@ -297,10 +344,11 @@ class SyntheticDataKit:
             keep_lines = 2000,
             echo = False,
             name = "vLLM STDERR",
-            ready_regex = None,
+            # vLLM >= 0.19 logs startup lines to STDERR
+            ready_regex = ready_re,
             text = False,
         )
-        # we don't print stderr to console but self.stderr_capture.tail(200) will print the last 200 lines
+        # stderr is not printed to console, but self.stderr_capture.tail(200) prints the last 200 lines.
 
         self._await_vllm_server(timeout = timeout)
         print("vLLM Server Ready Detected")
@@ -320,11 +368,11 @@ class SyntheticDataKit:
         is ten minutes, not the hundred the message promises.
         """
         deadline = _deadline(timeout)
-        while not self.check_vllm_status():
+        while not self.check_vllm_status(self.port):
             if deadline is not None and time.monotonic() >= deadline:
                 self._fail_vllm_server(
                     "printed its readiness line but never answered "
-                    f"http://localhost:8000/metrics (waited {timeout:g} seconds)"
+                    f"http://localhost:{self.port}/metrics (waited {timeout:g} seconds)"
                 )
             time.sleep(poll_interval)
 
@@ -341,24 +389,26 @@ class SyntheticDataKit:
         """
         deadline = _deadline(timeout)
         while True:
-            # Cap each lap at the time left: a flat `poll_interval` overshoots
-            # any shorter timeout, and readiness inside that overshoot would
-            # return success from an expired deadline. No deadline means full
-            # laps, which still notice a dead child where the bare
-            # `Event.wait(None)` this replaced would have hung forever.
+            # Cap each lap at the time left: a flat poll_interval overshoots any shorter timeout, and
+            # readiness inside that overshoot would return success from an expired deadline. No deadline means
+            # full laps, which still notice a dead child where the bare Event.wait(None) this replaced hung.
             remaining = _remaining(deadline)
             if remaining is not None and remaining <= 0:
                 self._fail_vllm_server(f"was not ready within {timeout} seconds")
             wait = poll_interval if remaining is None else min(poll_interval, remaining)
             if self.stdout_capture.wait_for_ready(timeout = wait):
                 return
+            # checked BEFORE the exit/closed arms, so a server that is ready on
+            # stderr is never reported as never having started
+            if self.stderr_capture.wait_for_ready(timeout = 0):
+                return
             returncode = self.vllm_process.poll()
             if returncode is not None:
                 self._fail_vllm_server(f"exited with code {returncode} before it was ready")
             if self.stdout_capture.has_closed():
                 self._fail_vllm_server("closed its stdout before it was ready")
-            # Expiry is checked at the top, so a dead or closed child keeps
-            # its own message rather than being reported as a timeout.
+            # Expiry is checked at the top, so a dead or closed child keeps its own message rather than being
+            # reported as a timeout.
 
     def _fail_vllm_server(self, what_happened):
         """Terminate the server and raise, quoting what it managed to say.
@@ -375,7 +425,7 @@ class SyntheticDataKit:
             f"Unsloth: the vLLM server behind SyntheticDataKit "
             f"{what_happened}.\n"
             f"Nothing after this point can work: `synthetic-data-kit` reaches "
-            f"the model over http://localhost:8000/v1, so ingest/create/"
+            f"the model over http://localhost:{self.port}/v1, so ingest/create/"
             f'save-as would each report "VLLM server not available", write '
             f"no file, and leave the failure to surface as a FileNotFoundError "
             f"much later on.\n"
@@ -406,14 +456,13 @@ class SyntheticDataKit:
         )
 
     @staticmethod
-    def check_vllm_status():
+    def check_vllm_status(port = 8000):
         try:
             # requests has no default timeout, so a stalled server hung here.
-            response = requests.get("http://localhost:8000/metrics", timeout = 5)
+            response = requests.get(f"http://localhost:{port}/metrics", timeout = 5)
             return response.status_code == 200
         except requests.exceptions.RequestException:
-            # ConnectionError alone let a read timeout escape as a stray
-            # traceback out of the readiness loop.
+            # ConnectionError alone let a read timeout escape as a stray traceback out of the readiness loop.
             return False
 
     def cleanup(self):
@@ -445,7 +494,6 @@ class SyntheticDataKit:
             torch.cuda.empty_cache()
             gc.collect()
 
-        # Delete vLLM module as well
         if hasattr(self, "_delete_vllm"):
             self._delete_vllm(llm = None)
 
@@ -477,8 +525,8 @@ class SyntheticDataKit:
         if max_tokens <= 5:
             raise RuntimeError("Generation length is way too long!")
         if max_tokens <= self.overlap:
-            # A non-positive stride (max_tokens - overlap) makes the n_chunks
-            # computation below divide by zero or go negative, so reject it.
+            # A non-positive stride (max_tokens - overlap) makes the n_chunks computation below divide by zero
+            # or go negative.
             raise RuntimeError(
                 f"The chunk size (max_seq_length - 2 * max_generation_tokens - 128 = "
                 f"{max_tokens}) must be larger than the overlap ({self.overlap}). "
@@ -489,21 +537,16 @@ class SyntheticDataKit:
         # Get left and right boundaries
         length = len(input_ids)
         if length <= max_tokens:
-            # The whole document fits in one chunk window, so emit it as a single
-            # chunk. Routing it through the multi-chunk path below would drop it
-            # (the linspace/stack pairing emits one fewer range than boundary
-            # points) or, for a document shorter than the overlap, slice the wrong
-            # tokens via negative start indices. Empty doc -> no chunk.
+            # The whole document fits one chunk window: the multi-chunk path below would drop it (the
+            # linspace/stack pairing emits one fewer range than boundary points) or, for a document shorter
+            # than the overlap, slice the wrong tokens via negative start indices.
             boundaries = [[0, length]] if length > 0 else []
         else:
-            # length > max_tokens > overlap here, so length - overlap > 0 and the
-            # linspace boundaries below are always non-negative.
-            # Minimal count: overlapping chunks cover `length` in
-            # ceil((length - overlap) / stride) chunks, not ceil(length / stride)
-            # which over-splits just past a stride multiple.
+            # Minimal count: overlapping chunks cover `length` in ceil((length - overlap) / stride) chunks, not
+            # ceil(length / stride), which over-splits just past a stride multiple.
             n_chunks = int(np.ceil((length - self.overlap) / (max_tokens - self.overlap)))
-            # n_chunks + 1 points: [:-1]/[1:] pairing yields n_chunks ranges; using
-            # n_chunks points gave one fewer, oversized chunk (over max_tokens).
+            # n_chunks + 1 points: the [:-1]/[1:] pairing yields n_chunks ranges; n_chunks points gave one
+            # fewer, oversized chunk (over max_tokens).
             boundaries = np.ceil(np.linspace(0, length - self.overlap, n_chunks + 1)).astype(int)
             boundaries = np.stack((boundaries[:-1], (boundaries + self.overlap)[1:])).T
             boundaries = np.minimum(boundaries, length).tolist()
@@ -556,6 +599,7 @@ class SyntheticDataKit:
             .replace("{cleanup_threshold}", str(cleanup_threshold))
             .replace("{cleanup_batch_size}", str(cleanup_batch_size))
             .replace("{cleanup_temperature}", str(cleanup_temperature))
+            .replace("{port}", str(self.port))
         )
 
         with open("synthetic_data_kit_config.yaml", "w", encoding = "utf-8") as f:

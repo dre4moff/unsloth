@@ -1,5 +1,4 @@
-# tests/saving scripts run their whole body at import, so plain pytest
-# collection would download checkpoints and train. Skip unless opted in.
+# tests/saving scripts run their whole body at import, so plain pytest collection would download checkpoints and train.
 import sys as _sys
 from pathlib import Path as _Path
 
@@ -74,7 +73,6 @@ def load_and_compute_8bit_ppl(
         chat_template = "llama-3.1",
     )
 
-    # Load dataset fresh in subprocess
     dataset_ppl = load_dataset("allenai/openassistant-guanaco-reformatted", split = "eval")
 
     def formatting_prompts_func(examples):
@@ -161,8 +159,6 @@ if __name__ == "__main__":
         loftq_config = None,
     )
 
-    from unsloth import is_bfloat16_supported
-
     trainer = SFTTrainer(
         model = model,
         tokenizer = tokenizer,
@@ -205,12 +201,6 @@ if __name__ == "__main__":
     model.save_pretrained_merged(
         save_directory = "./unsloth_out/merged_llama_text_model", tokenizer = tokenizer
     )
-
-    # print("cleaning")
-    # del model
-    # del tokenizer
-    # torch.cuda.empty_cache()
-    # gc.collect()
 
     print("Loading merged model in 4 bit for perplexity test")
     merged_model, merged_tokenizer = FastLanguageModel.from_pretrained(

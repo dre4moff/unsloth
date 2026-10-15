@@ -107,14 +107,21 @@ def load_backburner(backend, intent, cancel_event=None) -> bool:
         logs.mkdir(exist_ok=True)
         backend._llama_log_path = logs / "server.log"
         backend._llama_log_fh = backend._llama_log_path.open("w", buffering=1)
-        backend._process = subprocess.Popen(
-            ["/bin/bash", str(scripts / "serve.sh")], cwd=root, env=env,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-            encoding="utf-8", errors="replace", start_new_session=True,
-        )
-        backend._record_server_pid(backend._process.pid)
+        with backend._spawn_lock:
+            if backend._spawn_is_stale():
+                backend._llama_log_fh.close()
+                return False
+            backend._process = subprocess.Popen(
+                ["/bin/bash", str(scripts / "serve.sh")], cwd=root, env=env,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                encoding="utf-8", errors="replace", start_new_session=True,
+            )
+            backend._note_server_pid(backend._process.pid)
         backend._stdout_thread = threading.Thread(target=backend._drain_stdout, daemon=True)
         backend._stdout_thread.start()
+    if backend._spawn_is_stale():
+        backend.unload_model()
+        return False
     if not backend._wait_for_health(timeout=600):
         backend.unload_model()
         return False
@@ -124,7 +131,6 @@ def load_backburner(backend, intent, cancel_event=None) -> bool:
         backend._hf_repo = intent.hf_repo
         backend._hf_variant = intent.hf_variant
         backend._last_load_intent = replace(intent, verified_gguf=None)
-        backend._healthy = True
         backend._context_length = total
         backend._effective_context_length = total
         backend._max_context_length = total
@@ -147,4 +153,8 @@ def load_backburner(backend, intent, cancel_event=None) -> bool:
         backend._backburner_active = True
         backend._backburner_draft = config["draft"]
         backend._backburner_cache_identity = cache_identity
+    if not backend._publish_healthy():
+        backend._backburner_active = False
+        backend.unload_model()
+        return False
     return True

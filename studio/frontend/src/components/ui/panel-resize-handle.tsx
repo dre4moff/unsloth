@@ -12,6 +12,8 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { getClientPlatform } from "@/components/tauri/window-titlebar"
+import { PANEL_RESIZE_SCOPED_VARS_ENABLED } from "@/components/ui/panel-resize-recalc-flags"
+import { acquireDragOverlay, releaseDragOverlay } from "@/components/ui/panel-drag-overlay"
 
 /** Pointer travel (px) below which a drag counts as a plain click. */
 const DRAG_SLOP = 4
@@ -42,20 +44,41 @@ export type PanelResizeHandleProps = {
   /** Element to paint the live width onto, and the property to paint. */
   target: () => HTMLElement | null
   cssVar: string
-  /** Measured to start a drag from the rendered size when collapsed. */
+  /** Measured to start a drag from the rendered size when collapsed, in layout px. */
   measure: () => number
+  /** Browser interface scale: widths are layout px, painted times this. */
+  scale?: number
   label: string
   toggleLabel: string
-  /** Translated tooltip copy; the caller owns the translation layer. */
-  collapseHint: string
-  expandHint: string
-  dragHint: string
+  /**
+   * Translated tooltip copy; the caller owns the translation layer. Optional
+   * only for `hideTooltip`, which has no copy to translate.
+   */
+  collapseHint?: string
+  expandHint?: string
+  dragHint?: string
   /** Shown in the tooltip when the panel has a toggle shortcut. */
   shortcut?: string
+  /** Bare handle, no tooltip: for a panel that answers the hover itself. */
+  hideTooltip?: boolean
+  /** Told when the pointer arrives at or leaves the handle. */
+  onHoverChange?: (hovered: boolean) => void
   dataSlot?: string
   className?: string
   /** Mirrors the live width onto :root for chrome outside the panel. */
   rootVar?: string
+  /**
+   * Narrower element for `cssVar`, replacing `target()` under
+   * PANEL_RESIZE_SCOPED_VARS_ENABLED. Must hold every consumer and nothing
+   * else: the write invalidates inherited style for everything below it.
+   */
+  scopedTarget?: () => HTMLElement | null
+  /**
+   * The elements that actually read `rootVar`, replacing
+   * `document.documentElement` under PANEL_RESIZE_SCOPED_VARS_ENABLED. Empty
+   * means no consumer, so the write is skipped.
+   */
+  rootVarTargets?: () => HTMLElement[]
 }
 
 /**
@@ -77,15 +100,20 @@ export function PanelResizeHandle({
   target,
   cssVar,
   measure,
+  scale = 1,
   label,
   toggleLabel,
   collapseHint,
   expandHint,
   dragHint,
   shortcut,
+  onHoverChange,
+  hideTooltip = false,
   dataSlot = "panel-resize-handle",
   className,
   rootVar,
+  scopedTarget,
+  rootVarTargets,
 }: PanelResizeHandleProps) {
   const ref = React.useRef<HTMLButtonElement>(null)
   const dragRef = React.useRef<DragState | null>(null)
@@ -111,12 +139,25 @@ export function PanelResizeHandle({
   React.useEffect(() => {
     committedRef.current = width
   }, [width])
+  const scaleRef = React.useRef(scale)
+  React.useEffect(() => {
+    scaleRef.current = scale
+  }, [scale])
+
+  // Where `rootVar` is painted, resolved once on pointer down. Always
+  // [document.documentElement] with the flag off, which is what shipped.
+  const rootTargetsRef = React.useRef<HTMLElement[]>([])
+  // Whether THIS handle is holding the cursor overlay. endDrag also runs as the
+  // effect cleanup, where no drag happened and nothing was acquired.
+  const overlayHeldRef = React.useRef(false)
 
   const paint = React.useCallback(
     (value: string) => {
       targetRef.current?.style.setProperty(cssVar, value)
       if (rootVar) {
-        document.documentElement.style.setProperty(rootVar, value)
+        for (const el of rootTargetsRef.current) {
+          el.style.setProperty(rootVar, value)
+        }
       }
     },
     [cssVar, rootVar],
@@ -130,7 +171,7 @@ export function PanelResizeHandle({
       if (frameRef.current) return
       frameRef.current = requestAnimationFrame(() => {
         frameRef.current = 0
-        paint(`${pendingRef.current}px`)
+        paint(`${pendingRef.current * scaleRef.current}px`)
       })
     },
     [paint],
@@ -147,31 +188,42 @@ export function PanelResizeHandle({
     }
     // Hand the property back to the committed value. A commit re-renders with
     // the new width; a cancel or a no-commit drag keeps DOM and store in step.
-    paint(`${committedRef.current}px`)
-    if (rootVar) document.documentElement.style.removeProperty(rootVar)
+    paint(`${committedRef.current * scaleRef.current}px`)
+    if (rootVar) {
+      for (const el of rootTargetsRef.current) el.style.removeProperty(rootVar)
+    }
+    rootTargetsRef.current = []
     targetRef.current?.removeAttribute("data-resizing")
-    document.documentElement.removeAttribute("data-panel-resizing")
     targetRef.current = null
     setDragging(false)
-    document.body.style.removeProperty("cursor")
-    document.body.style.removeProperty("user-select")
+    if (overlayHeldRef.current) {
+      overlayHeldRef.current = false
+      releaseDragOverlay()
+    }
   }, [paint, rootVar])
 
   const handlePointerDown = (event: React.PointerEvent<HTMLButtonElement>) => {
     if (event.button !== 0) return
     event.preventDefault()
     event.currentTarget.setPointerCapture(event.pointerId)
-    targetRef.current = target()
+    // Resolved once per drag, never per frame: the write is what costs, and a
+    // DOM walk here is already how `target()` worked.
+    targetRef.current =
+      (PANEL_RESIZE_SCOPED_VARS_ENABLED && scopedTarget?.()) || target()
+    rootTargetsRef.current = !rootVar
+      ? []
+      : PANEL_RESIZE_SCOPED_VARS_ENABLED
+        ? (rootVarTargets?.() ?? [])
+        : [document.documentElement]
     // Collapsed: grow from the rendered size so the edge tracks the pointer.
     const start = open ? width : measure()
     dragRef.current = { startX: event.clientX, startWidth: start, moved: false }
     pendingRef.current = start
     rawRef.current = start
     targetRef.current?.setAttribute("data-resizing", "true")
-    document.documentElement.setAttribute("data-panel-resizing", "true")
     setDragging(true)
-    document.body.style.setProperty("cursor", "col-resize")
-    document.body.style.setProperty("user-select", "none")
+    overlayHeldRef.current = true
+    acquireDragOverlay()
   }
 
   const handlePointerMove = (event: React.PointerEvent<HTMLButtonElement>) => {
@@ -182,7 +234,8 @@ export function PanelResizeHandle({
     if (!drag.moved && Math.abs(delta) < DRAG_SLOP) return
     drag.moved = true
 
-    const next = drag.startWidth + delta
+    // Screen px to layout px, so the edge stays under the pointer at any scale.
+    const next = drag.startWidth + delta / scaleRef.current
     rawRef.current = next
     if (!open) {
       // Past the minimum, dragging the collapsed edge reopens it.
@@ -251,10 +304,8 @@ export function PanelResizeHandle({
   // Clear a stuck cursor override if we unmount mid-drag.
   React.useEffect(() => endDrag, [endDrag])
 
-  return (
-    <Tooltip open={(hovered || focused) && !dragging}>
-      <TooltipTrigger asChild>
-        <button
+  const handle = (
+    <button
           ref={ref}
           type="button"
           data-slot={dataSlot}
@@ -269,6 +320,9 @@ export function PanelResizeHandle({
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
           onPointerCancel={endDrag}
+          onLostPointerCapture={() => {
+            if (dragRef.current) endDrag()
+          }}
           onKeyDown={handleKeyDown}
           onClick={() => {
             // Switch and voice control activate by dispatching a bare click
@@ -276,8 +330,14 @@ export function PanelResizeHandle({
             if (Date.now() - handledAtRef.current < CLICK_COMPAT_WINDOW_MS) return
             onToggle()
           }}
-          onPointerEnter={() => setHovered(true)}
-          onPointerLeave={() => setHovered(false)}
+          onPointerEnter={() => {
+            setHovered(true)
+            onHoverChange?.(true)
+          }}
+          onPointerLeave={() => {
+            setHovered(false)
+            onHoverChange?.(false)
+          }}
           onFocus={(event) => setFocused(event.target.matches(":focus-visible"))}
           onBlur={() => setFocused(false)}
           className={cn(
@@ -298,7 +358,15 @@ export function PanelResizeHandle({
             className,
           )}
         />
-      </TooltipTrigger>
+  )
+
+  if (hideTooltip) {
+    return handle
+  }
+
+  return (
+    <Tooltip open={(hovered || focused) && !dragging}>
+      <TooltipTrigger asChild>{handle}</TooltipTrigger>
       <TooltipContent
         side={edge === "left" ? "left" : "right"}
         align="center"

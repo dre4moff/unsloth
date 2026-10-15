@@ -25,42 +25,62 @@ class Chunk:
     chunk_index: int
     page_char_start: int
     page_char_end: int
+    whole_document_token_count: int | None = None
 
 
-def _split(text: str, seps: tuple[str, ...], max_tokens: int, count: TokenCounter) -> list[str]:
+@dataclass(frozen = True, slots = True)
+class _Piece:
+    text: str
+    token_count: int
+
+
+def _split(
+    text: str,
+    seps: tuple[str, ...],
+    max_tokens: int,
+    count: TokenCounter,
+    token_count: int | None = None,
+) -> list[_Piece]:
     """Recursively split into pieces each <= max_tokens (best effort). Pieces
     rejoin to ``text`` exactly, so offsets are a running length."""
-    if count(text) <= max_tokens:
-        return [text]
+    if token_count is None:
+        token_count = count(text)
+    if token_count <= max_tokens:
+        return [_Piece(text, token_count)]
     for i, sep in enumerate(seps):
         parts = list(text) if sep == "" else text.split(sep)
         if len(parts) <= 1:
             continue
-        if sep:  # re-attach the separator
+        if sep:
             parts = [p + sep for p in parts[:-1]] + parts[-1:]
-        out: list[str] = []
+        out: list[_Piece] = []
         for p in parts:
+            if not p:
+                continue
+            tokens = count(p)
             out.extend(
-                [p] if count(p) <= max_tokens else _split(p, seps[i + 1 :], max_tokens, count)
+                [_Piece(p, tokens)]
+                if tokens <= max_tokens
+                else _split(p, seps[i + 1 :], max_tokens, count, tokens)
             )
-        return [p for p in out if p]
+        return out
     n = max(1, max_tokens * 4)
-    return [text[j : j + n] for j in range(0, len(text), n)]
+    return [_Piece(part, count(part)) for j in range(0, len(text), n) if (part := text[j : j + n])]
 
 
 def _merge(
-    pieces: list[str], starts: list[int], max_tokens: int, overlap: int, count: TokenCounter
+    pieces: list[_Piece], starts: list[int], max_tokens: int, overlap: int
 ) -> list[tuple[str, int, int]]:
     """Greedy-merge pieces into <= max_tokens chunks with token overlap.
     ``starts[i]`` is ``pieces[i]``'s page char offset; returns
     ``(chunk_text, char_start, char_end)`` spans."""
     chunks: list[tuple[str, int, int]] = []
-    buf: list[str] = []
+    buf: list[_Piece] = []
     buf_starts: list[int] = []
     buf_tok = 0
 
     def _flush() -> None:
-        raw = "".join(buf)
+        raw = "".join(piece.text for piece in buf)
         stripped = raw.strip()
         if not stripped:
             return
@@ -71,19 +91,20 @@ def _merge(
         chunks.append((stripped, start, end))
 
     for piece, start in zip(pieces, starts):
-        pt = count(piece)
+        # Reuse counts after the GGUF tokenizer's cache evicts earlier pieces.
+        pt = piece.token_count
         if buf and buf_tok + pt > max_tokens:
             _flush()
-            # Bound the carry so carry + this piece fits max_tokens; else a full
-            # overlap before a near-max piece overflows the embedder.
+            # Bound the carry so carry + this piece fits max_tokens; else a full overlap before a near-max piece
+            # overflows the embedder.
             carry_budget = min(overlap, max(0, max_tokens - pt))
             carry, carry_starts, run = [], [], 0
             for prev, prev_start in zip(reversed(buf), reversed(buf_starts)):
-                if run + count(prev) > carry_budget:
+                if run + prev.token_count > carry_budget:
                     break
                 carry.insert(0, prev)
                 carry_starts.insert(0, prev_start)
-                run += count(prev)
+                run += prev.token_count
             buf, buf_starts, buf_tok = carry, carry_starts, run
         buf.append(piece)
         buf_starts.append(start)
@@ -105,17 +126,25 @@ def chunk_pages(
         cursor = 0
         for piece in pieces:
             starts.append(cursor)
-            cursor += len(piece)
-        for text, char_start, char_end in _merge(pieces, starts, max_tokens, overlap, count):
+            cursor += len(piece.text)
+        previous_end = 0
+        for text, char_start, char_end in _merge(pieces, starts, max_tokens, overlap):
+            token_count = count(text)
+            overlap_chars = min(len(text), max(0, previous_end - char_start))
+            unique_text = text[overlap_chars:].lstrip("\r\n")
             out.append(
                 Chunk(
                     text = text,
-                    token_count = count(text),
+                    token_count = token_count,
                     page_number = page.page_number,
                     source_page_index = page_index,
                     chunk_index = len(out),
                     page_char_start = char_start,
                     page_char_end = char_end,
+                    whole_document_token_count = (
+                        token_count if unique_text == text else count(unique_text)
+                    ),
                 )
             )
+            previous_end = max(previous_end, char_end)
     return out

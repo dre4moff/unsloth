@@ -22,8 +22,8 @@ function StepMarker({
       aria-hidden="true"
       className={`mt-0.5 size-5 shrink-0 rounded-full border-[1.5px] ${
         status === "in_progress"
-          ? "animate-pulse border-foreground shadow-[inset_0_0_0_4px_hsl(var(--background))] bg-foreground/25"
-          : "border-foreground/55"
+          ? "animate-pulse border-foreground shadow-[inset_0_0_0_4px_hsl(var(--background))] bg-[color-mix(in_oklab,var(--foreground)_calc(25%*var(--contrast-wash-gain,1)),transparent)]"
+          : "border-[color-mix(in_oklab,var(--foreground)_calc(55%*var(--contrast-edge-gain,1)),transparent)]"
       }`}
     />
   );
@@ -51,7 +51,7 @@ export function TurnPlanCard({
       aria-label="Execution plan"
       aria-live="polite"
       className={cn(
-        "mb-4 w-full max-w-2xl rounded-2xl border border-border/70 bg-muted/25 px-4 py-3.5",
+        "mb-4 w-full max-w-2xl rounded-2xl border border-[color-mix(in_oklab,var(--border)_calc(70%*var(--contrast-edge-gain,1)),transparent)] bg-muted/25 px-4 py-3.5",
         className,
       )}
     >
@@ -90,14 +90,14 @@ export function TurnPlanCard({
         ))}
       </ol>
 
-      <div className="mt-3.5 flex justify-center border-t border-border/60 pt-3">
+      <div className="mt-3.5 flex justify-center border-t border-[color-mix(in_oklab,var(--border)_calc(60%*var(--contrast-edge-gain,1)),transparent)] pt-3">
         <div className="inline-flex items-center gap-2 rounded-full border border-border bg-background/80 px-3 py-1.5 text-sm text-muted-foreground shadow-xs">
           <span
             aria-hidden="true"
             className={`size-3 rounded-full border-2 ${
               plan.status === "completed"
                 ? "border-foreground bg-foreground"
-                : "border-primary/35 border-t-primary animate-spin"
+                : "border-[color-mix(in_oklab,var(--primary)_calc(35%*var(--contrast-edge-gain,1)),transparent)] border-t-primary animate-spin"
             }`}
           />
           <span>

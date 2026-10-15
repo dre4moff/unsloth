@@ -38,7 +38,12 @@ import {
 import { useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { ArrowDown01Icon, Database02Icon } from "@hugeicons/core-free-icons";
+import {
+  Database02Icon,
+} from "@hugeicons/core-free-icons";
+import {
+  ChevronDownIcon,
+} from "lucide-react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useMemo } from "react";
@@ -79,13 +84,23 @@ function hasExactDatasetMatch(
   return resolveExactDatasetDeviceItem(query, deviceItems).kind !== "none";
 }
 
+const DECISION_DATASET_IDS = [
+  "LocalLLaMA/typed-decisions",
+  "tasksource/procedural-typed-decisions",
+  "n4ze3m/typed-decisions-synth",
+  "tasksource/synthetic-typed-decisions",
+];
+
 export function DatasetSelector() {
   const t = useT();
   const navigate = useNavigate();
   const dataset = useTrainingConfigStore((s) => s.dataset);
   const uploadedFile = useTrainingConfigStore((s) => s.uploadedFile);
   const datasetSource = useTrainingConfigStore((s) => s.datasetSource);
-  const modelType = useTrainingConfigStore((s) => s.modelType);
+  const isDecision = useTrainingConfigStore((s) => s.modelType === "decision");
+  const modelType = useTrainingConfigStore((s) =>
+    s.modelType === "decision" ? null : s.modelType,
+  );
   const selectHfDataset = useTrainingConfigStore((s) => s.selectHfDataset);
   const selectLocalDataset = useTrainingConfigStore(
     (s) => s.selectLocalDataset,
@@ -197,6 +212,7 @@ export function DatasetSelector() {
     hasMore: hasMoreHf,
   } = useHubDatasetSearch(picker.debouncedHubQuery, {
     modelType,
+    pinnedIds: isDecision ? DECISION_DATASET_IDS : undefined,
     enabled: online && picker.open && tab === PICKER_TAB.hub,
     accessToken: hfApiToken(picker.debouncedHfToken),
   });
@@ -379,8 +395,7 @@ export function DatasetSelector() {
               {display ?? t("studio.datasetPicker.selectDataset")}
             </span>
           </span>
-          <HugeiconsIcon
-            icon={ArrowDown01Icon}
+          <ChevronDownIcon
             strokeWidth={1.25}
             className="size-3.5 shrink-0 text-muted-foreground"
           />

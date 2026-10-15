@@ -4,11 +4,11 @@
 import { ownerOf, repoOf } from "../lib/format";
 import { looksLikeLocalPath } from "../lib/local-path";
 import { isGgufLike } from "../lib/model-identifiers";
+import { normalizeTimestamp } from "./inventory-timestamps";
 import type {
   BackendModelCapabilities,
   LocalModelInfo,
   ModelInventoryFormat,
-  ModelInventoryRuntime,
 } from "./api";
 import type {
   ModelInventoryCapabilities,
@@ -20,8 +20,12 @@ export function localSourceLabel(source: LocalModelInfo["source"]): string {
   switch (source) {
     case "lmstudio":
       return "LM Studio";
+    case "omlx":
+      return "oMLX";
     case "ollama":
       return "Ollama";
+    case "hermes":
+      return "Hermes";
     case "custom":
       return "Custom folder";
     case "models_dir":
@@ -31,13 +35,6 @@ export function localSourceLabel(source: LocalModelInfo["source"]): string {
     default:
       return "Local model";
   }
-}
-
-export function normalizeTimestamp(value?: number | null): number | null {
-  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
-    return null;
-  }
-  return value < 10_000_000_000 ? value * 1000 : value;
 }
 
 export function formatLocalUpdated(value?: number | null): string {
@@ -94,26 +91,6 @@ export function normalizeModelFormat(
   return fallback;
 }
 
-export function normalizeRuntime(
-  value: string | null | undefined,
-  modelFormat: ModelInventoryFormat,
-): ModelInventoryRuntime {
-  if (
-    value === "llama_cpp" ||
-    value === "transformers" ||
-    value === "adapter" ||
-    value === "unknown"
-  ) {
-    return value;
-  }
-  if (modelFormat === "gguf") return "llama_cpp";
-  if (modelFormat === "adapter") return "adapter";
-  if (modelFormat === "safetensors" || modelFormat === "checkpoint") {
-    return "transformers";
-  }
-  return "unknown";
-}
-
 export function defaultCapabilities(
   modelFormat: ModelInventoryFormat,
   partial = false,
@@ -159,6 +136,20 @@ export function normalizeCapabilities(
   };
 }
 
+export function cachedInventoryId(
+  modelFormat: ModelInventoryFormat,
+  repoId: string,
+): string {
+  return `cache:${modelFormat}:${encodeURIComponent(repoId)}`;
+}
+
+export function optimisticInventoryId(
+  modelFormat: ModelInventoryFormat,
+  repoId: string,
+): string {
+  return `download:${modelFormat}:${encodeURIComponent(repoId)}`;
+}
+
 export function buildCachedInventoryRow(
   row: {
     repo_id: string;
@@ -171,15 +162,19 @@ export function buildCachedInventoryRow(
     has_variant_state?: boolean;
     pipeline_tag?: string | null;
     task?: string | null;
+    audio_type?: string | null;
+    audio_workflows?: string[] | null;
+    umbrella_folder?: boolean;
     single_file?: boolean;
     companion?: boolean;
+    companion_prefetch?: boolean;
     tags?: string[];
     library_name?: string | null;
     quant_method?: string | null;
     inventory_id?: string | null;
     load_id?: string | null;
     model_format?: ModelInventoryFormat | null;
-    runtime?: string | null;
+    artifact_kind?: import("./api").LocalArtifactKind | null;
     format_variant?: string | null;
     capabilities?: BackendModelCapabilities | null;
     last_modified?: number | null;
@@ -205,43 +200,49 @@ export function buildCachedInventoryRow(
   return {
     kind: "cache",
     id:
-      !inferredFromEndpoint && row.inventory_id
-        ? row.inventory_id
-        : `cache:${modelFormat}:${row.repo_id}`,
+      row.optimistic
+        ? optimisticInventoryId(modelFormat, row.repo_id)
+        : !inferredFromEndpoint && row.inventory_id
+          ? row.inventory_id
+          : cachedInventoryId(modelFormat, row.repo_id),
     loadId: row.load_id ?? row.repo_id,
     repoId: row.repo_id,
     owner: row.repo_id.includes("/") ? ownerOf(row.repo_id) : "Hub",
     repo: row.repo_id.includes("/") ? repoOf(row.repo_id) : row.repo_id,
     isGguf: modelFormat === "gguf",
     modelFormat,
-    runtime: normalizeRuntime(
-      inferredFromEndpoint ? null : row.runtime,
-      modelFormat,
-    ),
+    artifact: row.artifact_kind ?? "unknown",
     formatVariant: row.format_variant ?? null,
     capabilities,
     bytes: row.size_bytes,
     cachePath: row.cache_path ?? null,
     loadCachePath: row.load_cache_path ?? null,
-    lastModified:
-      typeof row.last_modified === "number" &&
-      Number.isFinite(row.last_modified) &&
-      row.last_modified > 0
-        ? row.last_modified
-        : null,
+    lastModified: normalizeTimestamp(row.last_modified),
     partial: row.partial ?? false,
     partialTransport: row.partial_transport ?? null,
     partialResumable: row.partial_resumable === true,
     hasVariantState: row.has_variant_state ?? false,
     pipelineTag: row.pipeline_tag ?? null,
     task: row.task ?? null,
+    audioType: row.audio_type ?? null,
+    audioWorkflows: row.audio_workflows ?? null,
+    umbrellaFolder: row.umbrella_folder === true,
     singleFile: row.single_file ?? false,
     companion: row.companion ?? false,
+    companionPrefetch: row.companion_prefetch ?? false,
     tags: row.tags,
     libraryName: row.library_name ?? null,
     quantMethod: row.quant_method ?? null,
     optimistic: row.optimistic,
   };
+}
+
+/** Folder rows of the audio.cpp umbrella repo belong to the Audio pages; everyone else sees the one umbrella row. */
+export function withUmbrellaFolderRows(
+  rows: CachedInventoryRow[],
+  include: boolean,
+): CachedInventoryRow[] {
+  return include ? rows : rows.filter((row) => !row.umbrellaFolder);
 }
 
 function sourceSortWeight(source: LocalModelInfo["source"]): number {
@@ -251,13 +252,16 @@ function sourceSortWeight(source: LocalModelInfo["source"]): number {
     case "custom":
       return 1;
     case "lmstudio":
+    case "omlx":
       return 2;
     case "ollama":
       return 3;
-    case "hf_cache":
+    case "hermes":
       return 4;
-    default:
+    case "hf_cache":
       return 5;
+    default:
+      return 6;
   }
 }
 
@@ -302,7 +306,7 @@ export function buildLocalInventoryRows(
         path: model.path,
         isGguf: modelFormat === "gguf",
         modelFormat,
-        runtime: normalizeRuntime(model.runtime, modelFormat),
+        artifact: model.artifact_kind ?? "unknown",
         formatVariant: model.format_variant ?? null,
         capabilities,
         baseModel,
@@ -314,9 +318,11 @@ export function buildLocalInventoryRows(
         partial: model.partial ?? false,
         partialTransport: model.partial_transport ?? null,
         partialResumable: model.partial_resumable === true,
+        companionPrefetch: model.companion_prefetch === true,
         activeCache: model.active_cache ?? null,
         pipelineTag: model.pipeline_tag ?? null,
         task: model.task ?? null,
+        audioType: model.audio_type ?? null,
         tags: model.tags,
         libraryName: model.library_name ?? null,
         quantMethod: model.quant_method ?? null,

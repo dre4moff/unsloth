@@ -32,9 +32,14 @@ Studio now creates a private turn checkpoint when a Studio chat run begins:
   finishes. Files left by a hard process crash expire automatically.
 - Before any work has happened, the objective remains only in the protected newest user turn and
   the private file; Studio does not waste context by duplicating it in the system prompt.
-- Once the turn has operational state, a bounded `<active_turn_checkpoint>` block is injected into
-  the system message. Both GGUF and MLX context fitters preserve system/developer messages, so the
-  block survives every later compaction in that response.
+- Once the turn has operational state, a bounded `<active_turn_checkpoint>` block
+  annotates the newest user message in the outgoing model prompt. Token counting
+  prices that same annotation, and its size scales with the loaded window.
+- The semantic conversation stays unchanged, preserving upstream's message identities,
+  active-branch anchors, newest tool result and archive/recall bookkeeping. Audio and
+  image content parts remain present in the outgoing prompt.
+- Keeping the annotation near the end preserves the stable system/history prefix for
+  prompt caching. The private checkpoint file retains the complete bounded action ledger.
 
 The block labels the objective and tool excerpts as untrusted data, escapes its own delimiters,
 and tells the model to resume from completed work rather than repeat it.

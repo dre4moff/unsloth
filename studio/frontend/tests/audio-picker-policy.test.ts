@@ -2,16 +2,21 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
+  audioPipelineTagFor,
+  nativeAudioCheckpointIsLoadable,
   audioPickIsRoutable,
   communityAudioRowIsRunnable,
   curatedAudioInventoryMatches,
   curatedAudioInventoryTask,
   filesystemRowsSupportedForTask,
+  isAudioCppUmbrellaRepo,
+  macMlxSttRowIsRunnable,
   macTtsHubRowIsRunnable,
+  localAudioRowIsUndecodableGguf,
+  speechGgufIsUndecodable,
   shouldDiscoverCommunityModels,
   shouldRecommendCommunityModels,
   taskCatalogFormatMatches,
@@ -114,13 +119,10 @@ import {
   groupForRepoId,
 } from "../src/features/model-picker/components/model-selector/model-catalog.ts";
 
-const pickerSource = readFileSync(
-  new URL(
-    "../src/features/model-picker/components/model-selector/pickers.tsx",
-    import.meta.url,
-  ),
-  "utf8",
-);
+import { readSrc } from "./helpers/kit.ts";
+import { readAudioWorkspaceSource } from "./helpers/audio-workspace.ts";
+
+const pickerSource = readSrc("features/model-picker/components/model-selector/pickers.tsx");
 
 test("fresh Hub pipeline metadata routes media picks before stale inventory", () => {
   assert.equal(
@@ -296,7 +298,7 @@ test("community ASR only offers checkpoints the Transformers Whisper sidecar can
   );
   // Llasa was in this list and should not have been. It speaks XCodec2, which
   // AudioCodecManager cannot decode and _AUDIO_TOKEN_PATTERNS cannot even recognise, so
-  // probing a running Studio reports unsloth/Llasa-1B as is_audio=false. Admitting the row
+  // probing a running Unsloth reports unsloth/Llasa-1B as is_audio=false. Admitting the row
   // produced a model that loaded and then failed at generation.
   assert.equal(
     communityAudioRowIsRunnable({
@@ -361,19 +363,39 @@ test("cached runnable community audio survives the Audio on-device trust gate", 
   );
 });
 
+test("an on-device mlx-audio speech-to-text row is runnable on a Mac only", () => {
+  const row = { isStt: true, isGguf: false, libraryName: "mlx-audio" };
+  assert.equal(macMlxSttRowIsRunnable({ ...row, isMac: true }), true);
+  assert.equal(macMlxSttRowIsRunnable({ ...row, isMac: false }), false);
+  assert.equal(macMlxSttRowIsRunnable({ ...row, isMac: true, isStt: false }), false);
+  assert.equal(macMlxSttRowIsRunnable({ ...row, isMac: true, isGguf: true }), false);
+  assert.equal(
+    macMlxSttRowIsRunnable({ ...row, isMac: true, libraryName: "transformers" }),
+    false,
+  );
+  assert.equal(macMlxSttRowIsRunnable({ ...row, isMac: true, libraryName: null }), false);
+  // Only the cached on-device gate admits them: a Hub row cannot be downloaded for this engine.
+  assert.match(
+    pickerSource,
+    /communityAudioRowIsRunnable\(\{[\s\S]*\}\) \|\|\s*macMlxSttRowIsRunnable\(\{[\s\S]*isMac,[\s\S]*isStt: c\.task === "automatic-speech-recognition",[\s\S]*libraryName: c\.library_name/,
+  );
+  // The Chat-to-Audio handoff asks the same gate, on the cached row's library.
+  assert.match(
+    pickerSource,
+    /\.\.\.\(hubEvidenceById\.get\(id\) \?\? \{\}\),\s*\}\) &&\s*!macMlxSttRowIsRunnable\(\{[\s\S]*libraryName: cachedModels\.find\(\(c\) => c\.repo_id === id\)\?\.library_name,\s*\}\)\s*\) \{/,
+  );
+  assert.equal(pickerSource.split("macMlxSttRowIsRunnable(").length - 1, 2);
+});
+
 test("Chat-to-Audio handoff preserves the live Hub task", () => {
   // pickedTask, not meta.pipelineTag: a cached row carries no tag, so ASR would read as TTS.
   assert.match(
     pickerSource,
-    /page === "audio"[\s\S]*task:\s*pickedTask \?\? undefined/,
+    /page === "audio"[\s\S]*audioPickSearch\(id, \{ \.\.\.meta, task: pickedTask \}\)/,
   );
   assert.match(
     pickerSource,
     /page === "audio" &&\s*!audioPickIsRoutable\(\{[\s\S]*isCurated: artifactForRepoId\(id, AUDIO_CATALOG\) !== null/,
-  );
-  assert.match(
-    pickerSource,
-    /page === "audio"[\s\S]*ggufQuant:\s*meta\.ggufFilename[\s\S]*meta\.ggufVariant/,
   );
   assert.match(
     pickerSource,
@@ -513,6 +535,64 @@ test("only speech repos the runtime can serve are routed to the Audio page", () 
   );
 });
 
+test("a cached speech GGUF no backend can decode is not listed at all", () => {
+  assert.match(
+    pickerSource,
+    /cachedGguf\.filter\([\s\S]*passesTaskGate\([\s\S]*audioPickIsRoutable\(\{[\s\S]*isGguf: true/,
+  );
+  assert.equal(
+    audioPickIsRoutable({
+      id: "ggml-org/sesame-csm-1b-GGUF",
+      task: "text-to-speech",
+      isGguf: true,
+      isCurated: false,
+    }),
+    false,
+  );
+});
+
+test("a speech GGUF found on the filesystem is gated like a cached one", () => {
+  // The backend tags llama-csm as text-to-speech wherever it is discovered, so every
+  // filesystem list has to ask the same policy the cached GGUF list does.
+  for (const rows of [
+    "lmStudioModels",
+    "localDirModels",
+    "customFolderModels",
+  ]) {
+    assert.match(
+      pickerSource,
+      new RegExp(
+        `${rows}\\.filter\\([\\s\\S]*?audioPickIsRoutable\\(\\{`,
+      ),
+      `${rows} must apply the speech gate`,
+    );
+  }
+});
+
+test("a local CSM GGUF is unroutable even though it was found on disk", () => {
+  assert.equal(
+    audioPickIsRoutable({
+      id: "/models/sesame-csm-1b-GGUF/csm-1b-Q4_K_M.gguf",
+      task: "text-to-speech",
+      isGguf: true,
+      isCurated: false,
+      isLocalCheckpoint: true,
+    }),
+    false,
+  );
+  // A Transformers CSM checkpoint still runs, so local provenance keeps routing it.
+  assert.equal(
+    audioPickIsRoutable({
+      id: "/outputs/csm-1b-finetune",
+      task: "text-to-speech",
+      isGguf: false,
+      isCurated: false,
+      isLocalCheckpoint: true,
+    }),
+    true,
+  );
+});
+
 test("an unroutable speech pick is refused instead of loaded into chat", () => {
   assert.match(
     pickerSource,
@@ -520,19 +600,362 @@ test("an unroutable speech pick is refused instead of loaded into chat", () => {
   );
 });
 
-test("a local Whisper checkpoint is not advertised as a routable ASR row", () => {
+test("fine-tuned audio rows receive only runnable pipeline tags", () => {
   // The STT sidecar's resolve_model_id takes a curated key or an owner/model Hub id, so a
   // filesystem path 422s. Routing one from the picker advertised a row that cannot load.
-  const source = readFileSync(
-    new URL(
-      "../src/features/model-picker/components/model-selector/pickers.tsx",
-      import.meta.url,
-    ),
-    "utf8",
+  assert.equal(audioPipelineTagFor("whisper", true), undefined);
+  assert.equal(audioPipelineTagFor("moss_tts_local", true), "text-to-speech");
+  // Native runtimes reject adapter-only checkpoints; merged exports remain runnable.
+  assert.equal(audioPipelineTagFor("moss_tts_local", true, true), undefined);
+  assert.equal(audioPipelineTagFor("moss_tts_local", true, false), "text-to-speech");
+  assert.match(
+    pickerSource,
+    /pipelineTag: audioPipelineTagFor\(adapter\.audioType, true, isLora\)/,
   );
+});
+
+test("adapter-only native audio checkpoints are hidden from the runnable picker", () => {
+  assert.equal(nativeAudioCheckpointIsLoadable("moss_tts_local", "adapter"), false);
+  assert.equal(nativeAudioCheckpointIsLoadable("higgs_tts2", "merged"), true);
+  assert.equal(nativeAudioCheckpointIsLoadable("snac", "adapter"), true);
+  assert.match(
+    pickerSource,
+    /fineTunedRows[\s\S]*nativeAudioCheckpointIsLoadable\(m\.audioType, m\.exportType\)/,
+  );
+});
+
+test("an arch-tasked speech GGUF routes by detected codec", () => {
+  const parkedUnderOrpheus = {
+    id: "/models/orpheus/custom.gguf",
+    task: "text-to-speech",
+    isGguf: true,
+    isCurated: false,
+  };
+  assert.equal(audioPickIsRoutable(parkedUnderOrpheus), true);
+  assert.equal(
+    audioPickIsRoutable({
+      ...parkedUnderOrpheus,
+      taskFromGgufArch: true,
+      audioType: "csm",
+    }),
+    false,
+  );
+  assert.equal(
+    audioPickIsRoutable({
+      ...parkedUnderOrpheus,
+      isCurated: true,
+      taskFromGgufArch: true,
+      audioType: "csm",
+    }),
+    false,
+  );
+  // The same speech task is runnable when the backend's GGUF classifier identifies
+  // the ordinary-llama Orpheus build and records its SNAC decoder.
+  assert.equal(
+    audioPickIsRoutable({
+      id: "someone/orpheus-3b-custom-GGUF",
+      task: "text-to-speech",
+      isGguf: true,
+      isCurated: false,
+      taskFromGgufArch: true,
+      audioType: "snac",
+    }),
+    true,
+  );
+  // Older backends have no provenance field, so their speech GGUF rows remain fail-closed.
+  assert.equal(
+    audioPickIsRoutable({
+      id: "/models/orpheus/custom.gguf",
+      task: "text-to-speech",
+      isGguf: true,
+      isCurated: false,
+      taskFromGgufArch: true,
+    }),
+    false,
+  );
+  assert.equal(
+    audioPickIsRoutable({
+      id: "unsloth/csm-1b",
+      task: "text-to-speech",
+      isGguf: false,
+      isCurated: true,
+      taskFromGgufArch: true,
+    }),
+    true,
+  );
+});
+
+test("a renamed cached TTS checkpoint routes on its detected codec", () => {
+  assert.equal(
+    communityAudioRowIsRunnable({
+      isStt: false,
+      isTts: true,
+      isGguf: false,
+      id: "someone/renamed-checkpoint",
+      audioType: "snac",
+    }),
+    true,
+  );
+  assert.equal(
+    communityAudioRowIsRunnable({
+      isStt: false,
+      isTts: true,
+      isGguf: true,
+      id: "someone/renamed-checkpoint",
+      audioType: "csm",
+    }),
+    false,
+  );
+});
+
+test("every filesystem list passes the arch-tasked flag, not just the policy call", () => {
+  // The policy is only as good as its call sites: a list that asks without the flag gets
+  // the name heuristic back and re-opens the hole this gate exists to close.
+  const callSites = pickerSource.match(/taskFromGgufArch: true/g) ?? [];
+  assert.equal(callSites.length, 4);
+});
+
+test("a Windows path is judged like its posix equivalent", () => {
+  // The separator class carries a backslash: these predicates are handed local checkpoint
+  // paths, and on Windows the same file arrives as C:\models\csm-1b\model.gguf, which a
+  // posix-only class reads as one long segment and clears.
+  for (const id of [
+    "/models/csm-1b/model.gguf",
+    "C:\\models\\csm-1b\\model.gguf",
+    "C:\\Users\\me\\models\\csm\\q8.gguf",
+  ]) {
+    assert.equal(
+      speechGgufIsUndecodable({ isGguf: true, id }),
+      true,
+      `${id} must be undecodable`,
+    );
+    assert.equal(
+      audioPickIsRoutable({
+        id,
+        task: "text-to-speech",
+        isGguf: true,
+        isCurated: false,
+        isLocalCheckpoint: true,
+      }),
+      false,
+      `${id} must not route`,
+    );
+  }
+  // Still no false positive on a name that merely contains the letters.
+  assert.equal(
+    speechGgufIsUndecodable({ isGguf: true, id: "C:\\models\\csmith-7b\\q8.gguf" }),
+    false,
+  );
+});
+
+test("a csm checkpoint exported to GGUF is not offered anywhere", () => {
+  // audioType is read off the checkpoint by the backend, so it is authoritative even where
+  // nothing in the path says csm. llama.cpp has no CSM decoder, whatever the container.
+  assert.equal(
+    localAudioRowIsUndecodableGguf({ audioType: "csm", exportType: "gguf" }),
+    true,
+  );
+  assert.equal(
+    localAudioRowIsUndecodableGguf({ audioType: "csm", isDirectGguf: true }),
+    true,
+  );
+  assert.equal(
+    localAudioRowIsUndecodableGguf({ audioType: "CSM", exportType: "gguf" }),
+    true,
+  );
+  // A csm LoRA or merged safetensors checkpoint still runs on the Transformers path.
+  assert.equal(
+    localAudioRowIsUndecodableGguf({ audioType: "csm", exportType: "merged" }),
+    false,
+  );
+  assert.equal(
+    localAudioRowIsUndecodableGguf({ audioType: "csm", exportType: "lora" }),
+    false,
+  );
+  // The codecs llama.cpp DOES decode keep their GGUF exports.
+  for (const audioType of ["snac", "bicodec", "dac"]) {
+    assert.equal(
+      localAudioRowIsUndecodableGguf({ audioType, exportType: "gguf" }),
+      false,
+      audioType,
+    );
+  }
+});
+
+test("the fine-tuned section applies the undecodable-GGUF gate", () => {
+  assert.match(
+    pickerSource,
+    /loraModels[\s\S]{0,400}?localAudioRowIsUndecodableGguf\(\{/,
+  );
+});
+
+test("the audio page asks the GGUF-aware TTS predicate for trained rows", () => {
+  // GGUF_TTS_AUDIO_TYPES leaves csm out because llama.cpp has no CSM decoder. Calling
+  // isTtsAudioType without the flag answered off the wider Transformers list and offered
+  // a csm GGUF export that fails at load.
+  const source = readAudioWorkspaceSource();
   assert.match(
     source,
-    /if \(audioType === "whisper"\)\s*\n?\s*return isLocalCheckpoint \? undefined : "automatic-speech-recognition";/,
+    /isTtsAudioType\(\s*lora\.audio_type,\s*lora\.export_type === "gguf",?\s*\)/,
   );
-  assert.match(source, /pipelineTag: audioPipelineTagFor\(adapter\.audioType, true\)/);
+});
+
+test("music and audio-to-audio picks route only when the Audio page runs them", () => {
+  const pick = (overrides: Partial<Parameters<typeof audioPickIsRoutable>[0]>) =>
+    audioPickIsRoutable({
+      id: "someone/model",
+      task: "text-to-audio",
+      isGguf: false,
+      isCurated: false,
+      ...overrides,
+    });
+  // The Hub's music tag covers runtimes Studio does not have.
+  assert.equal(pick({ id: "facebook/musicgen-small" }), false);
+  assert.equal(pick({ id: "stabilityai/stable-audio-open-1.0" }), false);
+  assert.equal(pick({ id: "calcuis/ace-gguf", isGguf: true, tags: ["gguf"] }), false);
+  assert.equal(
+    pick({ id: "thepatch/stable-audio-3-medium-GGUF", isGguf: true, tags: ["gguf", "sa3.cpp"] }),
+    false,
+  );
+  // A GGUF published for the audio runtime, or one whose header it classified, does run.
+  assert.equal(
+    pick({ id: "ngquocvinh/YuE2-3B-GGUF", isGguf: true, tags: ["gguf", "audio.cpp"] }),
+    true,
+  );
+  assert.equal(pick({ id: "someone/ACE-GGUF", isGguf: true, taskFromGgufArch: true }), true);
+  assert.equal(pick({ id: "MiniMaxAI/MiniMax-Music3", audioType: "minimax_music3" }), true);
+  assert.equal(pick({ isCurated: true }), true);
+  // Separation is the one audio-to-audio kind with a page.
+  assert.equal(
+    pick({ id: "chenmozhijin/BSRoformer-GGUF", task: "audio-to-audio", isGguf: true, audioType: "audiocpp_sep" }),
+    true,
+  );
+  assert.equal(pick({ id: "nvidia/bigvgan_v2_22khz_80band_256x", task: "audio-to-audio" }), false);
+  assert.equal(
+    pick({ id: "someone/codec-GGUF", task: "audio-to-audio", isGguf: true, taskFromGgufArch: true }),
+    false,
+  );
+});
+
+test("the multi-model package repo, its forks and mirrors are never a runnable row", () => {
+  const umbrellas = [
+    "audio-cpp/audio.cpp-gguf",
+    "Audio-Cpp/Audio.cpp-GGUF",
+    "saxyZ/audio.cpp-gguf-fork",
+    "CaptainArni/audio.cpp-gguf",
+  ];
+  for (const id of umbrellas) {
+    assert.equal(isAudioCppUmbrellaRepo(id), true, id);
+    for (const [isStt, isTts] of [
+      [false, true],
+      [true, false],
+    ] as const) {
+      assert.equal(
+        communityAudioRowIsRunnable({ isStt, isTts, isGguf: true, id, tags: ["audio.cpp"] }),
+        false,
+        id,
+      );
+    }
+    for (const task of [
+      "text-to-speech",
+      "automatic-speech-recognition",
+      "text-to-audio",
+    ]) {
+      assert.equal(
+        audioPickIsRoutable({ id, task, isGguf: true, isCurated: false }),
+        false,
+        `${id} ${task}`,
+      );
+    }
+  }
+  for (const id of [
+    "audio-cpp/VibeVoice-7B-GGUF",
+    "audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF",
+    "someone/audiocpp-tools",
+  ]) {
+    assert.equal(isAudioCppUmbrellaRepo(id), false, id);
+  }
+  assert.equal(
+    communityAudioRowIsRunnable({
+      isStt: false,
+      isTts: true,
+      isGguf: true,
+      id: "audio-cpp/VibeVoice-7B-GGUF",
+    }),
+    true,
+  );
+  assert.equal(
+    audioPickIsRoutable({
+      id: "audio-cpp/VibeVoice-7B-GGUF",
+      task: "text-to-audio",
+      isGguf: true,
+      isCurated: false,
+    }),
+    true,
+  );
+});
+
+test("audio pickers list only task rows, so Recommended paging ends; chat stays untasked", () => {
+  assert.match(
+    pickerSource,
+    /const recommendedSearch = useHubModelSearch\("", \{[\s\S]{0,200}?task: audioTaskPicker \? task : undefined,/,
+  );
+  assert.match(
+    pickerSource,
+    /const audioTaskPicker = taskFilterHasAudio\(task\);/,
+  );
+});
+
+test("audio Recommended has no sort control and keeps the fit toggle in the format menu", () => {
+  assert.match(
+    pickerSource,
+    /const sectionSortDropdown =\s*section === "recommended" && audioTaskPicker \? null : section === "recommended" \?/,
+  );
+  // Non-audio pickers keep the sort menu with the fit footer.
+  assert.match(
+    pickerSource,
+    /ariaLabel="Sort Unsloth models"[\s\S]{0,500}?footer=\{fitOnDeviceFooter\}/,
+  );
+  assert.match(
+    pickerSource,
+    /ariaLabel="Filter by format"[\s\S]{0,300}?footer=\{\s*audioTaskPicker && section === "recommended"\s*\? fitOnDeviceFooter\s*: undefined\s*\}/,
+  );
+});
+
+test("search waits on the community search and shows its failure", () => {
+  assert.match(
+    pickerSource,
+    /const communitySearching =\s*communitySearchActive && communityQuerySearch\.isLoading;/,
+  );
+  assert.match(
+    pickerSource,
+    /const searchEmpty = recommendedEmptyState\(\{\s*isLoading: isLoading \|\| communitySearching,\s*error: searchError \?\? communitySearchError,/,
+  );
+  assert.match(
+    pickerSource,
+    /\{searchRowIds\.length === 0 &&\s*!isLoading &&\s*!communitySearching \?/,
+  );
+  assert.match(
+    pickerSource,
+    /<HubFailureHint\s*message=\{searchError \?\? communitySearchError\}\s*onRetry=\{\s*searchError\s*\? retrySearch\s*: communityQuerySearch\.retry\s*\}/,
+  );
+});
+
+test("the search placeholder names community models only when they are searched", () => {
+  assert.match(
+    pickerSource,
+    /: communityDiscoveryEnabled\s*\? "Search models"\s*: "Search Unsloth models"/,
+  );
+});
+
+test("task pickers offer MLX only on a Mac and coerce a stale filter", () => {
+  assert.match(
+    pickerSource,
+    /formatFilterValues\(\{ npu: !!npuCatalog, mlx: isMac \|\| !task \}\)/,
+  );
+  assert.match(
+    pickerSource,
+    /const formatFilter = coerceFormatFilter\(\s*chosenFormatFilter,\s*offeredFormatFilters,\s*\);/,
+  );
+  assert.match(pickerSource, /options=\{formatFilterOptions\}/);
 });

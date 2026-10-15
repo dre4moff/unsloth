@@ -15,6 +15,7 @@ inject in-thread fakes exactly like ``test_diffusion_training.py``.
 from __future__ import annotations
 
 import itertools
+from unittest.mock import patch
 
 from pathlib import Path
 
@@ -57,6 +58,23 @@ def _cfg(**kw) -> DiffusionLoraConfig:
 
 
 # ── _plan_cache_variants (pure, seed-deterministic) ───────────────────────────
+def test_random_flip_is_opt_in():
+    assert DiffusionLoraConfig.random_flip is False
+    req = DiffusionTrainingStartRequest(base_model = _SDXL, data_dir = "d", output_dir = "o")
+    assert req.random_flip is False
+    cfg = DiffusionLoraConfig(
+        **req.model_dump(include = {"base_model", "data_dir", "output_dir", "random_flip"})
+    )
+    plan = _plan_cache_variants(5, 4, cfg.center_crop, cfg.random_flip, cfg.seed)
+    assert not any(flip for variants in plan for (_, _, flip) in variants)
+    assert (
+        DiffusionTrainingStartRequest(
+            base_model = _SDXL, data_dir = "d", output_dir = "o", random_flip = True
+        ).random_flip
+        is True
+    )
+
+
 def test_plan_cache_variants_deterministic_and_deduped():
     # Same seed gives a byte-identical plan (its own rng stream, so it is fully reproducible).
     p1 = _plan_cache_variants(3, 4, center_crop = False, random_flip = True, seed = 123)
@@ -175,7 +193,7 @@ def test_config_validates_new_fields():
     # compile_transformer is case/space-insensitive and stored lowered.
     assert _cfg(compile_transformer = " ON ").normalized().compile_transformer == "on"
 
-    # The generic Studio dict path preserves the flags without inventing defaults.
+    # The generic Unsloth dict path preserves the flags without inventing defaults.
     cfg = _config_from_dict(
         {
             "base_model": _SDXL,
@@ -188,7 +206,7 @@ def test_config_validates_new_fields():
     assert cfg.enable_tf32 is False
     assert cfg.cache_latents is False
 
-    # String flags from the generic Studio dict path are coerced: "false" is a truthy string, so an opt-out would silently no-op.
+    # String flags from the generic Unsloth dict path are coerced: "false" is a truthy string, so an opt-out would silently no-op.
     cfg = _config_from_dict(
         {
             "base_model": _SDXL,
@@ -208,8 +226,12 @@ def test_should_compile_policy():
     assert _should_compile(_cfg(compile_transformer = "off"), False, "cuda") is False
     # on always compiles on cuda.
     assert _should_compile(_cfg(compile_transformer = "on"), False, "cuda") is True
-    # auto stays off over a bitsandbytes base (graph breaks in the dequant path).
-    assert _should_compile(_cfg(compile_transformer = "auto"), True, "cuda") is False
+    # auto over an nf4 base follows the torch / bitsandbytes version gate.
+    import core.training.diffusion_dit_trainer as dit
+
+    for supported in (True, False):
+        with patch.object(dit, "_nf4_compile_supported", lambda s = supported: s):
+            assert _should_compile(_cfg(compile_transformer = "auto"), True, "cuda") is supported
     # auto turns on for the dense bf16 base precision on cuda.
     assert (
         _should_compile(_cfg(compile_transformer = "auto"), False, "cuda", base_precision = "bf16")
@@ -707,7 +729,7 @@ def test_a_child_that_cleaned_up_is_not_cleaned_up_again(tmp_path, monkeypatch):
 
 def test_a_checkpoint_makes_the_run_recoverable_before_it_ends(tmp_path, monkeypatch):
     """Previous runs is built from the run JSONs and nothing else, and only a terminal event
-    wrote one. Studio being killed after a periodic save therefore left a resumable bundle on
+    wrote one. Unsloth being killed after a periodic save therefore left a resumable bundle on
     disk with no entry and no Resume action for it."""
     import inspect
     import json as _json
@@ -749,7 +771,7 @@ def test_a_checkpoint_makes_the_run_recoverable_before_it_ends(tmp_path, monkeyp
 
 
 def test_a_failed_checkpoint_write_is_recorded_too(tmp_path, monkeypatch):
-    """The failure is sticky in memory, but only a successful write asked for a record. Studio
+    """The failure is sticky in memory, but only a successful write asked for a record. Unsloth
     exiting after one left the last persisted record advertising the OLDER checkpoint as
     resumable -- the one the service has just decided is stale -- and resuming it rolls the run
     back past everything after it."""

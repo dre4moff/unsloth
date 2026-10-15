@@ -1,8 +1,9 @@
 # Automatic context compaction
 
 Unsloth Studio automatically keeps long local chats inside the active model's
-context window. The frontend opts local GGUF and Apple Silicon MLX chats into the
-`truncate_oldest` policy; other API clients can opt in with the same field.
+context window. This fork uses the complete policy from upstream 0.1.907-beta for GGUF, Apple
+Silicon MLX and API providers. Studio sends the current automatic-compaction
+setting; supported saved chats also offer `/compact` and inline boundary markers.
 
 ## How the limit is measured
 
@@ -26,7 +27,7 @@ repeated fits. See [Active turn continuity](ACTIVE_TURN_CONTINUITY.md).
 The context meter shows the live window occupancy. A single llama.cpp pass can report
 more processed prompt-plus-completion tokens than the configured window because its KV
 window shifts during a very long generation; the meter caps active occupancy at the
-window and keeps the larger processed-work total in its tooltip. That reporting value is
+window and uses the upstream meter to separate live occupancy from per-pass work. That reporting value is
 never used as a compaction latch. Every later model pass and every new user turn performs
 the fit again.
 

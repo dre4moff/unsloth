@@ -42,8 +42,6 @@ test("managed Kaggle TPU starts automatically and waits for its generated endpoi
   assert.match(dialog, /await startKaggleTPU\(created\.id\)/);
   assert.match(adapter, /await ensureKaggleTPUReady\(externalProvider\.id, abortSignal, externalProvider\.managedConfig\?\.auto_start === true\)/);
   assert.match(adapter, /externalProvider\?\.providerType === "kaggle_tpu"/);
-  assert.match(
-    adapter,
-    /!externalProviderUsesOAuth &&\s*!externalProviderIsKaggleTPU &&\s*!externalProviderIsCustom/,
-  );
+  const routing = readFileSync(new URL("../src/features/chat/utils/chat-title.ts", import.meta.url), "utf8");
+  assert.match(routing, /provider\.providerType === "kaggle_tpu" \|\|/);
 });

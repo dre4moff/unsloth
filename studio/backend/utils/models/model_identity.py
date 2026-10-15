@@ -43,8 +43,22 @@ def _snapshot_repo_id(value: Any) -> Optional[str]:
     return hf_cache_repo_id(identifier) if has_revision else None
 
 
+def _is_snapshot_root(value: Any) -> bool:
+    identifier = _identifier(value)
+    if not identifier:
+        return False
+    parts = identifier.replace("\\", "/").split("/")
+    for index, part in enumerate(parts):
+        if part.startswith("models--") and parts[index + 1 : index + 2] == ["snapshots"]:
+            return not any(parts[index + 3 :])
+    return False
+
+
 def _set_standard_identity(config: Any, attribute: str, repo_id: str) -> bool:
-    if config is None or not _cache_path_matches_repo(getattr(config, attribute, None), repo_id):
+    value = getattr(config, attribute, None) if config is not None else None
+    # A path inside the snapshot (Spark-TTS loads <snapshot>/LLM) is not the repo root, so the repo id would lose the
+    # subfolder and point PEFT at a root with no config.json (#13411).
+    if not _cache_path_matches_repo(value, repo_id) or not _is_snapshot_root(value):
         return False
     try:
         setattr(config, attribute, repo_id)
@@ -81,10 +95,9 @@ def restore_hf_cache_repo_identity(
         "_name_or_path",
         repo_id,
     )
-    # PreTrainedModel.__init__ copies config.name_or_path onto the instance, so updating the config
-    # alone leaves this stale. PEFT reads exactly this slot (mapping_func.py) and overwrites
-    # base_model_name_or_path with it, which is how a pinned snapshot path ends up in
-    # adapter_config.json, the checkpoints, the run card and every export.
+    # PreTrainedModel.__init__ copies config.name_or_path onto the instance, so updating the config alone leaves
+    # this stale. PEFT reads exactly this slot (mapping_func.py) and overwrites base_model_name_or_path with it,
+    # which is how a pinned snapshot path reaches adapter_config.json and every export.
     changed = _set_standard_identity(model, "name_or_path", repo_id) or changed
     changed = _set_standard_identity(model, "_hf_repo", repo_id) or changed
 

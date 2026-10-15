@@ -7,4 +7,4 @@ This fork release carries the same version in its bundled Python wheel and
 desktop app so diagnostics identify the exact source revision in use.
 """
 
-STUDIO_RELEASE_VERSION = "v0.1.800-mlx.42"
+STUDIO_RELEASE_VERSION = "v0.1.907-mlx.43"

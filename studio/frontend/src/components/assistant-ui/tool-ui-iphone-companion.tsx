@@ -17,6 +17,7 @@ import {
   type ActiveCompanionTask,
 } from "@/features/settings/api/companion";
 import { cn } from "@/lib/utils";
+import { toolArgText } from "./tool-arg-text";
 import {
   ToolFallbackArgs,
   ToolFallbackContent,
@@ -174,7 +175,13 @@ const IPhoneCompanionToolUIImpl: ToolCallMessagePartComponent = ({
   result,
   status,
 }) => {
-  const input = (args ?? {}) as CompanionInput;
+  const rawInput = args && typeof args === "object" && !Array.isArray(args) ? args as CompanionInput : {};
+  const input: CompanionInput = {
+    ...rawInput,
+    items: Array.isArray(rawInput.items) ? rawInput.items.filter((item) => item && typeof item === "object").map((item) => ({
+      id: toolArgText(item.id), text: toolArgText(item.text), instruction: toolArgText(item.instruction),
+    })) : [],
+  };
   const payload = useMemo(() => parsePayload(result), [result]);
   const jobs = useMemo<CompanionJob[]>(() => {
     if (payload?.jobs) return payload.jobs;
@@ -247,12 +254,12 @@ const IPhoneCompanionToolUIImpl: ToolCallMessagePartComponent = ({
     [input.items],
   );
   const isRunning = status?.type === "running";
-  const action = input.action || "submit";
+  const action = toolArgText(input.action) || "submit";
   const itemCount = Math.max(
     input.items?.length ?? 0,
     jobs.reduce((count, job) => count + jobItems(job).length, 0),
   );
-  const kind = (input.kind || jobs[0]?.kind || "subagent").replaceAll("_", " ");
+  const kind = toolArgText(input.kind || jobs[0]?.kind || "subagent").replaceAll("_", " ");
   const label =
     action === "submit"
       ? `iPhone Companion · ${itemCount || 1} ${itemCount === 1 ? kind : "subagents"}`

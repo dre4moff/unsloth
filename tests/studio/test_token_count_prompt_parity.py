@@ -32,35 +32,57 @@ from _node_harness import (
 
 ADAPTER = source_path("studio/frontend/src/features/chat/api/chat-adapter.ts")
 CAPABILITIES = source_path("studio/frontend/src/features/chat/provider-capabilities.ts")
+MODEL_SIZE = source_path("studio/frontend/src/lib/model-size.ts")
 
 TEMP = WORKDIR / "temp" / "token_count_prompt_parity"
 
-SOURCES = (ADAPTER, CAPABILITIES)
+SOURCES = (ADAPTER, CAPABILITIES, MODEL_SIZE)
 
 
-def _canvas_constants() -> str:
+def _prune_helpers() -> str:
+    """isAbandonedAssistantTurn + pruneOutboundHistory, which the outbound builder calls."""
     return slice_between(
         read(ADAPTER),
-        "export const CANVAS_TOOL_INSTRUCTION =",
-        "/**\n * The OpenAI-form messages",
+        "function assistantTurnCarriesPayload(",
+        "function extractImageBase64(",
     )
 
 
 def _outbound_builder() -> str:
     return slice_between(
         read(ADAPTER),
-        "export async function buildOutboundMessagesForTokenCount(",
-        "/**\n * The reasoning fields a completion would send",
+        "export async function buildLocalTokenCountHistory(",
+        "export function buildLocalTokenCountReasoning(",
     )
 
 
 def _extras_builder() -> str:
-    """buildLocalTokenCountExtras, the tool flags the count sends."""
-    return slice_between(
-        read(ADAPTER),
-        "export async function buildLocalTokenCountExtras(",
-        "\n\nasync function resolveUseAdapter(",
-    )
+    """buildLocalTokenCountExtras, the tool flags the count sends, and the Auto-inject
+    resolution it shares with the request build.
+
+    Joined on blank lines, not concatenated: a slice that starts on the previous slice's
+    closing brace is not a declaration _harness_bindings can see, so resolve_dependencies
+    pulls its own copy and node refuses the duplicate.
+    """
+    parts = [
+        read(MODEL_SIZE).split("\n", 2)[2],
+        slice_between(
+            read(ADAPTER),
+            "const AUTOINJECT_AUTO_MAX_SIZE_B =",
+            "\n\ntype ThreadRecordReader",
+        ),
+        slice_between(
+            read(ADAPTER),
+            "function resolveAutoInject(",
+            "\ninterface ServerUsage {",
+        ),
+        slice_between(
+            read(ADAPTER),
+            "export async function buildLocalTokenCountExtras(",
+            "\n\nasync function resolveUseAdapter(",
+        ),
+    ]
+    return "\n\n".join(part.strip("\n") for part in parts) + "\n"
 
 
 def _reasoning_builder() -> str:
@@ -68,23 +90,14 @@ def _reasoning_builder() -> str:
     clamp = slice_between(
         read(CAPABILITIES),
         "export function clampReasoningEffortToLevels(",
-        "\n/**",
+        "\nexport const EXTERNAL_MAX_OUTPUT_TOKENS =",
     )
     builder = slice_between(
         read(ADAPTER),
         "export function buildLocalTokenCountReasoning(",
-        "/**\n * The tool flags a completion would send",
+        "export async function buildLocalTokenCountExtras(",
     )
     return clamp + "\n" + builder
-
-
-def _instruction(name: str) -> str:
-    """The JS string literal assigned to ``name``, as Python text."""
-    text = read(ADAPTER)
-    start = text.index(f"export const {name} =")
-    opening = text.index('"', start)
-    closing = text.index('";', opening + 1)
-    return text[opening + 1 : closing]
 
 
 HARNESS = """
@@ -92,6 +105,7 @@ HARNESS = """
 // Fixtures the sliced builder reads through. Everything below the PRELUDE marker is
 // copied verbatim out of studio/frontend/src/features/chat/api/chat-adapter.ts.
 const state: any = {
+  models: [],
   params: { systemPrompt: "", systemVariables: "" },
   artifactsEnabled: false,
   supportsTools: false,
@@ -102,9 +116,18 @@ const state: any = {
   reasoningEffortLevels: ["low", "medium", "high"],
   supportsPreserveThinking: false,
   preserveThinking: false,
+  // The browser panel's agent store (#13372): off by default, as in agent-store.ts. The count
+  // and the request both call browserAgentToolsForTurn(), so parity holds either way.
+  browserAgent: { enabled: false, historyAccess: "ask" },
 };
 
 const useChatRuntimeStore: any = { getState: () => state };
+const useBrowserAgentStore: any = { getState: () => state.browserAgent };
+
+// Browser use off: the count must match a turn that offers no browser tools.
+function browserAgentToolsForTurn(): string[] {
+  return [];
+}
 
 export function seed(patch: any): void {
   Object.assign(state, patch);
@@ -112,6 +135,18 @@ export function seed(patch: any): void {
 
 function isAnthropicRefusalMessage(_message: any): boolean {
   return false;
+}
+
+function sanitizeAssistantReplayText(text: string): string {
+  return text;
+}
+
+function readIncompleteInfo(_metadata: any): any {
+  return null;
+}
+
+function collectImageParts(_message: any): any[] {
+  return [];
 }
 
 function toOpenAIMessages(message: any): any[] {
@@ -155,17 +190,13 @@ def _estimate(contents: list[str]) -> int:
 
 def _harness_source() -> str:
     return (
-        HARNESS
-        + _canvas_constants()
-        + _outbound_builder()
-        + _reasoning_builder()
-        + _extras_builder()
+        HARNESS + _prune_helpers() + _outbound_builder() + _reasoning_builder() + _extras_builder()
     )
 
 
 def _run(script: str) -> dict:
     require_node(SOURCES)
-    return run_harness(TEMP, _harness_source(), script)
+    return run_harness(TEMP, _harness_source(), script, sources = SOURCES)
 
 
 def _count_script(seed_patch: str) -> str:
@@ -173,12 +204,12 @@ def _count_script(seed_patch: str) -> str:
         f"""
         // @ts-nocheck
         import {{
-          buildOutboundMessagesForTokenCount,
+          buildLocalTokenCountHistory,
           estimateTokens,
           seed,
         }} from "./harness.ts";
         seed({seed_patch});
-        const outbound = await buildOutboundMessagesForTokenCount(
+        const {{ messages: outbound }} = await buildLocalTokenCountHistory(
           [{{ role: "user", text: "draw me a bar chart" }}],
           "thread-a",
         );
@@ -193,50 +224,32 @@ def _count_script(seed_patch: str) -> str:
 USER_TURN = "draw me a bar chart"
 SYSTEM_PROMPT = "You are a helpful assistant."
 WITH_PROMPT = (
-    '{ artifactsEnabled: true, supportsTools: true, params: { systemPrompt: "'
+    '{ supportsTools: true, params: { systemPrompt: "'
     + SYSTEM_PROMPT
     + '", systemVariables: "" } }'
 )
 
 
 @pytest.mark.parametrize(
-    ("seed_patch", "constant", "prompt"),
+    ("seed_patch", "prompt"),
     [
-        # Canvas on, tool-capable: the request appends the render_html wording to the prompt.
-        pytest.param(WITH_PROMPT, "CANVAS_TOOL_INSTRUCTION", SYSTEM_PROMPT, id = "render_html"),
-        # No tool support: the fenced-HTML fallback, and with no prompt to append to it leads.
-        pytest.param(
-            "{ artifactsEnabled: true, supportsTools: false }",
-            "CANVAS_FALLBACK_INSTRUCTION",
-            "",
-            id = "fenced_html_fallback",
-        ),
-        # The pill is off by default; the count must not invent a prompt.
-        pytest.param("{ artifactsEnabled: false, supportsTools: true }", None, "", id = "canvas_off"),
+        pytest.param(WITH_PROMPT, SYSTEM_PROMPT, id = "own_prompt"),
+        # A chat saved with Canvas on restores without it: nothing is appended.
+        pytest.param("{ artifactsEnabled: true, supportsTools: true }", "", id = "legacy_canvas_on"),
     ],
 )
-def test_the_recount_prices_the_canvas_instruction(seed_patch, constant, prompt):
-    """#7450's bar answers "does this chat still fit", so it must price every part of the next
-    prompt -- including the Canvas instruction, which no tool flag can add back server-side."""
-    instruction = _instruction(constant) if constant else ""
-    expected_system = "\n\n".join(part for part in (prompt, instruction) if part)
+def test_the_recount_prices_only_the_prompt_the_completion_sends(seed_patch, prompt):
+    """#7450's bar answers "does this chat still fit": it prices the user's own system prompt
+    and nothing else now that Canvas is gone."""
     out = _run(_count_script(seed_patch))
-    assert out.get("system") == (expected_system or None)
-    assert out.get("inputTokens") == _estimate(
-        ([expected_system] if expected_system else []) + [USER_TURN]
-    ), "the recount must price the Canvas instruction the completion sends"
+    assert out.get("system") == (prompt or None)
+    assert out.get("inputTokens") == _estimate(([prompt] if prompt else []) + [USER_TURN])
 
 
-def test_the_request_path_sends_the_same_constants():
-    """The adapter and the recount must read one source of truth, or the count drifts on edit."""
+def test_no_canvas_instruction_is_left_in_the_request_path():
     src = read(ADAPTER)
-    assert "? CANVAS_TOOL_INSTRUCTION\n          : CANVAS_FALLBACK_INSTRUCTION" in src, (
-        "createOpenAIStreamAdapter must build artifactInstruction from the shared "
-        "constants the token recount prices"
-    )
-    for name in ("CANVAS_TOOL_INSTRUCTION", "CANVAS_FALLBACK_INSTRUCTION"):
-        assert src.count(f"export const {name} =") == 1
-        assert src.count(name) == 3, f"{name} must have exactly one declaration and two uses"
+    for name in ("CANVAS_TOOL_INSTRUCTION", "CANVAS_FALLBACK_INSTRUCTION", "render_html"):
+        assert name not in src, f"{name} is still sent or priced"
 
 
 @pytest.mark.parametrize(
@@ -336,3 +349,80 @@ def test_the_rag_scope_a_count_sends_is_never_empty(thread_id, expected_thread_i
         "keys"
     ), "an empty rag_scope is falsy server-side and drops the tool and the nudge"
     assert (out.get("scope") or {}).get("thread_id") == expected_thread_id
+
+
+def test_the_count_sends_every_setting_that_changes_the_rendered_prompt():
+    """The backend prices the tool loop the settings describe: its gate, its call budget,
+    and whether it retrieves. Omitting one priced the server's defaults."""
+    settings = RAG_ON.rstrip(" }") + ', permissionMode: "ask", maxToolCallsPerMessage: 0 }'
+    out = _run(
+        textwrap.dedent(
+            f"""
+            // @ts-nocheck
+            import {{ buildLocalTokenCountExtras, seed }} from "./harness.ts";
+            seed({settings});
+            const on = await buildLocalTokenCountExtras("thread-a");
+            seed({{ residentCheckpoint: "org/Model-70B" }});
+            const large = await buildLocalTokenCountExtras("thread-a");
+            seed({{ ragAutoInject: "off", residentCheckpoint: "org/Model-4B" }});
+            const injectOff = await buildLocalTokenCountExtras("thread-a");
+            seed({{ supportsTools: false }});
+            const off = await buildLocalTokenCountExtras("thread-a");
+            console.log(JSON.stringify({{ on, large, injectOff, off }}));
+            """
+        )
+    )
+    on, off = out["on"], out["off"]
+    assert on.get("permission_mode") == "ask", "the gate that holds the loop's retrieval"
+    assert on.get("max_tool_calls_per_message") == 0, "Off suppresses the loop entirely"
+    assert (on.get("rag_scope") or {}).get("autoinject") is True
+    # The values, not the keys: unknown size on, Auto off above the threshold.
+    assert (out["large"].get("rag_scope") or {}).get("autoinject") is False
+    off_scope = out["injectOff"].get("rag_scope") or {}
+    assert (off_scope.get("autoinject"), off_scope.get("whole_doc")) == (False, False)
+    # Explicit, and with no budget beside it, as the send is: an omitted flag would let
+    # `unsloth studio run --enable-tools` answer for the count.
+    assert off.get("enable_tools") is False
+    assert "max_tool_calls_per_message" not in off
+
+
+# Tools on, RAG deliberately off: the archive tool is gated on the thread id alone, so a
+# scope-only id would leave it unpriced exactly when RAG is not in play.
+TOOLS_ON_RAG_OFF = (
+    "{ supportsTools: true, toolsEnabled: true, codeToolsEnabled: false, "
+    "artifactsEnabled: false, mcpEnabledForChat: false, ragEnabled: false, "
+    'ragSource: { type: "thread" }, ragMode: "hybrid", ragTopK: 5, '
+    "autoHealToolCalls: true }"
+)
+
+
+@pytest.mark.parametrize(
+    ("thread_id", "expected"),
+    [("undefined", None), ('"thread-a"', "thread-a")],
+    ids = ["unpersisted_new_chat", "persisted_thread"],
+)
+def test_the_count_sends_the_thread_id_at_top_level_even_with_rag_off(thread_id, expected):
+    """`_select_request_tools` reads `payload.thread_id`, not the one inside `rag_scope`.
+
+    An archived thread puts `search_conversation` and its compaction nudge in the prompt,
+    so a count that only ever nests the id under a RAG scope under-reports every archived
+    conversation whose Docs pill is off, and the bar claims room the completion lacks.
+    """
+    out = _run(
+        textwrap.dedent(
+            f"""
+            // @ts-nocheck
+            import {{ buildLocalTokenCountExtras, seed }} from "./harness.ts";
+            seed({TOOLS_ON_RAG_OFF});
+            const extras = await buildLocalTokenCountExtras({thread_id});
+            console.log(JSON.stringify({{
+              threadId: extras.thread_id ?? null,
+              ragScope: extras.rag_scope ?? null,
+            }}));
+            """
+        )
+    )
+    assert out.get("ragScope") is None, "RAG is off, so there is no scope to hide the id in"
+    assert (
+        out.get("threadId") == expected
+    ), "the archive tool and its nudge are gated on the top-level thread id"

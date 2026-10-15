@@ -14,12 +14,15 @@ export interface SettingsPanelPrefsState {
   // null model means "follow whichever model the server has resident".
   agentsAgent: string | null;
   agentsModel: string | null;
+  // null means "follow the shell inferred from the client / Studio host".
+  agentsOs: ExampleOs | null;
   // the quant carries the model it was picked for, so remembering a quant alone
   // never pins a model the tab would otherwise keep following.
   agentsVariant: string | null;
   agentsVariantModel: string | null;
   setAgentsAgent: (agent: string | null) => void;
   setAgentsModel: (model: string | null, variant: string | null) => void;
+  setAgentsOs: (os: ExampleOs) => void;
   setAgentsVariant: (model: string, variant: string) => void;
 
   // null os means "follow the detected device type".
@@ -30,8 +33,18 @@ export interface SettingsPanelPrefsState {
   setApiExampleOs: (os: ExampleOs) => void;
   setApiExampleAgent: (agent: string | null) => void;
 
+  // null mcpOs follows the detected device type.
+  mcpAgent: string | null;
+  mcpOs: ExampleOs | null;
+  setMcpAgent: (agent: string) => void;
+  setMcpOs: (os: ExampleOs) => void;
+
   resourcesLiveUpdates: boolean;
   setResourcesLiveUpdates: (enabled: boolean) => void;
+
+  // the driver version whose idle-eviction notice was dismissed, so a different bad driver shows again.
+  dismissedDriverWarning: string | null;
+  dismissDriverWarning: (driverVersion: string) => void;
 
   fineTuneAction: FineTuneAction;
   setFineTuneAction: (action: FineTuneAction) => void;
@@ -67,7 +80,12 @@ function sanitize(
     ...current,
     agentsAgent: text(raw.agentsAgent),
     agentsModel,
-    // A quant with no model to scope it to can never be applied.
+    agentsOs:
+      typeof raw.agentsOs === "string" &&
+      (EXAMPLE_OS_VALUES as string[]).includes(raw.agentsOs)
+        ? (raw.agentsOs as ExampleOs)
+        : null,
+    // a quant without its model scope cannot be applied.
     agentsVariant: agentsVariantModel ? agentsVariant : null,
     agentsVariantModel: agentsVariant ? agentsVariantModel : null,
     apiExampleLang: text(raw.apiExampleLang),
@@ -77,10 +95,13 @@ function sanitize(
         ? (raw.apiExampleOs as ExampleOs)
         : null,
     apiExampleAgent: text(raw.apiExampleAgent),
+    mcpAgent: text(raw.mcpAgent),
+    mcpOs: EXAMPLE_OS_VALUES.find((os) => os === raw.mcpOs) ?? null,
     resourcesLiveUpdates:
       typeof raw.resourcesLiveUpdates === "boolean"
         ? raw.resourcesLiveUpdates
         : true,
+    dismissedDriverWarning: text(raw.dismissedDriverWarning),
     fineTuneAction: oneOf(raw.fineTuneAction, FINE_TUNE_VALUES, "train"),
   };
 }
@@ -90,12 +111,14 @@ export const useSettingsPanelPrefsStore = create<SettingsPanelPrefsState>()(
     (set) => ({
       agentsAgent: null,
       agentsModel: null,
+      agentsOs: null,
       agentsVariant: null,
       agentsVariantModel: null,
       setAgentsAgent: (agentsAgent) => set({ agentsAgent }),
       // picking a model carries its quant, and clearing it clears that quant.
       setAgentsModel: (agentsModel, agentsVariant) =>
         set({ agentsModel, agentsVariant, agentsVariantModel: agentsModel }),
+      setAgentsOs: (agentsOs) => set({ agentsOs }),
       setAgentsVariant: (agentsVariantModel, agentsVariant) =>
         set({ agentsVariant, agentsVariantModel }),
 
@@ -106,19 +129,27 @@ export const useSettingsPanelPrefsStore = create<SettingsPanelPrefsState>()(
       setApiExampleOs: (apiExampleOs) => set({ apiExampleOs }),
       setApiExampleAgent: (apiExampleAgent) => set({ apiExampleAgent }),
 
+      mcpAgent: null,
+      mcpOs: null,
+      setMcpAgent: (mcpAgent) => set({ mcpAgent }),
+      setMcpOs: (mcpOs) => set({ mcpOs }),
+
       resourcesLiveUpdates: true,
       setResourcesLiveUpdates: (resourcesLiveUpdates) =>
         set({ resourcesLiveUpdates }),
+
+      dismissedDriverWarning: null,
+      dismissDriverWarning: (dismissedDriverWarning) =>
+        set({ dismissedDriverWarning }),
 
       fineTuneAction: "train",
       setFineTuneAction: (fineTuneAction) => set({ fineTuneAction }),
     }),
     {
       name: SETTINGS_PANEL_PREFS_STORAGE_KEY,
-      // Pinned so a later shape change has somewhere to migrate from.
+      // pinned so later shape changes can migrate from this version.
       version: 1,
-      // Older records share these field names, so the sanitiser is enough. A
-      // newer one is dropped: it may reuse the names with different meaning.
+      // sanitize older records; drop newer versions that may reuse these field names.
       migrate: (persisted, version) =>
         (version < 1 ? persisted : {}) as SettingsPanelPrefsState,
       merge: (persisted, current) => sanitize(persisted, current),

@@ -3,12 +3,10 @@
 
 """SQLite storage for external LLM provider configurations.
 
-Same pattern as studio_db.py (module-level functions, raw sqlite3, WAL,
-per-function connections). API keys are NOT stored here: they live in the
-installation credential store.
-
-Enabled model selections and discovered catalog IDs are stored server-side so
-remote Studio clients see the same connection state (#7281).
+Same pattern as studio_db.py (module-level functions, raw sqlite3, WAL, per-function connections). API keys are
+NOT stored here: they live only in the browser (localStorage) and are sent encrypted per-request. Enabled model
+selections and discovered catalog IDs are stored server-side so remote Unsloth clients see the same connection
+state (#7281).
 """
 
 from __future__ import annotations
@@ -17,16 +15,82 @@ import json
 import logging
 import sqlite3
 import threading
+from pathlib import Path
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Optional
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
+from models.providers import ProviderReasoningConfig, normalize_provider_reasoning_config
+from storage.studio_db import connect_studio_db
 from utils.paths import studio_db_path, ensure_dir
 
 _schema_lock = threading.Lock()
-_schema_ready = False
+_schema_ready: set[Path] = set()
 _UNSET = object()
+
+_LEGACY_CUSTOM_PRESET_TYPES = {
+    "custom": "custom",
+    "llama.cpp": "llama_cpp",
+    "vllm": "vllm",
+    "ollama": "ollama",
+}
+
+
+def _encode_object_json(value: Optional[dict]) -> Optional[str]:
+    if value is None:
+        return None
+    return json.dumps(value, separators=(",", ":"), sort_keys=True)
+
+
+def _decode_object_json(raw: Optional[str]) -> Optional[dict]:
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _migrate_legacy_custom_provider_types(conn: sqlite3.Connection) -> None:
+    """Align rows created before Custom had its own backend provider types.
+
+    Older Studio builds saved every OpenAI-compatible connection as ``openai``. A
+    non-OpenAI URL may still be an OpenAI reverse proxy, so only an exact built-in
+    custom/preset label is sufficient evidence to change the stored provider type.
+    """
+    updates: list[tuple[str, str]] = []
+    rows = conn.execute(
+        "SELECT id, display_name, base_url FROM llm_providers WHERE provider_type = 'openai'"
+    ).fetchall()
+    for provider_id, display_name, base_url in rows:
+        label = str(display_name or "").strip().lower()
+        url = str(base_url or "").strip()
+        try:
+            parsed = urlparse(url)
+            host = (parsed.hostname or "").lower()
+        except ValueError:
+            host = ""
+
+        # A display name is user-editable metadata. Never let it turn an OpenAI-managed
+        # endpoint into a custom connection, even if it happens to equal a preset label.
+        if host == "api.openai.com" or host.endswith(
+            (".openai.azure.com", ".services.ai.azure.com")
+        ):
+            continue
+
+        migrated_type = _LEGACY_CUSTOM_PRESET_TYPES.get(label)
+        if migrated_type is not None:
+            updates.append((migrated_type, str(provider_id)))
+
+    conn.executemany(
+        "UPDATE llm_providers SET provider_type = ? WHERE id = ?",
+        updates,
+    )
 
 
 def _encode_models_json(models: Optional[list[str]]) -> str:
@@ -47,20 +111,21 @@ def _decode_models_json(raw: Optional[str]) -> list[str]:
     return [str(model).strip() for model in parsed if str(model).strip()]
 
 
-def _encode_object_json(value: Optional[dict]) -> Optional[str]:
-    if value is None:
+def _encode_reasoning_config(config) -> Optional[str]:
+    if config is None:
         return None
-    return json.dumps(value, separators=(",", ":"), sort_keys=True)
+    if isinstance(config, ProviderReasoningConfig):
+        config = config.model_dump()
+    return ProviderReasoningConfig.model_validate(config).model_dump_json()
 
 
-def _decode_object_json(raw: Optional[str]) -> Optional[dict]:
+def _decode_reasoning_config(raw) -> Optional[dict]:
     if not raw:
         return None
     try:
-        parsed = json.loads(raw)
-    except (TypeError, json.JSONDecodeError):
+        return normalize_provider_reasoning_config(json.loads(raw))
+    except (json.JSONDecodeError, TypeError):
         return None
-    return parsed if isinstance(parsed, dict) else None
 
 
 def _row_models(row: sqlite3.Row) -> tuple[list[str], list[str]]:
@@ -73,7 +138,6 @@ def _row_models(row: sqlite3.Row) -> tuple[list[str], list[str]]:
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
-    """Create the llm_providers table if absent. Called once per process."""
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute(
         """
@@ -95,32 +159,70 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE llm_providers ADD COLUMN available_models_json TEXT NOT NULL DEFAULT '[]'"
         )
+    added_api_type = "api_type" not in existing_cols
+    if added_api_type:
+        conn.execute(
+            "ALTER TABLE llm_providers ADD COLUMN api_type TEXT NOT NULL DEFAULT 'chat_completions'"
+        )
+        _migrate_legacy_custom_provider_types(conn)
     if "max_output_tokens" not in existing_cols:
         conn.execute("ALTER TABLE llm_providers ADD COLUMN max_output_tokens INTEGER")
+    if "reasoning_config_json" not in existing_cols:
+        conn.execute("ALTER TABLE llm_providers ADD COLUMN reasoning_config_json TEXT")
     if "capabilities_json" not in existing_cols:
         conn.execute("ALTER TABLE llm_providers ADD COLUMN capabilities_json TEXT")
     if "managed_config_json" not in existing_cols:
         conn.execute("ALTER TABLE llm_providers ADD COLUMN managed_config_json TEXT")
+    # ALTER TABLE persists independently in SQLite, but its one-time data migration does not.
     conn.commit()
 
 
+def reset_schema_state_for_tests() -> None:
+    with _schema_lock:
+        _schema_ready.clear()
+
+
 def get_connection() -> sqlite3.Connection:
-    """Open studio.db with WAL mode, create table once per process."""
-    global _schema_ready
     db_path = studio_db_path()
     ensure_dir(db_path.parent)
-    conn = sqlite3.connect(str(db_path))
+    conn = connect_studio_db(db_path)
     conn.row_factory = sqlite3.Row
-    if not _schema_ready:
+    if db_path not in _schema_ready:
         with _schema_lock:
-            if not _schema_ready:
+            schema_path = db_path.resolve()
+            if schema_path not in _schema_ready:
                 try:
                     _ensure_schema(conn)
-                    _schema_ready = True
+                    _schema_ready.add(schema_path)
                 except Exception:
                     conn.close()
                     raise
     return conn
+
+
+@contextmanager
+def provider_bundle_transaction() -> Iterator[sqlite3.Connection]:
+    """Atomically mutate a provider row and its saved credentials. Provider metadata and encrypted credentials
+    share ``studio.db``, so a single SQLite write transaction prevents other processes from observing a new
+    endpoint with the previous key (or the inverse) while a provider edit is in progress.
+    """
+    # Ensure both tables exist before opening the transaction. The credential module commits schema
+    # initialization on its own connection.
+    from storage import credential_secrets
+
+    credential_secrets.ensure_schema()
+    conn = get_connection()
+    try:
+        conn.commit()
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("BEGIN IMMEDIATE")
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def create_provider(
@@ -131,10 +233,13 @@ def create_provider(
     models: Optional[list[str]] = None,
     available_models: Optional[list[str]] = None,
     max_output_tokens: Optional[int] = None,
+    api_type: str = "chat_completions",
+    reasoning_config: Optional[dict] = None,
     capabilities: Optional[dict] = None,
     managed_config: Optional[dict] = None,
 ) -> None:
     """Insert a new provider configuration."""
+    reasoning_json = _encode_reasoning_config(reasoning_config)
     now = datetime.now(timezone.utc).isoformat()
     conn = get_connection()
     try:
@@ -142,11 +247,10 @@ def create_provider(
             """
             INSERT INTO llm_providers (
                 id, provider_type, display_name, base_url,
-                models_json, available_models_json, max_output_tokens,
-                capabilities_json, managed_config_json,
-                created_at, updated_at
+                models_json, available_models_json, max_output_tokens, api_type,
+                reasoning_config_json, capabilities_json, managed_config_json, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 id,
@@ -156,6 +260,8 @@ def create_provider(
                 _encode_models_json(models),
                 _encode_models_json(available_models),
                 max_output_tokens,
+                api_type,
+                reasoning_json,
                 _encode_object_json(capabilities),
                 _encode_object_json(managed_config),
                 now,
@@ -175,6 +281,10 @@ def update_provider(
     models: Optional[list[str]] = None,
     available_models: Optional[list[str]] = None,
     max_output_tokens: int | None | object = _UNSET,
+    *,
+    connection: sqlite3.Connection | None = None,
+    api_type: str | None = None,
+    reasoning_config: dict | None | object = _UNSET,
     capabilities: dict | None | object = _UNSET,
     managed_config: dict | None | object = _UNSET,
 ) -> bool:
@@ -187,6 +297,9 @@ def update_provider(
     if base_url is not None:
         updates.append("base_url = ?")
         params.append(base_url)
+    if api_type is not None:
+        updates.append("api_type = ?")
+        params.append(api_type)
     if is_enabled is not None:
         updates.append("is_enabled = ?")
         params.append(1 if is_enabled else 0)
@@ -199,6 +312,9 @@ def update_provider(
     if max_output_tokens is not _UNSET:
         updates.append("max_output_tokens = ?")
         params.append(max_output_tokens)
+    if reasoning_config is not _UNSET:
+        updates.append("reasoning_config_json = ?")
+        params.append(_encode_reasoning_config(reasoning_config))
     if capabilities is not _UNSET:
         updates.append("capabilities_json = ?")
         params.append(_encode_object_json(capabilities))
@@ -211,16 +327,19 @@ def update_provider(
     params.append(datetime.now(timezone.utc).isoformat())
     params.append(id)
 
-    conn = get_connection()
+    owns_connection = connection is None
+    conn = connection or get_connection()
     try:
         cursor = conn.execute(
             f"UPDATE llm_providers SET {', '.join(updates)} WHERE id = ?",
             params,
         )
-        conn.commit()
+        if owns_connection:
+            conn.commit()
         return cursor.rowcount > 0
     finally:
-        conn.close()
+        if owns_connection:
+            conn.close()
 
 
 def delete_provider(id: str) -> bool:
@@ -242,6 +361,7 @@ def get_provider(id: str) -> Optional[dict]:
         if not row:
             return None
         data = dict(row)
+        data["reasoning_config"] = _decode_reasoning_config(data.pop("reasoning_config_json", None))
         models, available_models = _row_models(row)
         data["models"] = models
         data["available_models"] = available_models
@@ -260,6 +380,9 @@ def list_providers() -> list[dict]:
         providers: list[dict] = []
         for row in rows:
             data = dict(row)
+            data["reasoning_config"] = _decode_reasoning_config(
+                data.pop("reasoning_config_json", None)
+            )
             models, available_models = _row_models(row)
             data["models"] = models
             data["available_models"] = available_models

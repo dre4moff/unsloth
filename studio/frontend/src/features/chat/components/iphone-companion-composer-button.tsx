@@ -121,7 +121,7 @@ export function IPhoneCompanionComposerButton({ side = "top" }: { side?: "top" |
               data-active={operational ? "true" : "false"}
               aria-label={italian ? "Modalità iPhone Companion" : "iPhone Companion mode"}>
               <span className="composer-pill-glyph">
-                {speed ? <ZapIcon className="size-[15px]" /> : <SmartphoneIcon className="size-[15px]" />}
+                {speed ? <ZapIcon className="size-[calc(15px*var(--ui-space-scale,1))]" /> : <SmartphoneIcon className="size-[calc(15px*var(--ui-space-scale,1))]" />}
                 {enabled && !ready && !speed ? <span className="absolute right-0 top-0 size-1.5 rounded-full bg-amber-500 ring-1 ring-background" /> : null}
               </span>
               <span>{speed ? (italian ? "Velocità" : "Speed") : "iPhone"}</span>

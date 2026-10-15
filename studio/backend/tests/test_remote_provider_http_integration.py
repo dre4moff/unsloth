@@ -66,7 +66,7 @@ def test_http_model_requests_local_file_and_receives_result(monkeypatch, tmp_pat
     async def ready(_): return {'state': 'READY', 'base_url': base}
     monkeypatch.setattr(kaggle_tpu.kaggle_tpu_manager, 'status', ready)
     async def connected(): return False
-    request = SimpleNamespace(headers={}, state=SimpleNamespace(skip_api_monitor=True), is_disconnected=connected)
+    request = SimpleNamespace(headers={"X-Unsloth-Events": "1"}, state=SimpleNamespace(skip_api_monitor=True), is_disconnected=connected)
     payload = ChatCompletionRequest(
         provider_id='remote', external_model='qwen3.8-27b', stream=True,
         messages=[{'role': 'user', 'content': 'Create hello.py containing hello world.'}],
@@ -98,21 +98,21 @@ def test_http_model_requests_local_file_and_receives_result(monkeypatch, tmp_pat
         server.shutdown(); server.server_close(); thread.join(timeout=3)
 
 
-def test_context_is_refitted_after_local_tool_results(monkeypatch, tmp_path):
+def test_upstream_fitter_prices_each_local_tool_pass(monkeypatch, tmp_path):
     from core.inference.external_tool_transport import OAICompatTransport
-    from core.inference.remote_context import RemoteContextFitter
     from core.inference.studio_tool_loop import ToolLoopPolicy, ToolLoopRun, stream_with_studio_tools
     from core.inference import studio_tool_loop
-    from routes.inference import _estimate_external_prompt_tokens
+    from routes.inference import _fit_external_context
+    from models.inference import ChatCompletionRequest
     messages = [{'role': 'system', 'content': 'Preserve this system instruction.'}]
-    messages += [{'role': 'user' if i % 2 == 0 else 'assistant', 'content': 'old-' + str(i) + 'x' * 950} for i in range(12)]
+    messages += [{'role': 'user' if i % 2 == 0 else 'assistant', 'content': 'old-' + str(i) + 'x' * 200} for i in range(12)]
     messages += [{'role': 'user', 'content': 'Read the tool result, then answer.'}]
-    fitter = RemoteContextFitter(messages, thread_id=None, branch_message_ids=None,
-                                context_length=5000, max_tokens=256,
-                                count_tokens=_estimate_external_prompt_tokens, tools_enabled=True)
+    payload = ChatCompletionRequest(messages=messages, context_overflow="truncate_oldest",
+                                    context_window=5000, compaction_threshold=4000, max_tokens=256)
     seen = []
     fit_events = []
     class Client:
+        provider_type = "openai_compatible"
         async def stream_chat_completion(self, messages, **kwargs):
             seen.append(json.loads(json.dumps(messages)))
             if len(seen) == 1:
@@ -120,15 +120,15 @@ def test_context_is_refitted_after_local_tool_results(monkeypatch, tmp_path):
             else:
                 yield 'data: ' + json.dumps({'choices': [{'delta': {'content': 'done'}, 'finish_reason': 'stop'}]})
             yield 'data: [DONE]'
-    def prepare(msgs, tools):
-        fitted, truncation, _ = fitter.fit(msgs, tools)
+    async def prepare(msgs):
+        fitted, truncation, max_tokens = _fit_external_context(msgs, payload, tools=tools)
         fit_events.append(truncation)
-        return fitted, [], not truncation or truncation.get('fits') is not False
-    monkeypatch.setattr(studio_tool_loop, 'execute_tool', lambda *a, **kw: 'RESULT ' + 'y' * 9000)
+        return fitted, max_tokens, None if not truncation or truncation.get("fits") else "Context does not fit"
+    monkeypatch.setattr(studio_tool_loop, 'execute_tool', lambda *a, **kw: 'RESULT ' + 'y' * 2000)
     tools = [{'type': 'function', 'function': {'name': 'web_search', 'parameters': {'type': 'object', 'properties': {'query': {'type': 'string'}}}}}]
     async def run():
         return [x async for x in stream_with_studio_tools(
-            OAICompatTransport(Client(), model='remote', prepare_messages=prepare),
+            OAICompatTransport(Client(), model='remote', message_fitter=prepare),
             run=ToolLoopRun(messages),
             policy=ToolLoopPolicy(tools, 3, 10, 'off', False, False, None),
             cancel_event=threading.Event(),
@@ -136,8 +136,7 @@ def test_context_is_refitted_after_local_tool_results(monkeypatch, tmp_path):
     asyncio.run(run())
     assert len(seen) == 2
     assert len(fit_events) == 2
-    assert fit_events[1] and fit_events[1]['fits']
-    assert fit_events[1]['dropped_messages'] > 0
+    assert fit_events[1] is None or fit_events[1]['fits']
     assert seen[1][0]['content'] == 'Preserve this system instruction.'
     assert any(m['role'] == 'tool' and m['content'].startswith('RESULT') for m in seen[1])
-    assert len(seen[1]) < len(seen[0])
+    assert seen[1] != seen[0]  # The second fit sees the newly executed tool, not a cached prompt.

@@ -5,9 +5,9 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 release_dir="$repo_root/release"
-app_version="0.1.800-mlx.42"
-backend_version="2026.8.19+mlxcompaction8.companion20.kaggletpu9.backburner1.release42"
-rust_toolchain="1.89.0"
+app_version="0.1.907-mlx.43"
+backend_version="2026.10.5+mlxcompaction8.companion20.kaggletpu9.backburner1.release43"
+rust_toolchain="1.98.1"
 wheel_name="unsloth-${backend_version}-py3-none-any.whl"
 resource_dir="$repo_root/studio/src-tauri/resources/backend"
 resource_wheel="$resource_dir/$wheel_name"
@@ -59,33 +59,25 @@ python3 -m py_compile \
     "$repo_root/studio/backend/models/inference.py" \
     "$repo_root/studio/backend/routes/inference.py"
 
-# Release 30 is the first public artifact that deliberately attests the complete
-# context-meter/restore/MLX-compaction stack together with Kaggle and Companion.
-if ! grep -Fq 'Processed this pass' \
-    "$repo_root/studio/frontend/src/features/chat/components/context-usage-bar.tsx"; then
-    echo "Frontend is missing the separate processed-token row." >&2
-    exit 1
-fi
-if ! grep -Fq 'Context Length' \
-    "$repo_root/studio/frontend/src/features/chat/components/context-usage-bar.tsx"; then
-    echo "Frontend is missing Context Length near-limit guidance." >&2
-    exit 1
-fi
-if ! grep -Fq 'restorableContextUsage(' \
-    "$repo_root/studio/frontend/src/features/chat/utils/refresh-context-usage.ts"; then
-    echo "Frontend is missing saved context-usage restoration." >&2
-    exit 1
-fi
-if ! grep -Fq 'if (hadQueued && !published) void refreshContextUsage(queued);' \
-    "$repo_root/studio/frontend/src/features/chat/utils/refresh-context-usage.ts"; then
-    echo "Frontend is missing the post-status/in-flight context-usage retry." >&2
-    exit 1
-fi
-if ! grep -Fq 'activeModel?.isGguf === true || activeModel?.isMlx === true' \
-    "$repo_root/studio/frontend/src/features/chat/api/chat-adapter.ts"; then
-    echo "Frontend is missing MLX automatic context-compaction opt-in." >&2
-    exit 1
-fi
+# Use the official 0.1.907 compaction path for local and API models. The fork
+# only adds its plan/Companion tools to the same request and token-count catalog.
+python3 - "$repo_root" <<'PYCHECK'
+from pathlib import Path
+import sys
+root = Path(sys.argv[1])
+checks = {
+    "studio/frontend/src/features/chat/api/chat-adapter.ts": (
+        "isMlxForCompaction", "ggufCompactionRequestFields(", "turn_planning: turnPlanningEnabled",
+    ),
+    "studio/backend/core/inference/orchestrator.py": ("def compact_chat_context", "context_fitter = _fit_iteration"),
+    "studio/backend/routes/inference.py": ("_fit_external_context", "refresh_iphone_companion_tool_catalog"),
+}
+for path, markers in checks.items():
+    text = (root / path).read_text()
+    for marker in markers:
+        if marker not in text:
+            raise SystemExit(f"Required integration missing from {path}: {marker}")
+PYCHECK
 
 if ! grep -Fq "version = \"$app_version\"" "$repo_root/studio/src-tauri/Cargo.toml"; then
     echo "Cargo app version does not match $app_version" >&2
@@ -262,8 +254,8 @@ if ! grep -Fq 'Put the objective to execute in instruction' "$wheel_workspace/to
 fi
 unzip -p "$built_wheel" studio/backend/core/inference/llama_cpp.py \
     >"$wheel_workspace/llama_cpp.py"
-if ! grep -Fq 'branch_message_ids' "$wheel_workspace/llama_cpp.py"; then
-    echo "Backend wheel does not restore context checkpoints by active-branch ID." >&2
+if ! grep -Fq '_compaction_branch_states' "$wheel_workspace/llama_cpp.py"; then
+    echo "Backend wheel does not restore context checkpoints with the upstream branch resolver." >&2
     exit 1
 fi
 
@@ -329,6 +321,7 @@ echo "Building the same-identity app and DMG..."
     export UNSLOTH_BUNDLED_BACKEND_SHA256="$wheel_sha256"
     export UNSLOTH_DISABLE_DESKTOP_UPDATES=1
     npx tauri build -v \
+        --config '{"build":{"beforeBuildCommand":""}}' \
         --target aarch64-apple-darwin \
         --bundles app,dmg
 )

@@ -98,6 +98,11 @@ def _install_lightweight_backend_stubs(monkeypatch):
     auth_pkg = types.ModuleType("auth")
     auth_mod = types.ModuleType("auth.authentication")
     auth_mod.get_current_subject = lambda: None
+    # routes/models.py imports this alongside get_current_subject; a stub missing it
+    # fails the import with "unknown location", which reads like a path problem.
+    auth_mod.allow_ambient_hf_token = lambda: True
+    # Same reason: the cached-model routes take the caller class.
+    auth_mod.authenticated_via_api_key = lambda: False
     monkeypatch.setitem(sys.modules, "auth", auth_pkg)
     monkeypatch.setitem(sys.modules, "auth.authentication", auth_mod)
 
@@ -111,6 +116,10 @@ def _install_lightweight_backend_stubs(monkeypatch):
     monkeypatch.setitem(sys.modules, "core", core_pkg)
     monkeypatch.setitem(sys.modules, "core.export", core_export)
     monkeypatch.setitem(sys.modules, "core.inference", core_inference)
+    core_export.q4nx = _load_module("core.export.q4nx", "core/export/q4nx.py", monkeypatch)
+    core_export.decision = _load_module(
+        "core.export.decision", "core/export/decision.py", monkeypatch
+    )
     _load_module(
         "core.inference.model_ids",
         "core/inference/model_ids.py",
@@ -142,6 +151,9 @@ def _install_lightweight_backend_stubs(monkeypatch):
         _HTTPException(kwargs.get("status_code", 500), kwargs.get("detail"))
     )
     utils_utils.canonical_model_repo_id = lambda value: value
+    # routes/models.py refuses a forced-anonymous caller offline through this; the stub
+    # answers False so the export paths under test take their ordinary route.
+    utils_utils.anonymous_and_offline = lambda _hf_token: False
     utils_utils.safe_error_detail = lambda value: str(value)
     monkeypatch.setitem(sys.modules, "utils.utils", utils_utils)
 
@@ -173,8 +185,11 @@ def _install_lightweight_backend_stubs(monkeypatch):
     utils_model_config = types.ModuleType("utils.models.model_config")
     utils_model_config._extract_quant_label = lambda value: value
     utils_model_config._is_big_endian_gguf_path = lambda *args, **kwargs: False
+    utils_model_config._is_imatrix_path = lambda *args, **kwargs: False
     utils_model_config._is_mtp_drafter = lambda *args, **kwargs: False
     utils_model_config.is_audio_input_type = lambda *args, **kwargs: None
+    utils_model_config.is_decision_model = lambda *args, **kwargs: False
+    utils_model_config.decision_layout = lambda *args, **kwargs: None
     monkeypatch.setitem(
         sys.modules,
         "utils.models.model_config",
@@ -193,12 +208,17 @@ def _install_lightweight_backend_stubs(monkeypatch):
         "LoRAInfo",
         "ModelListResponse",
         "LoadCheckpointRequest",
+        "ExportCancelRequest",
         "ExportStatusResponse",
         "ExportOperationResponse",
         "ExportMergedModelRequest",
         "ExportBaseModelRequest",
         "ExportGGUFRequest",
+        "ConvertQ4NXRequest",
+        "ExportDiffusionLoRARequest",
         "ExportLoRAAdapterRequest",
+        "LlmCompressorExportProbeResponse",
+        "ExportDecisionInfoResponse",
     ):
         setattr(models_pkg, name, object)
     models_pkg.LocalModelInfo = _LocalModelInfo
@@ -216,6 +236,7 @@ def _install_lightweight_backend_stubs(monkeypatch):
     ):
         setattr(models_models, name, object)
     models_models.ModelType = str
+    models_models.LocalModelSource = str
     monkeypatch.setitem(sys.modules, "models.models", models_models)
 
     models_responses = types.ModuleType("models.responses")
@@ -278,6 +299,7 @@ def _install_export_backend_stubs(monkeypatch):
 
     utils_model_config = sys.modules["utils.models.model_config"]
     utils_model_config.detect_audio_type = lambda *args, **kwargs: None
+    utils_model_config.load_mlx_adapter_tokenizer = lambda tokenizer, *args, **kwargs: tokenizer
 
     utils_paths = sys.modules["utils.paths"]
     utils_paths.ensure_dir = lambda path: Path(path).mkdir(parents = True, exist_ok = True)

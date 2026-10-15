@@ -206,3 +206,19 @@ pub(super) fn backend_version_outdated_reason(
 pub(super) fn managed_backend_version_stale_reason(version: Option<&str>) -> Option<String> {
     backend_version_outdated_reason(version, expected_backend_version())
 }
+
+#[cfg(test)]
+mod fork_tests {
+    use super::*;
+    #[test]
+    fn bundled_backend_requires_the_exact_shipped_version() {
+        if let Some(expected) = bundled_backend_exact_version() {
+            assert!(backend_version_compatible(Some(expected)));
+            assert!(!backend_version_compatible(Some("2026.8.19")));
+            assert!(!backend_version_compatible(Some("2027.1.1")));
+            assert!(!backend_version_compatible(None));
+        } else {
+            assert!(backend_version_compatible(Some("2027.1.1")));
+        }
+    }
+}

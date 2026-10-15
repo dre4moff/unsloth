@@ -31,7 +31,7 @@ Run on Apple Silicon macOS:
 
 The script installs the pinned JavaScript dependencies, builds the frontend, creates
 the local backend wheel, embeds it as a Tauri resource, targets macOS 12.0 or newer,
-uses the crate's minimum supported Rust 1.89 toolchain, and produces `.app` and `.dmg`
+uses the pinned Rust 1.98.1 toolchain (Tauri 2.12 requires Rust 1.90 or newer), and produces `.app` and `.dmg`
 bundles for `aarch64-apple-darwin`.
 
 The build selects the `ld64.lld` bundled with that Rust toolchain. This avoids a

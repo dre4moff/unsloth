@@ -11,7 +11,10 @@ import type {
 import { createHighlighter } from "shiki";
 import { createJavaScriptRegexEngine } from "shiki/engine/javascript";
 
-import { createCodePlugin } from "../src/components/assistant-ui/code-plugin.ts";
+import {
+  createCodePlugin,
+  TOKENIZE_LIMITS,
+} from "../src/components/assistant-ui/code-plugin.ts";
 
 const THEMES: [ThemeInput, ThemeInput] = ["github-light", "github-dark"];
 
@@ -98,6 +101,10 @@ async function reference(code: string, language: HighlightOptions["language"]) {
   return highlighter.codeToTokens(code, {
     lang: language,
     themes: { light: "github-light", dark: "github-dark" },
+    // The reference must run under the plugin's own tokenizer limits, or shiki's
+    // default wall-clock bail can degrade whichever side of the comparison is
+    // unlucky on a slow runner.
+    ...TOKENIZE_LIMITS,
   });
 }
 
@@ -300,7 +307,7 @@ test("a failed grammar load releases pending callbacks before retry", async () =
   let staleCallbacks = 0;
   try {
     console.error = (message?: unknown) => {
-      if (message === "[Studio Code] Failed to highlight code:") {
+      if (message === "[Unsloth Code] Failed to highlight code:") {
         reportFailure();
       }
     };
@@ -363,7 +370,7 @@ test("a transiently failed grammar load is retried under the same cache key", as
   const originalError = console.error;
   try {
     console.error = (message?: unknown) => {
-      if (message === "[Studio Code] Failed to highlight code:") reportFailure();
+      if (message === "[Unsloth Code] Failed to highlight code:") reportFailure();
     };
     assert.equal(
       plugin.highlight({ code: "value = 1\n", language, themes }, () => {
@@ -707,4 +714,42 @@ test("a throttled multiline tail matches the previous plugin", async () => {
     ...first.tokens.slice(0, keptLineCount),
     ...expectedTail,
   ]);
+});
+
+test("cover reports what the cache leaves untokenized, and never tokenizes", async () => {
+  const plugin = createCodePlugin({ themes: THEMES });
+  const language = "python" as HighlightOptions["language"];
+  const streamedTo = PYTHON.lastIndexOf("\n", PYTHON.length - 2) + 1;
+  await highlightOnce(plugin, { code: PYTHON.slice(0, streamedTo), language, themes: THEMES });
+  const settled = `${PYTHON}value = 1`;
+  const cover = plugin.cover({ code: settled, language, themes: THEMES });
+  assert.equal(cover.uncovered, settled.length - streamedTo, "only the text past the last line the stream committed");
+  const full = await reference(settled, "python");
+  const covered = PYTHON.slice(0, streamedTo).split("\n").length - 1;
+  assert.deepEqual(cover.result?.tokens.slice(0, covered), full.tokens.slice(0, covered), "the committed lines carry their real colours");
+  assert.deepEqual(
+    cover.result?.tokens.slice(covered).map((line) => line.map((token) => token.content).join("")),
+    settled.slice(streamedTo).split("\n"),
+    "the rest is every remaining line, plain",
+  );
+  assert.equal(cover.result?.tokens.length, full.tokens.length, "the same lines as the finished fence, so its body keeps its shape");
+  assert.equal(plugin.cached({ code: settled, language, themes: THEMES }), null, "asking created no cache entry");
+  const exact = await highlightOnce(plugin, { code: settled, language, themes: THEMES });
+  assert.deepEqual(plugin.cover({ code: settled, language, themes: THEMES }), { uncovered: 0, result: exact });
+  const other = "def unrelated():\n    return 2\n";
+  assert.deepEqual(plugin.cover({ code: other, language, themes: THEMES }), { uncovered: other.length, result: null });
+  assert.deepEqual(
+    plugin.cover({ code: settled, language: "typescript" as HighlightOptions["language"], themes: THEMES }),
+    { uncovered: settled.length, result: null },
+    "another grammar's tokens are never offered",
+  );
+});
+
+test("cover never offers a worker's seeded result as a prefix to resume from", async () => {
+  const plugin = createCodePlugin({ themes: THEMES });
+  const language = "python" as HighlightOptions["language"];
+  const seeded = await reference(PYTHON, "python");
+  plugin.seed({ code: PYTHON, language, themes: THEMES }, seeded as unknown as HighlightResult);
+  const grown = `${PYTHON}value = 1\n`;
+  assert.deepEqual(plugin.cover({ code: grown, language, themes: THEMES }), { uncovered: grown.length, result: null });
 });
