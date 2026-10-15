@@ -8014,7 +8014,7 @@ _bootstrap_packaged_mlx_override() {
     substep "preparing Apple Silicon model support..."
     run_install_cmd_retry "prepare Apple Silicon dependencies" \
         uv pip install --python "$_VENV_PY" --no-deps \
-        --upgrade-package "$PACKAGE_NAME" -- "$PACKAGE_NAME"
+        --upgrade-package "$PACKAGE_NAME" -- "${UNSLOTH_DESKTOP_BACKEND_WHEEL:-$PACKAGE_NAME}"
 
     _PACKAGED_MLX_OVERRIDES=$("$_VENV_PY" -I -c "
 import importlib.resources
@@ -8458,6 +8458,29 @@ else
         run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" --torch-backend=auto -- "$_unsloth_install_pkg"
     fi
 fi
+
+# The original package now has minimal CLI dependencies. Its shell core phase
+# still assumes the zoo arrived transitively and tells setup to skip that phase.
+# A bundled desktop must install the matching zoo explicitly before that handoff.
+_install_bundled_backend_zoo() {
+    [ "$PACKAGE_NAME" = "unsloth" ] || return 0
+    [ -n "${UNSLOTH_DESKTOP_BACKEND_WHEEL:-}" ] || return 0
+    if [ "$SKIP_TORCH" = true ]; then
+        run_install_cmd_retry "install bundled backend zoo" \
+            uv pip install --python "$_VENV_PY" --no-deps "unsloth-zoo>=2026.10.5"
+    else
+        _build_unsloth_torch_overrides
+        run_install_cmd_retry "install bundled backend zoo" \
+            uv pip install --python "$_VENV_PY" \
+            ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
+            "unsloth-zoo>=2026.10.5"
+        if [ -n "$_UNSLOTH_TORCH_OVERRIDES" ]; then
+            rm -f "$_UNSLOTH_TORCH_OVERRIDES"
+            _UNSLOTH_TORCH_OVERRIDES=""
+        fi
+    fi
+}
+_install_bundled_backend_zoo
 
 # Same probe as install.ps1: version() answers from whichever record the finder yields first, so a duplicate would be reported here as an ordinary version.
 _installed_package_version_exit=0

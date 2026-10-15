@@ -56,6 +56,12 @@ Tauri 2.12 requires Rust 1.90 or newer. The macOS builder uses installed Rust 1.
 with macOS 12 as the desktop deployment target. The Speed engine still requires
 macOS 14; Companion requires iOS 18.6.
 
+A clean managed-install check exposed the shell installer's assumption that the
+minimal CLI wheel still installs `unsloth-zoo` transitively. The bundled desktop
+now explicitly installs `unsloth-zoo>=2026.10.5` before the skip-core setup handoff,
+respecting no-torch mode. Apple Silicon override bootstrapping also reads the
+exact bundled wheel. Other package and standalone installation modes are unchanged.
+
 Validation and artifact digests are recorded in `release/MLX43-VERIFICATION.json`.
 Host tests and packaging checks do not establish new physical iPhone, live Kaggle,
 CUDA/Windows/Linux or throughput acceptance.
